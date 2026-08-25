@@ -1,0 +1,183 @@
+export component PaneView inherits Rectangle {
+    in property <color> pane-color;
+    in property <int> pane-id;
+    in property <bool> is-closable;
+    in property <image> terminal-image;
+    in property <bool> is-focused: false;
+    in property <bool> force-focus: false;
+
+    callback split-horizontal();
+    callback split-vertical();
+    callback close();
+    // text, ctrl, meta(Cmd)
+    callback key-input(string, bool, bool);
+    callback request-focus(int);
+    callback zoom-in();
+    callback zoom-out();
+    callback zoom-reset();
+    callback scroll(float);
+
+    background: #0f172a;
+
+    // When Rust sets is-focused = true, give the FocusScope actual keyboard focus.
+    // This handles both the initial pane and any programmatic focus changes.
+    changed is-focused => {
+        if (root.is-focused) {
+            scope.focus();
+        }
+    }
+    changed force-focus => {
+        if (root.force-focus) {
+            scope.focus();
+        }
+    }
+
+    // Keyboard handler — active when this pane is focused
+    scope := FocusScope {
+        x: 0; y: 0;
+        width: parent.width;
+        height: parent.height;
+
+        key-pressed(e) => {
+            // Pass text + modifier flags to Rust, which handles zoom detection
+            // and terminal forwarding in one place.
+            root.key-input(e.text, e.modifiers.control, e.modifiers.meta);
+            accept
+        }
+    }
+
+    // Click to focus: call scope.focus() immediately (no Rust round-trip needed
+    // for the actual focus handoff), then notify Rust to update focused_id state.
+    click-area := TouchArea {
+        x: 0; y: 0;
+        width: parent.width;
+        height: parent.height;
+        clicked => {
+            scope.focus();
+            root.request-focus(root.pane-id);
+        }
+        scroll-event(e) => {
+            root.scroll(e.delta-y / 1px);
+            accept
+        }
+    }
+
+    // Terminal image — sits below the toolbar with 5px margins.
+    // Size matches what Rust renders: (width - 10px) × (height - 33px).
+    if root.terminal-image.width > 0: Image {
+        x: 20px;
+        y: 28px;
+        width: parent.width - 40px;
+        height: parent.height - 28px;
+        source: root.terminal-image;
+        image-fit: fill;
+    }
+
+    // Focus border
+    if root.is-focused: Rectangle {
+        x: 0; y: 0;
+        width: parent.width;
+        height: parent.height;
+        border-width: 1px;
+        border-color: #7aa2f7;
+        background: transparent;  // intentional: border only, terminal visible behind
+    }
+
+    // Toolbar strip — flush with pane edges.
+    toolbar := Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: 28px;
+        background: root.is-focused ? #1e293b : transparent;
+
+        HorizontalLayout {
+            spacing: 2px;
+            padding-left: 8px;
+            padding-right: 6px;
+            padding-top: 4px;
+            padding-bottom: 4px;
+
+            // Active pane indicator — always visible, dim when unfocused
+            Text {
+                text: "●";
+                color: root.is-focused ? #22c55e : #ffffff12;
+                font-family: "Hack Nerd Font";
+                font-size: 18px;
+                vertical-alignment: center;
+                width: 22px;
+            }
+
+            // Spacer — pushes buttons to the right
+            Rectangle { horizontal-stretch: 1; }
+
+            // Split / close buttons — only on the focused pane
+            if root.is-focused: h-area := TouchArea {
+                width: 22px;
+                height: 20px;
+                clicked => { root.split-horizontal(); }
+
+                Rectangle {
+                    width: 22px;
+                    height: 20px;
+                    border-radius: 3px;
+                    background: h-area.has-hover ? #ffffff30 : #ffffff18;
+
+                    Text {
+                        text: "⇔";
+                        color: #aaaaaa;
+                        font-family: "Hack Nerd Font";
+                        font-size: 18px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            if root.is-focused: v-area := TouchArea {
+                width: 22px;
+                height: 20px;
+                clicked => { root.split-vertical(); }
+
+                Rectangle {
+                    width: 22px;
+                    height: 20px;
+                    border-radius: 3px;
+                    background: v-area.has-hover ? #ffffff30 : #ffffff18;
+
+                    Text {
+                        text: "⇕";
+                        color: #aaaaaa;
+                        font-family: "Hack Nerd Font";
+                        font-size: 18px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // Close
+            if root.is-focused && root.is-closable: close-area := TouchArea {
+                width: 22px;
+                height: 20px;
+                clicked => { root.close(); }
+
+                Rectangle {
+                    width: 22px;
+                    height: 20px;
+                    border-radius: 3px;
+                    background: close-area.has-hover ? #ff444430 : #ffffff18;
+
+                    Text {
+                        text: "✕";
+                        color: close-area.has-hover ? #ff6666 : #aaaaaa;
+                        font-family: "Hack Nerd Font";
+                        font-size: 18px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,232 @@
+import { PaneView }     from "pane_view.slint";
+import { DividerHandle } from "divider_handle.slint";
+import { Sidebar, PluginItem, WorkspaceProject, PriorityProject, ClockData } from "sidebar.slint";
+
+export struct FlatPane {
+    id: int,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    bg-color: color,
+    is-closable: bool,
+    terminal-image: image,
+    is-focused: bool,
+}
+
+export struct FlatDivider {
+    split-id: int,
+    is-vertical: bool,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    active: bool,
+}
+
+export component MainWindow inherits Window {
+    title: "Mado";
+    preferred-width: 1200px;
+    preferred-height: 800px;
+    background: #0f172a;
+
+    // ── Terminal pane data ────────────────────────────────────────────────────
+    in property <[FlatPane]>    panes;
+    in property <[FlatDivider]> dividers;
+
+    // ── Divider drag cursor state ─────────────────────────────────────────────
+    in property <bool> near-h-div: false;
+    in property <bool> near-v-div: false;
+    in property <bool> is-dragging: false;
+
+    // ── Sidebar ───────────────────────────────────────────────────────────────
+    in-out property <[PluginItem]> plugins;
+    in-out property <float> sidebar-width: 300;
+    in property <image> tasku-terminal-image;
+    in property <image> ai-terminal-image;
+    in property <[WorkspaceProject]> ws-projects;
+    in-out property <string> active-project;
+    in property <int> force-focus-id: -1;
+    in property <[PriorityProject]> priority-projects;
+    in property <ClockData>         clock-data;
+
+    // ── Terminal area dimensions exposed to Rust ──────────────────────────────
+    // Rust uses these (not the full window size) for pane layout math.
+    out property <float> window-w: terminal-area.width  / 1px;
+    out property <float> window-h: terminal-area.height / 1px;
+
+    // ── Callbacks ─────────────────────────────────────────────────────────────
+    callback overlay-press(float, float);
+    callback overlay-move(float, float);
+    callback overlay-release();
+    callback overlay-hover(float, float);
+    callback split-pane(int, bool);
+    callback close-pane(int);
+    callback window-resized(float, float);
+    callback pane-key-input(int, string, bool, bool);
+    callback pane-focus-request(int);
+    callback pane-scroll(int, float);
+    callback zoom-in();
+    callback zoom-out();
+    callback zoom-reset();
+    callback plugin-reordered(int, int);
+    callback sidebar-width-changed(float);
+    callback tasku-toggled(bool);
+    callback tasku-command(string);
+    callback tasku-panel-height-changed(float);
+    callback tasku-scroll(float);
+    callback workspace-selected(string);
+    callback priority-reordered(int, int);
+    callback ai-toggled(bool);
+    callback ai-panel-height-changed(float);
+    callback ai-key-input(string, bool, bool);
+    callback ai-scroll(float);
+
+    changed window-w => { root.window-resized(root.window-w, root.window-h); }
+    changed window-h => { root.window-resized(root.window-w, root.window-h); }
+
+    // ── Sidebar resize state (pure Slint, no Rust round-trip needed) ──────────
+    private property <bool>  sidebar-is-resizing: false;
+    private property <float> resize-press-abs-x: 0;
+    private property <float> resize-press-width: 0;
+
+    // ── Layout ────────────────────────────────────────────────────────────────
+    HorizontalLayout {
+        x: 0; y: 0;
+        width: parent.width;
+        height: parent.height;
+        spacing: 0;
+        padding: 0;
+
+        // ── Left sidebar ──────────────────────────────────────────────────────
+        Sidebar {
+            width: root.sidebar-width * 1px;
+            height: parent.height;
+            plugins: root.plugins;
+            tasku-terminal-image: root.tasku-terminal-image;
+            ai-terminal-image: root.ai-terminal-image;
+            ws-projects: root.ws-projects;
+            active-project: root.active-project;
+            priority-projects: root.priority-projects;
+            clock-data: root.clock-data;
+            plugin-reordered(from, to) => { root.plugin-reordered(from, to); }
+            tasku-toggled(expanded) => { root.tasku-toggled(expanded); }
+            tasku-command(cmd) => { root.tasku-command(cmd); }
+            tasku-panel-height-changed(h) => { root.tasku-panel-height-changed(h); }
+            tasku-scroll(delta) => { root.tasku-scroll(delta); }
+            workspace-selected(code) => { root.workspace-selected(code); }
+            priority-reordered(from, to) => { root.priority-reordered(from, to); }
+            ai-toggled(expanded) => { root.ai-toggled(expanded); }
+            ai-panel-height-changed(h) => { root.ai-panel-height-changed(h); }
+            ai-key-input(text, ctrl, meta) => { root.ai-key-input(text, ctrl, meta); }
+            ai-scroll(delta) => { root.ai-scroll(delta); }
+        }
+
+        // ── Terminal area ─────────────────────────────────────────────────────
+        // Pane x/y coordinates are relative to this rectangle's origin.
+        terminal-area := Rectangle {
+            // fills the remaining width automatically via HorizontalLayout
+            background: #020617;
+
+            // ── Divider drag overlay ──────────────────────────────────────────
+            // Declared FIRST (lowest z-order). PaneView elements sit on top and
+            // intercept their own clicks; this overlay catches divider hit zones.
+            overlay := TouchArea {
+                x: 0; y: 0;
+                width: parent.width;
+                height: parent.height;
+
+                mouse-cursor: root.is-dragging
+                    ? (root.near-v-div ? MouseCursor.ns-resize : MouseCursor.ew-resize)
+                    : (root.near-v-div ? MouseCursor.ns-resize
+                       : root.near-h-div ? MouseCursor.ew-resize
+                       : MouseCursor.default);
+
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        root.overlay-press(self.mouse-x / 1px, self.mouse-y / 1px);
+                    } else if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
+                        root.overlay-release();
+                    }
+                }
+
+                moved => {
+                    if (self.pressed) {
+                        root.overlay-move(self.mouse-x / 1px, self.mouse-y / 1px);
+                    } else {
+                        root.overlay-hover(self.mouse-x / 1px, self.mouse-y / 1px);
+                    }
+                }
+            }
+
+            // ── Panes ─────────────────────────────────────────────────────────
+            for pane in root.panes: PaneView {
+                x: pane.x * 1px;
+                y: pane.y * 1px;
+                width: pane.width * 1px;
+                height: pane.height * 1px;
+                pane-color: pane.bg-color;
+                pane-id: pane.id;
+                is-closable: pane.is-closable;
+                terminal-image: pane.terminal-image;
+                is-focused: pane.is-focused;
+                split-horizontal => { root.split-pane(pane.id, true); }
+                split-vertical   => { root.split-pane(pane.id, false); }
+                close            => { root.close-pane(pane.id); }
+                force-focus: pane.id == root.force-focus-id;
+                key-input(text, ctrl, meta) => { root.pane-key-input(pane.id, text, ctrl, meta); }
+                request-focus(id) => { root.pane-focus-request(id); }
+                scroll(delta) => { root.pane-scroll(pane.id, delta); }
+                zoom-in   => { root.zoom-in(); }
+                zoom-out  => { root.zoom-out(); }
+                zoom-reset => { root.zoom-reset(); }
+            }
+
+            // ── Divider visuals ───────────────────────────────────────────────
+            for div in root.dividers: DividerHandle {
+                x: div.x * 1px;
+                y: div.y * 1px;
+                width: div.width * 1px;
+                height: div.height * 1px;
+                is-vertical: div.is-vertical;
+                active: div.active;
+            }
+        }
+    }
+
+    // ── Sidebar resize handle ─────────────────────────────────────────────────
+    // Absolutely positioned on top of everything; 8px wide, centred on the
+    // sidebar's right edge. Frozen position during drag prevents feedback loop.
+    sidebar-resize := TouchArea {
+        x: (root.sidebar-is-resizing
+            ? root.resize-press-width
+            : root.sidebar-width) * 1px - 4px;
+        y: 0;
+        width: 8px;
+        height: root.height;
+        mouse-cursor: MouseCursor.ew-resize;
+
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.resize-press-abs-x  = self.absolute-position.x / 1px + self.mouse-x / 1px;
+                root.resize-press-width  = root.sidebar-width;
+                root.sidebar-is-resizing = true;
+            } else if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
+                root.sidebar-is-resizing = false;
+                root.sidebar-width-changed(root.sidebar-width);
+            }
+        }
+
+        moved => {
+            if (root.sidebar-is-resizing) {
+                root.sidebar-width = clamp(
+                    root.resize-press-width
+                        + (self.absolute-position.x / 1px + self.mouse-x / 1px
+                           - root.resize-press-abs-x),
+                    80,
+                    root.width / 1px - 200
+                );
+            }
+        }
+    }
+}

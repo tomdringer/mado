@@ -1,0 +1,15 @@
+// Purely visual — no touch handling. The main window overlay handles all drag events.
+export component DividerHandle inherits Rectangle {
+    in property <bool> is-vertical;
+    in property <bool> active; // highlighted while being dragged
+
+    background: transparent;
+
+    line := Rectangle {
+        background: root.active ? #8888cc : #3a3a55;
+        x: root.is-vertical ? 0 : (parent.width - 2px) / 2;
+        y: root.is-vertical ? (parent.height - 2px) / 2 : 0;
+        width: root.is-vertical ? parent.width : 2px;
+        height: root.is-vertical ? 2px : parent.height;
+    }
+}
