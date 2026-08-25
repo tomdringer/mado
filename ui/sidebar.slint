@@ -1,0 +1,1052 @@
+// ─── Sidebar ─────────────────────────────────────────────────────────────────
+//
+// Plugin-based left sidebar. Click a row header to expand/collapse its panel.
+// Drag the ⠿ handle to reorder plugins (only available when all are collapsed).
+// Drag the bottom edge of an expanded panel to resize it vertically.
+
+export struct PluginItem {
+    id: string,
+    title: string,
+    subtitle: string,
+    icon: string,
+}
+
+export struct WorkspaceProject {
+    code:       string,
+    color:      color,
+    text-color: color,
+}
+
+export struct PriorityProject {
+    name:  string,
+    code:  string,
+    color: color,
+}
+
+export struct ClockData {
+    time: string,
+    date: string,
+    icon: string,
+    temp: string,
+    desc: string,
+    loc:  string,
+}
+
+// ─── Command button ───────────────────────────────────────────────────────────
+
+component CmdButton inherits Rectangle {
+    in property <string> label;
+    callback command(string);
+
+    height: 32px;
+    border-radius: 4px;
+    background: ta.has-hover ? #ffffff1C : #ffffff0E;
+
+    ta := TouchArea {
+        width: parent.width; height: parent.height;
+        clicked => { root.command(root.label); }
+    }
+    Text {
+        text: root.label;
+        color: rgba(255, 255, 255, 0.72);
+        font-size: 12px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+        width: parent.width; height: parent.height;
+    }
+}
+
+// ─── Tasku expanded panel ─────────────────────────────────────────────────────
+//
+// Height is set from outside (Sidebar.tasku-panel-h). The terminal rectangle
+// fills whatever space remains after the button grid. The bottom 8px is a
+// drag handle that fires resize-start / resize-move / resize-end callbacks.
+
+component TaskuContent inherits Rectangle {
+    in property <image> terminal-image;
+    callback command(string);
+    callback resize-start();
+    callback resize-move(float);   // delta-y in logical px from press point
+    callback resize-end();
+    callback scroll(float);        // scroll-wheel delta-y in logical px
+
+    // Stored in screen coordinates so the computation stays correct even if
+    // the Flickable scrolls or the panel height changes mid-drag.
+    private property <float> press-abs-y: 0;
+
+    background: transparent;
+
+    // btn-w: each button is exactly 1/3 of the inner width.
+    // Inner width = panel width minus 8px left + 8px right padding = root.width - 16px.
+    // Two 4px gaps between 3 columns consume 8px → btn-w = (root.width - 24px) / 3.
+    private property <length> btn-w: (root.width - 24px) / 3;
+    private property <length> btn-gap: 4px;
+
+    VerticalLayout {
+        width: parent.width;
+        height: parent.height;
+        padding: 8px;
+        spacing: 6px;
+
+        // ── Button grid (4 rows × 3 buttons, explicit widths) ─────────────────
+        VerticalLayout {
+            width: parent.width;
+            spacing: 4px;
+
+            Rectangle { width: parent.width; height: 32px;
+                CmdButton { x: 0;                              width: root.btn-w; label: "Add";     command(l) => { root.command(l); } }
+                CmdButton { x: root.btn-w + root.btn-gap;      width: root.btn-w; label: "List";    command(l) => { root.command(l); } }
+                CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "Stats";   command(l) => { root.command(l); } }
+            }
+            Rectangle { width: parent.width; height: 32px;
+                CmdButton { x: 0;                              width: root.btn-w; label: "Edit";    command(l) => { root.command(l); } }
+                CmdButton { x: root.btn-w + root.btn-gap;      width: root.btn-w; label: "Delete";  command(l) => { root.command(l); } }
+                CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "SQL";     command(l) => { root.command(l); } }
+            }
+            Rectangle { width: parent.width; height: 32px;
+                CmdButton { x: 0;                              width: root.btn-w; label: "Today";   command(l) => { root.command(l); } }
+                CmdButton { x: root.btn-w + root.btn-gap;      width: root.btn-w; label: "Tmrw";    command(l) => { root.command(l); } }
+                CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "Overdue"; command(l) => { root.command(l); } }
+            }
+            Rectangle { width: parent.width; height: 32px;
+                CmdButton { x: 0;                              width: root.btn-w; label: "Todo";    command(l) => { root.command(l); } }
+                CmdButton { x: root.btn-w + root.btn-gap;      width: root.btn-w; label: "Started"; command(l) => { root.command(l); } }
+                CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "Done";    command(l) => { root.command(l); } }
+            }
+        }
+
+        // ── Terminal (fills remaining height after button grid) ───────────────
+        terminal-rect := Rectangle {
+            width: parent.width;
+            vertical-stretch: 1;
+            background: #080A12;
+            border-radius: 4px;
+            clip: true;
+
+            if root.terminal-image.width > 0: Image {
+                width: parent.width; height: parent.height;
+                source: root.terminal-image;
+                image-fit: fill;
+            }
+            if root.terminal-image.width == 0: Text {
+                text: "starting…";
+                color: rgba(255, 255, 255, 0.12);
+                font-size: 11px;
+                horizontal-alignment: center; vertical-alignment: center;
+                width: parent.width; height: parent.height;
+            }
+
+            // Scroll-wheel capture
+            TouchArea {
+                width: parent.width; height: parent.height;
+                scroll-event(e) => {
+                    root.scroll(e.delta-y / 1px);
+                    accept
+                }
+            }
+        }
+    }
+
+    // ── Resize drag handle (absolutely positioned at the panel bottom) ─────────
+    resize-strip := Rectangle {
+        x: 0;
+        y: parent.height - 8px;
+        width: parent.width;
+        height: 8px;
+        background: transparent;
+
+        resize-ta := TouchArea {
+            width: parent.width; height: parent.height;
+            mouse-cursor: MouseCursor.ns-resize;
+
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) {
+                    root.press-abs-y =
+                        self.absolute-position.y / 1px + self.mouse-y / 1px;
+                    root.resize-start();
+                } else if (e.kind == PointerEventKind.up
+                        || e.kind == PointerEventKind.cancel) {
+                    root.resize-end();
+                }
+            }
+            moved => {
+                if (self.pressed) {
+                    root.resize-move(
+                        self.absolute-position.y / 1px + self.mouse-y / 1px
+                        - root.press-abs-y
+                    );
+                }
+            }
+        }
+
+        // Subtle drag-pip indicator
+        Rectangle {
+            x: parent.width / 2 - 20px;
+            y: 3px;
+            width: 40px; height: 2px;
+            border-radius: 1px;
+            background: resize-ta.has-hover
+                ? rgba(255, 255, 255, 0.35)
+                : rgba(255, 255, 255, 0.09);
+        }
+    }
+}
+
+// ─── Workspaces expanded panel ────────────────────────────────────────────────
+//
+// Renders project tiles 3-per-row. Each tile is a square coloured with the
+// project's brand colour; the 3-letter code is centred inside with a
+// luminance-appropriate text colour (set by Rust at fetch time).
+
+component WorkspacesContent inherits Rectangle {
+    in property <[WorkspaceProject]> projects;
+    in property <string>            active-project;
+    callback workspace-selected(string);
+
+    background: transparent;
+    clip: true;
+
+    // Tile geometry derived from available width
+    private property <length> pad:    8px;
+    private property <length> gap:    6px;
+    // 3 columns, 2 inter-column gaps, left+right padding
+    private property <length> tile-w: (root.width - 2 * root.pad - 2 * root.gap) / 3;
+
+    for proj[i] in root.projects: Rectangle {
+        x: root.pad + mod(i, 3) * (root.tile-w + root.gap);
+        y: root.pad + floor(i / 3) * (root.tile-w + root.gap);
+        width:  root.tile-w;
+        height: root.tile-w;   // square
+        border-radius: 8px;
+        background: proj.color;
+
+        // ── Content: indicator dot + code label ───────────────────────────────
+        VerticalLayout {
+            alignment: center;
+            spacing: 5px;
+            width: parent.width; height: parent.height;
+
+            // Active indicator — circle centred above the code.
+            // Always occupies space so all tiles have identical layout;
+            // invisible when this project is not the active workspace.
+            HorizontalLayout {
+                alignment: center;
+                height: 8px;
+                Rectangle {
+                    width: 8px; height: 8px;
+                    border-radius: 4px;
+                    background: proj.text-color;
+                    opacity: proj.code == root.active-project ? 1.0 : 0.0;
+                }
+            }
+
+            Text {
+                text: proj.code;
+                color: proj.text-color;
+                font-size: 13px;
+                font-weight: 700;
+                letter-spacing: 0.5px;
+                horizontal-alignment: center;
+            }
+        }
+
+        // Click target — on top of content
+        TouchArea {
+            width: parent.width; height: parent.height;
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.workspace-selected(proj.code); }
+        }
+    }
+
+    // Empty-state label when Tasku has no projects yet
+    if root.projects.length == 0: Text {
+        text: "no projects";
+        color: rgba(255, 255, 255, 0.18);
+        font-size: 11px;
+        horizontal-alignment: center; vertical-alignment: center;
+        width: parent.width; height: parent.height;
+    }
+}
+
+// ─── Priority row ─────────────────────────────────────────────────────────────
+//
+// One draggable row in the Priorities panel. The ⠿ handle on the left initiates
+// a drag; the outer PrioritiesContent tracks drag-y and computes drop-index.
+
+component PriorityRow inherits Rectangle {
+    in property <PriorityProject> proj;
+    in property <int>   row-index;
+    in property <float> item-h: 36;
+    in property <bool>  is-dragging: false;
+    in property <bool>  show-drop-indicator: false;
+
+    callback drag-start(int, float);  // (row-index, initial-y)
+    callback drag-move(float);        // updated y
+    callback drag-end();
+
+    private property <float> press-y: 0;
+    height: root.item-h * 1px;
+
+    // Drop-before indicator line
+    if root.show-drop-indicator: Rectangle {
+        x: 0; y: 0; height: 2px; width: parent.width;
+        background: #7aa2f7;
+    }
+
+    Rectangle {
+        x: 0;
+        y: root.show-drop-indicator ? 2px : 0;
+        width: parent.width;
+        height: root.show-drop-indicator ? root.item-h * 1px - 2px : root.item-h * 1px;
+        background: root.is-dragging ? #ffffff08 : transparent;
+        opacity: root.is-dragging ? 0.4 : 1.0;
+
+        HorizontalLayout {
+            padding: 0;
+            padding-right: 8px;
+            spacing: 0;
+            width: parent.width;
+            height: parent.height;
+
+            // ── Drag handle ───────────────────────────────────────────────────
+            Rectangle {
+                width: 32px;
+                height: parent.height;
+
+                drag-ta := TouchArea {
+                    width: parent.width;
+                    height: parent.height;
+                    mouse-cursor: MouseCursor.move;
+
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down) {
+                            root.press-y = self.mouse-y / 1px;
+                            root.drag-start(root.row-index, root.row-index * root.item-h);
+                        } else if (e.kind == PointerEventKind.up
+                                || e.kind == PointerEventKind.cancel) {
+                            root.drag-end();
+                        }
+                    }
+                    moved => {
+                        if (self.pressed) {
+                            root.drag-move(
+                                root.row-index * root.item-h
+                                + (self.mouse-y / 1px - root.press-y)
+                            );
+                        }
+                    }
+                }
+
+                Text {
+                    text: "⠿";
+                    color: drag-ta.has-hover
+                        ? rgba(255, 255, 255, 0.55)
+                        : rgba(255, 255, 255, 0.12);
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: parent.width;
+                    height: parent.height;
+                }
+            }
+
+            // ── Project colour dot ────────────────────────────────────────────
+            Rectangle {
+                width: 22px;
+                height: parent.height;
+
+                Rectangle {
+                    width: 10px; height: 10px;
+                    border-radius: 5px;
+                    background: root.proj.color;
+                    x: 6px;
+                    y: parent.height / 2 - 5px;
+                }
+            }
+
+            // ── Project name ──────────────────────────────────────────────────
+            Text {
+                text: root.proj.name;
+                color: rgba(255, 255, 255, 0.75);
+                font-size: 12px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+                height: parent.height;
+            }
+        }
+    }
+}
+
+// ─── Priorities expanded panel ────────────────────────────────────────────────
+//
+// Scrollable list of PriorityRow items ordered highest → lowest priority.
+// Drag-to-reorder works identically to the plugin panel reorder.
+
+component PrioritiesContent inherits Rectangle {
+    in property <[PriorityProject]> projects;
+    callback reordered(int, int);  // (from-index, to-index)
+
+    private property <int>   drag-index: -1;
+    private property <float> drag-y:     0;
+    private property <float> item-h:     36;
+
+    private property <int> drop-index: {
+        if (root.drag-index < 0) { -1 }
+        else { clamp(round(root.drag-y / root.item-h), 0, root.projects.length) }
+    }
+
+    background: transparent;
+    clip: true;
+
+    Flickable {
+        x: 0; y: 0;
+        width: parent.width - 1px;
+        height: parent.height;
+        viewport-height: root.projects.length * root.item-h * 1px + 8px;
+
+        VerticalLayout {
+            width: parent.width;
+            alignment: start;
+            padding-top: 4px;
+            padding-bottom: 4px;
+
+            for proj[i] in root.projects: PriorityRow {
+                width: parent.width;
+                proj: proj;
+                row-index: i;
+                item-h: root.item-h;
+                is-dragging: root.drag-index == i;
+                show-drop-indicator:
+                    root.drag-index >= 0
+                    && root.drop-index == i
+                    && root.drop-index != root.drag-index
+                    && root.drop-index != root.drag-index + 1;
+
+                drag-start(idx, y) => { root.drag-index = idx; root.drag-y = y; }
+                drag-move(y)       => { root.drag-y = y; }
+                drag-end           => {
+                    if (root.drag-index >= 0
+                        && root.drop-index >= 0
+                        && root.drop-index != root.drag-index
+                        && root.drop-index != root.drag-index + 1) {
+                        root.reordered(root.drag-index, root.drop-index);
+                    }
+                    root.drag-index = -1;
+                }
+            }
+
+            // Drop indicator after the last item
+            if root.drag-index >= 0 && root.drop-index == root.projects.length: Rectangle {
+                height: 2px;
+                background: #7aa2f7;
+            }
+        }
+    }
+
+    if root.projects.length == 0: Text {
+        text: "no projects";
+        color: rgba(255, 255, 255, 0.18);
+        font-size: 11px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+}
+
+// ─── Clock / weather panel ────────────────────────────────────────────────────
+//
+// Static display — no PTY, no resize handle.  Rust drives a 10-second timer
+// for time/date and a background thread refreshes weather every 30 minutes.
+
+component ClockContent inherits Rectangle {
+    in property <ClockData> data;
+
+    background: transparent;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 0;
+        alignment: center;
+        width: parent.width;
+        height: parent.height;
+
+        // ── Time ──────────────────────────────────────────────────────────────
+        Text {
+            text: root.data.time;
+            color: rgba(255, 255, 255, 0.92);
+            font-size: 38px;
+            font-weight: 300;
+            letter-spacing: 2px;
+            horizontal-alignment: center;
+        }
+
+        Rectangle { height: 5px; }
+
+        // ── Date ──────────────────────────────────────────────────────────────
+        Text {
+            text: root.data.date;
+            color: rgba(255, 255, 255, 0.35);
+            font-size: 11px;
+            horizontal-alignment: center;
+        }
+
+        Rectangle { height: 16px; }
+
+        // ── Separator ─────────────────────────────────────────────────────────
+        Rectangle {
+            height: 1px;
+            background: rgba(255, 255, 255, 0.07);
+        }
+
+        Rectangle { height: 14px; }
+
+        // ── Weather ───────────────────────────────────────────────────────────
+        HorizontalLayout {
+            alignment: center;
+            spacing: 7px;
+
+            Text {
+                text: root.data.icon;
+                font-size: 20px;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.data.temp;
+                color: rgba(255, 255, 255, 0.85);
+                font-size: 14px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.data.desc;
+                color: rgba(255, 255, 255, 0.42);
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+        }
+
+        Rectangle { height: 4px; }
+
+        // ── Location ──────────────────────────────────────────────────────────
+        Text {
+            text: root.data.loc;
+            color: rgba(255, 255, 255, 0.22);
+            font-size: 10px;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+// ─── AI terminal panel ────────────────────────────────────────────────────────
+//
+// A plain resizable terminal — no buttons. Click inside to focus; type directly.
+// Resize by dragging the pip at the bottom, same as the Tasku panel.
+
+component AiContent inherits Rectangle {
+    in property <image> terminal-image;
+    callback resize-start();
+    callback resize-move(float);
+    callback resize-end();
+    callback key-input(string, bool, bool);  // text, ctrl, meta
+    callback scroll(float);                  // scroll-wheel delta-y in logical px
+
+    private property <float> press-abs-y: 0;
+    background: transparent;
+
+    // ── Keyboard focus scope ──────────────────────────────────────────────────
+    fs := FocusScope {
+        x: 0; y: 0;
+        width: parent.width;
+        height: parent.height - 8px;
+
+        key-pressed(e) => {
+            root.key-input(e.text, e.modifiers.control, e.modifiers.meta);
+            accept
+        }
+    }
+
+    // ── Terminal display ──────────────────────────────────────────────────────
+    Rectangle {
+        x: 8px; y: 8px;
+        width: parent.width - 16px;
+        height: parent.height - 16px;
+        background: #080A12;
+        border-radius: 4px;
+        clip: true;
+
+        if root.terminal-image.width > 0: Image {
+            width: parent.width; height: parent.height;
+            source: root.terminal-image;
+            image-fit: fill;
+        }
+        if root.terminal-image.width == 0: Text {
+            text: "starting…";
+            color: rgba(255, 255, 255, 0.12);
+            font-size: 11px;
+            horizontal-alignment: center; vertical-alignment: center;
+            width: parent.width; height: parent.height;
+        }
+
+        // Click to focus; scroll-wheel forwarded to the PTY
+        TouchArea {
+            width: parent.width; height: parent.height;
+            mouse-cursor: MouseCursor.text;
+            clicked => { fs.focus(); }
+            scroll-event(e) => {
+                root.scroll(e.delta-y / 1px);
+                accept
+            }
+        }
+    }
+
+    // ── Resize handle (bottom 8px) ────────────────────────────────────────────
+    resize-strip := Rectangle {
+        x: 0;
+        y: parent.height - 8px;
+        width: parent.width;
+        height: 8px;
+        background: transparent;
+
+        resize-ta := TouchArea {
+            width: parent.width; height: parent.height;
+            mouse-cursor: MouseCursor.ns-resize;
+
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) {
+                    root.press-abs-y =
+                        self.absolute-position.y / 1px + self.mouse-y / 1px;
+                    root.resize-start();
+                } else if (e.kind == PointerEventKind.up
+                        || e.kind == PointerEventKind.cancel) {
+                    root.resize-end();
+                }
+            }
+            moved => {
+                if (self.pressed) {
+                    root.resize-move(
+                        self.absolute-position.y / 1px + self.mouse-y / 1px
+                        - root.press-abs-y
+                    );
+                }
+            }
+        }
+
+        Rectangle {
+            x: parent.width / 2 - 20px;
+            y: 3px;
+            width: 40px; height: 2px;
+            border-radius: 1px;
+            background: resize-ta.has-hover
+                ? rgba(255, 255, 255, 0.35)
+                : rgba(255, 255, 255, 0.09);
+        }
+    }
+}
+
+// ─── Plugin row header ────────────────────────────────────────────────────────
+
+component PluginRowHeader inherits Rectangle {
+    in property <PluginItem> item;
+    in property <int>    row-index;
+    in property <float>  row-h: 52;
+    in property <bool>   is-dragging: false;
+    in property <bool>   show-drop-indicator: false;
+    in property <bool>   show-drag-handle: true;
+    in property <bool>   expanded: false;
+
+    callback toggled();
+    callback drag-start(int, float);  // (row-index, initial-sidebar-y)
+    callback drag-move(float);        // updated sidebar-y
+    callback drag-end();
+
+    private property <float> press-y: 0;
+    height: root.row-h * 1px;
+
+    // Drop-before indicator line
+    if root.show-drop-indicator: Rectangle {
+        x: 0; y: 0; height: 2px; width: parent.width;
+        background: #7aa2f7;
+    }
+
+    // Row background
+    Rectangle {
+        x: 0;
+        y: root.show-drop-indicator ? 2px : 0px;
+        width: parent.width;
+        height: root.show-drop-indicator ? root.row-h * 1px - 2px : root.row-h * 1px;
+        background: root.is-dragging ? #ffffff08 : transparent;
+        opacity: root.is-dragging ? 0.4 : 1.0;
+
+        HorizontalLayout {
+            padding: 0; spacing: 0;
+
+            // ── Drag handle (32px) ────────────────────────────────────────────
+            Rectangle {
+                width: 32px; height: parent.height;
+
+                drag-ta := TouchArea {
+                    width: parent.width; height: root.row-h * 1px;
+                    enabled: root.show-drag-handle;
+                    mouse-cursor: root.show-drag-handle ? MouseCursor.move : MouseCursor.default;
+
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down) {
+                            root.press-y = self.mouse-y / 1px;
+                            root.drag-start(root.row-index, root.row-index * root.row-h);
+                        } else if (e.kind == PointerEventKind.up
+                                || e.kind == PointerEventKind.cancel) {
+                            root.drag-end();
+                        }
+                    }
+                    moved => {
+                        if (self.pressed) {
+                            root.drag-move(
+                                root.row-index * root.row-h
+                                + (self.mouse-y / 1px - root.press-y)
+                            );
+                        }
+                    }
+                }
+
+                Text {
+                    text: "≡";
+                    color: !root.show-drag-handle ? rgba(255,255,255,0.0)
+                         : drag-ta.has-hover      ? rgba(255,255,255,0.55)
+                         :                          rgba(255,255,255,0.12);
+                    font-family: "SF Pro Text";
+                    font-size: 14px;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: parent.width; height: parent.height;
+                }
+            }
+
+            // ── Icon ──────────────────────────────────────────────────────────
+            Rectangle {
+                width: 24px; height: parent.height;
+                Text {
+                    text: root.item.icon;
+                    color: rgba(255,255,255,0.45);
+                    font-family: "Hack Nerd Font";
+                    font-size: 18px;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: parent.width; height: parent.height;
+                }
+            }
+
+            // ── Title + subtitle (click to expand/collapse) ───────────────────
+            body-ta := TouchArea {
+                horizontal-stretch: 1;
+                height: root.row-h * 1px;
+                mouse-cursor: MouseCursor.pointer;
+                clicked => { root.toggled(); }
+
+                VerticalLayout {
+                    width: parent.width;
+                    padding-left: 10px; padding-right: 4px;
+                    alignment: center; spacing: 2px;
+
+                    Text {
+                        text: root.item.title;
+                        color: rgba(255,255,255,0.80);
+                        font-family: "SF Pro Text";
+                        font-size: 18px; font-weight: 700;
+                        letter-spacing: 0.4px;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: root.item.subtitle;
+                        color: rgba(255,255,255,0.28);
+                        font-family: "SF Pro Text";
+                        font-size: 10px;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            // ── Expand chevron ────────────────────────────────────────────────
+            Rectangle {
+                width: 24px; height: parent.height;
+                Text {
+                    text: root.expanded ? "↓" : "›";
+                    color: rgba(255,255,255,0.22);
+                    font-family: "SF Pro Text";
+                    font-size: 12px;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: parent.width; height: parent.height;
+                }
+            }
+        }
+    }
+}
+
+// ─── Sidebar ──────────────────────────────────────────────────────────────────
+
+export component Sidebar inherits Rectangle {
+    background: #0f172a;
+
+    in-out property <[PluginItem]> plugins;
+    in property <image> tasku-terminal-image;
+    in property <image> ai-terminal-image;
+    in property <[WorkspaceProject]> ws-projects;
+    in property <string> active-project;
+    in property <[PriorityProject]> priority-projects;
+    in property <ClockData>         clock-data;
+
+    callback plugin-reordered(int, int);          // from-index, to-index
+    callback tasku-toggled(bool);                 // true = expanded
+    callback tasku-command(string);               // button label → CLI command
+    callback tasku-panel-height-changed(float);   // notifies Rust to resize PTY
+    callback tasku-scroll(float);                  // scroll-wheel delta-y on terminal
+    callback workspace-selected(string);          // project code clicked
+    callback priority-reordered(int, int);        // priority drag-to-reorder
+    callback ai-toggled(bool);                    // true = expanded
+    callback ai-panel-height-changed(float);      // notifies Rust to resize PTY
+    callback ai-key-input(string, bool, bool);    // text, ctrl, meta
+    callback ai-scroll(float);                    // scroll-wheel delta-y on terminal
+
+    // ── Drag state ────────────────────────────────────────────────────────────
+    private property <int>   drag-index: -1;
+    private property <float> drag-y: 0;
+    private property <float> row-h: 52;
+
+    // ── Per-plugin expanded state ─────────────────────────────────────────────
+    // Each plugin can be open independently — multiple panels visible at once.
+    private property <bool> tasku-expanded:      false;
+    private property <bool> ai-expanded:         false;
+    private property <bool> clock-expanded:      false;
+    private property <bool> workspaces-expanded: false;
+    private property <bool> priorities-expanded: false;
+
+    // True when at least one panel is open (drag-reorder is disabled in this state).
+    private property <bool> any-expanded:
+        root.tasku-expanded || root.ai-expanded || root.clock-expanded
+        || root.workspaces-expanded || root.priorities-expanded;
+
+    // ── Tasku panel resize state ──────────────────────────────────────────────
+    // tasku-panel-h: current panel height (user can drag to resize).
+    // tasku-press-h: panel height captured at the start of a resize drag.
+    private property <length> tasku-panel-h: 400px;
+    private property <length> tasku-press-h: 0px;
+
+    // ── AI panel resize state ─────────────────────────────────────────────────
+    private property <length> ai-panel-h: 300px;
+    private property <length> ai-press-h: 0px;
+
+    // ── Workspaces panel height ───────────────────────────────────────────────
+    // Computed from project count + tile geometry so the Flickable viewport
+    // knows the full content height without needing a preferred-height query.
+    private property <length> ws-tile-w: (root.width - 28px) / 3;
+    // ceil(n / 3) via float: floor((n + 2) / 3)
+    private property <float>  ws-rows:   floor((root.ws-projects.length + 2) / 3);
+    private property <length> ws-panel-h:
+        root.ws-projects.length == 0
+        ? 60px
+        : 16px + root.ws-rows * root.ws-tile-w + max(root.ws-rows - 1, 0) * 6px;
+
+    // ── Clock panel height ────────────────────────────────────────────────────
+    // Fixed — layout is deterministic, no resize handle needed.
+    private property <length> clock-panel-h: 178px;
+
+    // ── Priorities panel height ───────────────────────────────────────────────
+    // Each row is 36px; clamp to 300px max and rely on the internal Flickable
+    // for scrolling when there are many projects.
+    private property <float>  prio-count: root.priority-projects.length;
+    private property <length> prio-panel-h:
+        root.prio-count == 0
+        ? 60px
+        : clamp(root.prio-count * 36px + 8px, 60px, 300px);
+
+    // Drop-before index during plugin reorder drag.
+    private property <int> drop-index: {
+        if (root.drag-index < 0) { -1 }
+        else { clamp(round(root.drag-y / root.row-h), 0, root.plugins.length) }
+    }
+
+    // Total viewport height: sum of all row headers + all expanded panel heights.
+    // Computed explicitly because Slint's preferred-height on a VerticalLayout
+    // inside a Flickable is clamped to the visible area, not the natural content.
+    private property <length> total-content-h:
+        root.plugins.length * root.row-h * 1px
+        + (root.tasku-expanded      ? root.tasku-panel-h  : 0px)
+        + (root.ai-expanded         ? root.ai-panel-h     : 0px)
+        + (root.clock-expanded      ? root.clock-panel-h  : 0px)
+        + (root.workspaces-expanded ? root.ws-panel-h     : 0px)
+        + (root.priorities-expanded ? root.prio-panel-h   : 0px)
+        + 16px                                                       // 8px top + 8px bottom padding
+        + max(root.plugins.length - 1, 0) * 6px;                    // 6px gap between cards
+
+    // ── Flickable plugin list ─────────────────────────────────────────────────
+    // Flickable is Slint's native scroll primitive; it handles mouse-wheel and
+    // trackpad gestures without the ScrollView wrapper that was causing issues.
+    flickable := Flickable {
+        x: 0; y: 0;
+        width: parent.width - 1px;
+        height: parent.height;
+        viewport-height: root.total-content-h;
+
+        VerticalLayout {
+            width: parent.width;
+            alignment: start;
+            spacing: 6px;
+            padding: 8px;
+
+            for item[i] in root.plugins: Rectangle {
+                width: parent.width - 16px;  // 8px padding each side
+                border-radius: 6px;
+                background: #1e293b;
+                border-width: 1px;
+                border-color: #334155;
+                clip: true;
+                height: root.row-h * 1px
+                    + (item.id == "tasku"      && root.tasku-expanded      ? root.tasku-panel-h  : 0px)
+                    + (item.id == "ai"         && root.ai-expanded         ? root.ai-panel-h     : 0px)
+                    + (item.id == "clock"      && root.clock-expanded      ? root.clock-panel-h  : 0px)
+                    + (item.id == "workspaces" && root.workspaces-expanded ? root.ws-panel-h     : 0px)
+                    + (item.id == "priorities" && root.priorities-expanded ? root.prio-panel-h   : 0px);
+
+                VerticalLayout {
+                width: parent.width;
+                spacing: 0;
+
+                PluginRowHeader {
+                    width: parent.width;
+                    item: item;
+                    row-index: i;
+                    row-h: root.row-h;
+                    expanded: item.id == "tasku"       ? root.tasku-expanded      :
+                              item.id == "ai"          ? root.ai-expanded         :
+                              item.id == "clock"       ? root.clock-expanded      :
+                              item.id == "workspaces"  ? root.workspaces-expanded :
+                              item.id == "priorities"  ? root.priorities-expanded : false;
+                    is-dragging: root.drag-index == i;
+                    show-drag-handle: !root.any-expanded;
+                    show-drop-indicator:
+                        root.drag-index >= 0
+                        && root.drop-index == i
+                        && root.drop-index != root.drag-index
+                        && root.drop-index != root.drag-index + 1;
+
+                    toggled => {
+                        if (item.id == "tasku") {
+                            if (root.tasku-expanded) {
+                                root.tasku-expanded = false;
+                                root.tasku-toggled(false);
+                            } else {
+                                root.tasku-expanded = true;
+                                root.tasku-toggled(true);
+                            }
+                        }
+                        if (item.id == "ai") {
+                            if (root.ai-expanded) {
+                                root.ai-expanded = false;
+                                root.ai-toggled(false);
+                            } else {
+                                root.ai-expanded = true;
+                                root.ai-toggled(true);
+                            }
+                        }
+                        if (item.id == "clock") {
+                            root.clock-expanded = root.clock-expanded ? false : true;
+                        }
+                        if (item.id == "workspaces") {
+                            root.workspaces-expanded = root.workspaces-expanded ? false : true;
+                        }
+                        if (item.id == "priorities") {
+                            root.priorities-expanded = root.priorities-expanded ? false : true;
+                        }
+                    }
+                    drag-start(idx, y) => { root.drag-index = idx; root.drag-y = y; }
+                    drag-move(y)       => { root.drag-y = y; }
+                    drag-end           => {
+                        if (root.drag-index >= 0
+                            && root.drop-index >= 0
+                            && root.drop-index != root.drag-index
+                            && root.drop-index != root.drag-index + 1) {
+                            root.plugin-reordered(root.drag-index, root.drop-index);
+                        }
+                        root.drag-index = -1;
+                    }
+                }
+
+                // ── Per-plugin expanded content ───────────────────────────────
+
+                if item.id == "tasku" && root.tasku-expanded: TaskuContent {
+                    width: parent.width;
+                    height: root.tasku-panel-h;
+                    terminal-image: root.tasku-terminal-image;
+                    command(cmd) => { root.tasku-command(cmd); }
+                    scroll(delta) => { root.tasku-scroll(delta); }
+                    resize-start => {
+                        root.tasku-press-h = root.tasku-panel-h;
+                    }
+                    resize-move(delta) => {
+                        root.tasku-panel-h = clamp(
+                            root.tasku-press-h + delta * 1px,
+                            180px,
+                            1400px
+                        );
+                        root.tasku-panel-height-changed(root.tasku-panel-h / 1px);
+                    }
+                    resize-end => { /* final size already set on last resize-move */ }
+                }
+
+                if item.id == "clock" && root.clock-expanded: ClockContent {
+                    width: parent.width;
+                    height: root.clock-panel-h;
+                    data: root.clock-data;
+                }
+
+                if item.id == "ai" && root.ai-expanded: AiContent {
+                    width: parent.width;
+                    height: root.ai-panel-h;
+                    terminal-image: root.ai-terminal-image;
+                    key-input(text, ctrl, meta) => { root.ai-key-input(text, ctrl, meta); }
+                    scroll(delta) => { root.ai-scroll(delta); }
+                    resize-start => {
+                        root.ai-press-h = root.ai-panel-h;
+                    }
+                    resize-move(delta) => {
+                        root.ai-panel-h = clamp(
+                            root.ai-press-h + delta * 1px,
+                            100px,
+                            1400px
+                        );
+                        root.ai-panel-height-changed(root.ai-panel-h / 1px);
+                    }
+                    resize-end => { }
+                }
+
+                if item.id == "workspaces" && root.workspaces-expanded: WorkspacesContent {
+                    width: parent.width;
+                    height: root.ws-panel-h;
+                    projects: root.ws-projects;
+                    active-project: root.active-project;
+                    workspace-selected(code) => { root.workspace-selected(code); }
+                }
+
+                if item.id == "priorities" && root.priorities-expanded: PrioritiesContent {
+                    width: parent.width;
+                    height: root.prio-panel-h;
+                    projects: root.priority-projects;
+                    reordered(from, to) => { root.priority-reordered(from, to); }
+                }
+                }  // end inner VerticalLayout
+            }  // end card Rectangle
+
+            // Drop indicator after the last item
+            if root.drag-index >= 0 && root.drop-index == root.plugins.length: Rectangle {
+                height: 2px; background: #7aa2f7;
+            }
+        }
+    }
+
+    // Right-edge separator
+    Rectangle {
+        x: parent.width - 1px; y: 0;
+        width: 1px; height: parent.height;
+        background: #334155;
+    }
+}
