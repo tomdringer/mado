@@ -1,0 +1,23 @@
+// Theme colour constants — default values matching the slate palette.
+// These are imported as defaults in main.slint's in-property declarations.
+// The AppTheme global is defined here so components can reference it for
+// their static defaults; Rust overrides the MainWindow properties at startup
+// to apply the loaded theme.
+
+export global AppTheme {
+    // These defaults are the slate theme values.  Components reference
+    // AppTheme.xxx as their default; the actual runtime values come from
+    // MainWindow in-properties set by Rust.
+    out property <color> window-bg:        #0f172a;
+    out property <color> terminal-area-bg: #020617;
+    out property <color> pane-bg:          #0f172a;
+    out property <color> pane-toolbar:     #1e293b;
+    out property <color> focus-border:     #7aa2f7;
+    out property <color> active-dot:       #22c55e;
+    out property <color> card-bg:          #1e293b;
+    out property <color> card-border:      #334155;
+    out property <color> divider-active:   #8888cc;
+    out property <color> divider-inactive: #3a3a55;
+    out property <color> text-primary:     #f1f5f9;
+    out property <color> text-muted:       #64748b;
+}

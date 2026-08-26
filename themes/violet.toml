@@ -1,0 +1,56 @@
+# Tailwind CSS — Violet palette
+# https://tailwindcss.com/docs/colors
+
+[meta]
+name = "violet"
+dark = true
+
+[palette]
+"50"  = "#f5f3ff"
+"100" = "#ede9fe"
+"200" = "#ddd6fe"
+"300" = "#c4b5fd"
+"400" = "#a78bfa"
+"500" = "#8b5cf6"
+"600" = "#7c3aed"
+"700" = "#6d28d9"
+"800" = "#5b21b6"
+"900" = "#4c1d95"
+"950" = "#2e1065"
+
+[ui]
+window_bg        = "#4c1d95"  # 900
+sidebar_bg       = "#4c1d95"  # 900
+card_bg          = "#5b21b6"  # 800
+card_border      = "#6d28d9"  # 700
+terminal_area_bg = "#2e1065"  # 950
+pane_bg          = "#4c1d95"  # 900
+pane_toolbar     = "#5b21b6"  # 800
+focus_border     = "#a78bfa"  # 400
+active_dot       = "#22c55e"  # green-500
+divider_active   = "#a78bfa"  # 400
+divider_inactive = "#6d28d9"  # 700
+text_primary     = "#ede9fe"  # 100
+text_muted       = "#8b5cf6"  # 500
+
+[terminal]
+foreground = "#cccccc"
+background = "#5b21b6"
+
+[terminal.ansi]
+black          = "#1e2030"
+red            = "#f7768e"
+green          = "#9ece6a"
+yellow         = "#e0af68"
+blue           = "#7aa2f7"
+magenta        = "#bb9af7"
+cyan           = "#7dcfff"
+white          = "#c0caf5"
+bright_black   = "#464858"
+bright_red     = "#ff9eb6"
+bright_green   = "#c6f692"
+bright_yellow  = "#ffd790"
+bright_blue    = "#a2caff"
+bright_magenta = "#e3c2ff"
+bright_cyan    = "#a5f7ff"
+bright_white   = "#e8f2ff"

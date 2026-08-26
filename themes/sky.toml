@@ -1,0 +1,56 @@
+# Tailwind CSS — Sky palette
+# https://tailwindcss.com/docs/colors
+
+[meta]
+name = "sky"
+dark = true
+
+[palette]
+"50"  = "#f0f9ff"
+"100" = "#e0f2fe"
+"200" = "#bae6fd"
+"300" = "#7dd3fc"
+"400" = "#38bdf8"
+"500" = "#0ea5e9"
+"600" = "#0284c7"
+"700" = "#0369a1"
+"800" = "#075985"
+"900" = "#0c4a6e"
+"950" = "#082f49"
+
+[ui]
+window_bg        = "#0c4a6e"  # 900
+sidebar_bg       = "#0c4a6e"  # 900
+card_bg          = "#075985"  # 800
+card_border      = "#0369a1"  # 700
+terminal_area_bg = "#082f49"  # 950
+pane_bg          = "#0c4a6e"  # 900
+pane_toolbar     = "#075985"  # 800
+focus_border     = "#38bdf8"  # 400
+active_dot       = "#22c55e"  # green-500
+divider_active   = "#38bdf8"  # 400
+divider_inactive = "#0369a1"  # 700
+text_primary     = "#e0f2fe"  # 100
+text_muted       = "#0ea5e9"  # 500
+
+[terminal]
+foreground = "#cccccc"
+background = "#075985"
+
+[terminal.ansi]
+black          = "#1e2030"
+red            = "#f7768e"
+green          = "#9ece6a"
+yellow         = "#e0af68"
+blue           = "#7aa2f7"
+magenta        = "#bb9af7"
+cyan           = "#7dcfff"
+white          = "#c0caf5"
+bright_black   = "#464858"
+bright_red     = "#ff9eb6"
+bright_green   = "#c6f692"
+bright_yellow  = "#ffd790"
+bright_blue    = "#a2caff"
+bright_magenta = "#e3c2ff"
+bright_cyan    = "#a5f7ff"
+bright_white   = "#e8f2ff"

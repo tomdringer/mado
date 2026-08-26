@@ -4,12 +4,24 @@ use std::sync::{Arc, Mutex};
 use super::terminal_state::{TerminalState, DEFAULT_BG};
 use super::font::FontRaster;
 
+/// Returns true if `(col, row)` falls within a normalized selection.
+fn in_selection(col: usize, row: usize, ((c0, r0), (c1, r1)): ((usize, usize), (usize, usize))) -> bool {
+    if row < r0 || row > r1 { return false; }
+    if r0 == r1 { col >= c0 && col <= c1 }
+    else if row == r0 { col >= c0 }
+    else if row == r1 { col <= c1 }
+    else { true }
+}
+
 /// Render terminal state into a pixel buffer. Returns None if nothing changed.
 /// Pass `force=true` to always render (e.g. on resize).
+/// `selection` is a normalized `((start_col, start_row), (end_col, end_row))` in
+/// display-row coordinates (0 = top of the visible area).
 pub fn render_terminal(
     state: &Arc<Mutex<TerminalState>>,
     font: &FontRaster,
     force: bool,
+    selection: Option<((usize, usize), (usize, usize))>,
 ) -> Option<SharedPixelBuffer<slint::Rgba8Pixel>> {
     let mut st = state.lock().unwrap();
     if !force && !st.dirty {
@@ -60,8 +72,13 @@ pub fn render_terminal(
                 && row == st.cursor_row
                 && col == st.cursor_col;
 
+            let is_selected = selection.map_or(false, |s| in_selection(col, row, s));
+
             let (fg, mut bg) = if is_cursor {
                 (cell.bg, cell.fg)
+            } else if is_selected {
+                // Classic reverse-video selection highlight
+                ([0xFF, 0xFF, 0xFF, 0xFF], [0x26, 0x4F, 0x78, 0xFF])
             } else {
                 (cell.fg, cell.bg)
             };
@@ -69,7 +86,7 @@ pub fn render_terminal(
             // Treat the theme background as transparent so the Slint pane
             // background shows through. transparent_bg is detected automatically
             // from the first full-screen erase; falls back to DEFAULT_BG.
-            if bg == transparent_bg || bg == DEFAULT_BG {
+            if !is_cursor && !is_selected && (bg == transparent_bg || bg == DEFAULT_BG) {
                 bg[3] = 0;
             }
 

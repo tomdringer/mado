@@ -1,0 +1,56 @@
+# Tailwind CSS — Purple palette
+# https://tailwindcss.com/docs/colors
+
+[meta]
+name = "purple"
+dark = true
+
+[palette]
+"50"  = "#faf5ff"
+"100" = "#f3e8ff"
+"200" = "#e9d5ff"
+"300" = "#d8b4fe"
+"400" = "#c084fc"
+"500" = "#a855f7"
+"600" = "#9333ea"
+"700" = "#7e22ce"
+"800" = "#6b21a8"
+"900" = "#581c87"
+"950" = "#3b0764"
+
+[ui]
+window_bg        = "#581c87"  # 900
+sidebar_bg       = "#581c87"  # 900
+card_bg          = "#6b21a8"  # 800
+card_border      = "#7e22ce"  # 700
+terminal_area_bg = "#3b0764"  # 950
+pane_bg          = "#581c87"  # 900
+pane_toolbar     = "#6b21a8"  # 800
+focus_border     = "#c084fc"  # 400
+active_dot       = "#22c55e"  # green-500
+divider_active   = "#c084fc"  # 400
+divider_inactive = "#7e22ce"  # 700
+text_primary     = "#f3e8ff"  # 100
+text_muted       = "#a855f7"  # 500
+
+[terminal]
+foreground = "#cccccc"
+background = "#6b21a8"
+
+[terminal.ansi]
+black          = "#1e2030"
+red            = "#f7768e"
+green          = "#9ece6a"
+yellow         = "#e0af68"
+blue           = "#7aa2f7"
+magenta        = "#bb9af7"
+cyan           = "#7dcfff"
+white          = "#c0caf5"
+bright_black   = "#464858"
+bright_red     = "#ff9eb6"
+bright_green   = "#c6f692"
+bright_yellow  = "#ffd790"
+bright_blue    = "#a2caff"
+bright_magenta = "#e3c2ff"
+bright_cyan    = "#a5f7ff"
+bright_white   = "#e8f2ff"

@@ -4,7 +4,9 @@ mod pane_tree;
 mod sidebar;
 mod tasku;
 mod terminal;
+mod theme;
 mod workspace;
+
 
 use pane_tree::PaneTree;
 
@@ -63,6 +65,45 @@ slint::include_modules!();
 
 use i_slint_backend_winit::WinitWindowAccessor;
 
+// ── Selection state ───────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+struct Selection {
+    pane_id: NodeId,
+    /// Where the mouse was pressed (col, display_row).
+    anchor: (usize, usize),
+    /// Current drag end (col, display_row).
+    head: (usize, usize),
+}
+
+impl Selection {
+    /// Return a normalized ((start_col, start_row), (end_col, end_row)) where
+    /// start is always above-or-equal to end in display space.
+    fn normalized(&self) -> ((usize, usize), (usize, usize)) {
+        let (ac, ar) = self.anchor;
+        let (hc, hr) = self.head;
+        if ar < hr || (ar == hr && ac <= hc) {
+            ((ac, ar), (hc, hr))
+        } else {
+            ((hc, hr), (ac, ar))
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.anchor == self.head
+    }
+}
+
+/// Convert a pane-local logical-pixel position to a (col, row) cell coordinate.
+fn px_to_cell(x: f32, y: f32, reg: &TerminalRegistry) -> (usize, usize) {
+    // Terminal image starts at (20px, 28px) inside the pane — matches pane_view.slint.
+    const IMG_X: f32 = 20.0;
+    const IMG_Y: f32 = 28.0;
+    let col = (((x - IMG_X).max(0.0) * reg.scale) / reg.font.cell_w as f32) as usize;
+    let row = (((y - IMG_Y).max(0.0) * reg.scale) / reg.font.cell_h as f32) as usize;
+    (col, row)
+}
+
 // ── Drag state ───────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -76,6 +117,25 @@ struct DragState {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn rgb([r, g, b]: [u8; 3]) -> slint::Color {
+    slint::Color::from_rgb_u8(r, g, b)
+}
+
+fn apply_theme(ui: &MainWindow, t: &theme::Theme) {
+    ui.set_theme_window_bg(rgb(t.window_bg));
+    ui.set_theme_terminal_area_bg(rgb(t.terminal_area_bg));
+    ui.set_theme_pane_bg(rgb(t.pane_bg));
+    ui.set_theme_pane_toolbar(rgb(t.pane_toolbar));
+    ui.set_theme_focus_border(rgb(t.focus_border));
+    ui.set_theme_active_dot(rgb(t.active_dot));
+    ui.set_theme_card_bg(rgb(t.card_bg));
+    ui.set_theme_card_border(rgb(t.card_border));
+    ui.set_theme_divider_active(rgb(t.divider_active));
+    ui.set_theme_divider_inactive(rgb(t.divider_inactive));
+    ui.set_theme_text_primary(rgb(t.text_primary));
+    ui.set_theme_text_muted(rgb(t.text_muted));
+}
 
 fn color_from_u32(argb: u32) -> slint::Color {
     let a = ((argb >> 24) & 0xFF) as u8;
@@ -200,6 +260,51 @@ fn do_zoom(
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
+    // Handle CLI subcommands before launching the UI.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(|s| s.as_str()) == Some("config") {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        let config_path = std::path::PathBuf::from(&home)
+            .join(".config")
+            .join("mado")
+            .join("config.toml");
+
+        // Create the file with commented defaults if it doesn't exist yet.
+        if !config_path.exists() {
+            if let Some(parent) = config_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let defaults = concat!(
+                "# Mado configuration\n",
+                "# font_size    = 18.0\n",
+                "# font_family  = \"\"     # empty = bundled Hack Nerd Font Mono\n",
+                "# shell        = \"\"     # empty = $SHELL → /bin/sh\n",
+                "# sidebar_width = 300.0\n",
+                "# theme        = \"slate\"\n",
+                "# editor       = \"\"     # e.g. \"nvim\", \"nano\" — overrides $VISUAL/$EDITOR\n",
+            );
+            let _ = std::fs::write(&config_path, defaults);
+        }
+
+        let cfg = Config::load();
+        let editor = if !cfg.editor.is_empty() {
+            cfg.editor.clone()
+        } else {
+            std::env::var("VISUAL")
+                .or_else(|_| std::env::var("EDITOR"))
+                .unwrap_or_else(|_| "vi".into())
+        };
+
+        std::process::Command::new(&editor)
+            .arg(&config_path)
+            .status()
+            .unwrap_or_else(|e| {
+                eprintln!("mado: could not launch editor '{editor}': {e}");
+                std::process::exit(1);
+            });
+        return;
+    }
+
     let ui = MainWindow::new().unwrap();
 
     // Make the window resizable and enable the macOS full-screen green button.
@@ -226,16 +331,18 @@ fn main() {
         }
     });
 
-    // Load config first — font size, shell, etc.
+    // Load config first — font size, shell, theme, etc.
     let config = Config::load();
+    apply_theme(&ui, &theme::Theme::load(&config.theme));
     let default_font_size = config.font_size;
     let shell = config.resolved_shell();
 
     // Get device pixel ratio once at startup for HiDPI-correct rendering
     let scale = ui.window().scale_factor();
+    eprintln!("mado: display scale factor = {scale}");
 
     let tree = Rc::new(RefCell::new(PaneTree::new()));
-    let registry = Rc::new(RefCell::new(TerminalRegistry::new(default_font_size, scale, shell)));
+    let registry = Rc::new(RefCell::new(TerminalRegistry::new(default_font_size, scale, shell, config.font_family.clone())));
 
     // ── Sidebar + Tasku detection ────────────────────────────────────────────
     let tasku_path = detect_tasku().map(|t| t.path.to_string_lossy().into_owned());
@@ -274,6 +381,9 @@ fn main() {
     let code_to_name: Rc<HashMap<String, String>> = Rc::new(
         fetched.iter().map(|fp| (fp.code.clone(), fp.name.clone())).collect()
     );
+
+    // Project root paths from ~/.config/mado/projects.toml
+    let project_paths: Rc<HashMap<String, String>> = Rc::new(workspace::load_project_paths());
 
     // Workspace tiles (code + colour only)
     {
@@ -337,6 +447,9 @@ fn main() {
     // ── Active workspace tracking ────────────────────────────────────────────
     let active_project: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
+    // ── Text selection (for copy/paste) ──────────────────────────────────────
+    let selection: Rc<RefCell<Option<Selection>>> = Rc::new(RefCell::new(None));
+
     // ── Spawn initial terminal ──────────────────────────────────────────────
     {
         let root_id = tree.borrow().root;
@@ -355,10 +468,15 @@ fn main() {
         let pane_model = Rc::clone(&pane_model);
         let images = Rc::clone(&images);
         let focused_id = Rc::clone(&focused_id);
+        let selection = Rc::clone(&selection);
         let ui_weak = ui.as_weak();
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, std::time::Duration::from_millis(16), move || {
-            let dirty_bufs = registry.borrow_mut().drain_dirty();
+            let sel = {
+                let s = selection.borrow();
+                s.as_ref().map(|s| (s.pane_id, s.normalized()))
+            };
+            let dirty_bufs = registry.borrow_mut().drain_dirty(sel);
             if dirty_bufs.is_empty() { return; }
 
             let mut tasku_buf: Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> = None;
@@ -580,14 +698,51 @@ fn main() {
         let tree = Rc::clone(&tree);
         let pane_model = Rc::clone(&pane_model);
         let images = Rc::clone(&images);
+        let selection = Rc::clone(&selection);
         let ui_weak = ui.as_weak();
         move |id, text, ctrl, meta| {
             if *focused_id.borrow() != Some(id as NodeId) { return; }
 
-            // Zoom: Ctrl+= / Ctrl++ zoom in, Ctrl+- out, Ctrl+0 reset.
-            // Also check meta (Cmd on macOS) as a fallback.
             let zoom_mod = ctrl || meta;
             let t = text.as_str();
+
+            // Cmd+C: copy selection to clipboard (never forward to terminal).
+            if meta && t == "c" {
+                let sel = selection.borrow();
+                if let Some(ref s) = *sel {
+                    if !s.is_empty() && s.pane_id == id as NodeId {
+                        let norm = s.normalized();
+                        let text = registry.borrow().get_selection_text(id as NodeId, norm);
+                        if !text.is_empty() {
+                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                let _ = cb.set_text(text);
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+
+            // Any other key: clear active selection so it doesn't linger.
+            {
+                let prev_id = selection.borrow().as_ref().map(|s| s.pane_id);
+                *selection.borrow_mut() = None;
+                if let Some(sid) = prev_id {
+                    registry.borrow().mark_dirty(sid);
+                }
+            }
+
+            // Cmd+V: paste clipboard contents.
+            if meta && t == "v" {
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    if let Ok(text) = cb.get_text() {
+                        registry.borrow_mut().write_key(id as NodeId, text.as_bytes());
+                    }
+                }
+                return;
+            }
+
+            // Zoom: Ctrl+= / Ctrl++ zoom in, Ctrl+- out, Ctrl+0 reset.
             if zoom_mod && (t == "=" || t == "+") {
                 let new_size = (*font_size.borrow() + 1.0).min(40.0);
                 if let Some(ui) = ui_weak.upgrade() {
@@ -633,6 +788,51 @@ fn main() {
         move |id, delta| {
             let rows = (delta / 20.0).round() as i32;
             registry.borrow_mut().scroll(id as NodeId, -rows);
+        }
+    });
+
+    // ── Mouse selection ──────────────────────────────────────────────────────
+    ui.on_pane_mouse_pressed({
+        let registry = Rc::clone(&registry);
+        let selection = Rc::clone(&selection);
+        move |pane_id, x, y| {
+            let id = pane_id as NodeId;
+            let cell = px_to_cell(x, y, &registry.borrow());
+            *selection.borrow_mut() = Some(Selection { pane_id: id, anchor: cell, head: cell });
+            registry.borrow().mark_dirty(id);
+        }
+    });
+
+    ui.on_pane_mouse_moved({
+        let registry = Rc::clone(&registry);
+        let selection = Rc::clone(&selection);
+        move |pane_id, x, y| {
+            let id = pane_id as NodeId;
+            let mut sel = selection.borrow_mut();
+            if let Some(ref mut s) = *sel {
+                if s.pane_id == id {
+                    s.head = px_to_cell(x, y, &registry.borrow());
+                    drop(sel);
+                    registry.borrow().mark_dirty(id);
+                }
+            }
+        }
+    });
+
+    ui.on_pane_mouse_released({
+        let registry = Rc::clone(&registry);
+        let selection = Rc::clone(&selection);
+        move |pane_id| {
+            let id = pane_id as NodeId;
+            let mut sel = selection.borrow_mut();
+            if let Some(ref s) = *sel {
+                if s.pane_id == id && s.is_empty() {
+                    // Plain click — no drag, clear the zero-width selection.
+                    *sel = None;
+                    drop(sel);
+                    registry.borrow().mark_dirty(id);
+                }
+            }
         }
     });
 
@@ -773,7 +973,7 @@ fn main() {
                 s.width = new_width;
                 (s.tasku_panel_h, s.ai_panel_h)
             };
-            let sidebar_w = (new_width - 16.0).max(50.0);
+            let sidebar_w = (new_width - 24.0).max(50.0);
             let mut reg = registry.borrow_mut();
             reg.resize(SIDEBAR_TASKU_ID, sidebar_w, tasku_terminal_h(tasku_h));
             reg.resize(SIDEBAR_AI_ID,    sidebar_w, ai_terminal_h(ai_h));
@@ -792,7 +992,7 @@ fn main() {
             if expanded {
                 let (sidebar_w, panel_h) = {
                     let s = sidebar.borrow();
-                    ((s.width - 16.0).max(50.0), s.tasku_panel_h)
+                    ((s.width - 24.0).max(50.0), s.tasku_panel_h)
                 };
                 reg.spawn(SIDEBAR_TASKU_ID, sidebar_w, tasku_terminal_h(panel_h), None);
                 let fields = tasku_fields.as_ref();
@@ -842,6 +1042,15 @@ fn main() {
         }
     });
 
+    // ── Tasku key input ──────────────────────────────────────────────────────
+    ui.on_tasku_key_input({
+        let registry = Rc::clone(&registry);
+        move |text, _ctrl, _meta| {
+            let bytes = key_text_to_bytes(&text);
+            registry.borrow_mut().write_key(SIDEBAR_TASKU_ID, &bytes);
+        }
+    });
+
     // ── Workspace selection ──────────────────────────────────────────────────
     ui.on_workspace_selected({
         let tree = Rc::clone(&tree);
@@ -853,6 +1062,7 @@ fn main() {
         let focused_id = Rc::clone(&focused_id);
         let active_project = Rc::clone(&active_project);
         let code_to_name = Rc::clone(&code_to_name);
+        let project_paths = Rc::clone(&project_paths);
         let tasku_fields = Rc::clone(&tasku_fields);
         let ui_weak = ui.as_weak();
         move |code| {
@@ -882,15 +1092,25 @@ fn main() {
             images.borrow_mut().clear();
 
             // 2. Load saved layout or create a fresh single-pane workspace.
-            let (new_tree, pane_cwds) = match workspace::load_workspace(&code) {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+            let project_root = project_paths.get(&code).cloned().unwrap_or_else(|| home.clone());
+
+            let (new_tree, mut pane_cwds) = match workspace::load_workspace(&code) {
                 Some(saved) => PaneTree::from_saved(&saved.tree),
                 None => {
                     let t = PaneTree::new();
                     let root_id = t.root;
-                    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-                    (t, [(root_id, home)].into())
+                    (t, [(root_id, project_root.clone())].into())
                 }
             };
+
+            // Replace any pane CWD that is "/" (uninitialised) with the
+            // configured project root so the terminal opens somewhere useful.
+            for cwd in pane_cwds.values_mut() {
+                if cwd == "/" {
+                    *cwd = project_root.clone();
+                }
+            }
 
             *tree.borrow_mut() = new_tree;
             let first_leaf = tree.borrow().leaf_ids().into_iter().next();
@@ -934,7 +1154,7 @@ fn main() {
             let sidebar_w = {
                 let mut s = sidebar.borrow_mut();
                 s.tasku_panel_h = new_h;
-                (s.width - 16.0).max(50.0)
+                (s.width - 24.0).max(50.0)
             };
             registry.borrow_mut().resize(
                 SIDEBAR_TASKU_ID,
@@ -973,7 +1193,7 @@ fn main() {
             if expanded {
                 let (sidebar_w, panel_h) = {
                     let s = sidebar.borrow();
-                    ((s.width - 16.0).max(50.0), s.ai_panel_h)
+                    ((s.width - 24.0).max(50.0), s.ai_panel_h)
                 };
                 reg.spawn(SIDEBAR_AI_ID, sidebar_w, ai_terminal_h(panel_h), None);
             } else {
@@ -990,7 +1210,7 @@ fn main() {
             let sidebar_w = {
                 let mut s = sidebar.borrow_mut();
                 s.ai_panel_h = new_h;
-                (s.width - 16.0).max(50.0)
+                (s.width - 24.0).max(50.0)
             };
             registry.borrow_mut().resize(SIDEBAR_AI_ID, sidebar_w, ai_terminal_h(new_h));
         }

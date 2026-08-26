@@ -6,6 +6,12 @@ export component PaneView inherits Rectangle {
     in property <bool> is-focused: false;
     in property <bool> force-focus: false;
 
+    // Theme colours — set by MainWindow from the loaded theme.
+    in property <color> theme-pane-bg:      #0f172a;
+    in property <color> theme-pane-toolbar: #1e293b;
+    in property <color> theme-focus-border: #7aa2f7;
+    in property <color> theme-active-dot:   #22c55e;
+
     callback split-horizontal();
     callback split-vertical();
     callback close();
@@ -16,8 +22,12 @@ export component PaneView inherits Rectangle {
     callback zoom-out();
     callback zoom-reset();
     callback scroll(float);
+    // Selection / clipboard
+    callback mouse-pressed(float, float);
+    callback mouse-moved(float, float);
+    callback mouse-released();
 
-    background: #0f172a;
+    background: root.theme-pane-bg;
 
     // When Rust sets is-focused = true, give the FocusScope actual keyboard focus.
     // This handles both the initial pane and any programmatic focus changes.
@@ -46,15 +56,24 @@ export component PaneView inherits Rectangle {
         }
     }
 
-    // Click to focus: call scope.focus() immediately (no Rust round-trip needed
-    // for the actual focus handoff), then notify Rust to update focused_id state.
+    // Click to focus + drag to select.
     click-area := TouchArea {
         x: 0; y: 0;
         width: parent.width;
         height: parent.height;
-        clicked => {
-            scope.focus();
-            root.request-focus(root.pane-id);
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                scope.focus();
+                root.request-focus(root.pane-id);
+                root.mouse-pressed(self.mouse-x / 1px, self.mouse-y / 1px);
+            } else if (e.kind == PointerEventKind.up) {
+                root.mouse-released();
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                root.mouse-moved(self.mouse-x / 1px, self.mouse-y / 1px);
+            }
         }
         scroll-event(e) => {
             root.scroll(e.delta-y / 1px);
@@ -79,7 +98,7 @@ export component PaneView inherits Rectangle {
         width: parent.width;
         height: parent.height;
         border-width: 1px;
-        border-color: #7aa2f7;
+        border-color: root.theme-focus-border;
         background: transparent;  // intentional: border only, terminal visible behind
     }
 
@@ -89,7 +108,7 @@ export component PaneView inherits Rectangle {
         y: 0;
         width: parent.width;
         height: 28px;
-        background: root.is-focused ? #1e293b : transparent;
+        background: root.is-focused ? root.theme-pane-toolbar : transparent;
 
         HorizontalLayout {
             spacing: 2px;
@@ -101,7 +120,7 @@ export component PaneView inherits Rectangle {
             // Active pane indicator — always visible, dim when unfocused
             Text {
                 text: "●";
-                color: root.is-focused ? #22c55e : #ffffff12;
+                color: root.is-focused ? root.theme-active-dot : #ffffff12;
                 font-family: "Hack Nerd Font";
                 font-size: 18px;
                 vertical-alignment: center;

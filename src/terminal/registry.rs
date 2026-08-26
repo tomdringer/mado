@@ -33,17 +33,19 @@ pub struct TerminalRegistry {
     pub font: FontRaster,
     pub scale: f32,
     pub font_size: f32,
+    pub font_family: String,
     pub shell: String,
 }
 
 impl TerminalRegistry {
-    pub fn new(font_size: f32, scale: f32, shell: String) -> Self {
+    pub fn new(font_size: f32, scale: f32, shell: String, font_family: String) -> Self {
         TerminalRegistry {
             sessions: HashMap::new(),
             parked: HashMap::new(),
-            font: FontRaster::new(font_size, scale),
+            font: FontRaster::new(font_size, scale, &font_family),
             scale,
             font_size,
+            font_family,
             shell,
         }
     }
@@ -52,7 +54,7 @@ impl TerminalRegistry {
     /// so PTY dimensions update to match the new cell size.
     pub fn set_font_size(&mut self, font_size: f32) {
         self.font_size = font_size;
-        self.font = FontRaster::new(font_size, self.scale);
+        self.font = FontRaster::new(font_size, self.scale, &self.font_family);
         // Set the AtomicBool dirty flag — this is what drain_dirty actually checks.
         for sess in self.sessions.values_mut() {
             sess.dirty.store(true, Ordering::Relaxed);
@@ -167,14 +169,83 @@ impl TerminalRegistry {
         }
     }
 
+    /// Force the session for `id` to re-render on the next timer tick.
+    pub fn mark_dirty(&self, id: NodeId) {
+        if let Some(sess) = self.sessions.get(&id) {
+            sess.dirty.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Extract the text covered by `sel` (already normalized, in display-row space)
+    /// from the session's scrollback + screen buffer.
+    pub fn get_selection_text(&self, id: NodeId, sel: ((usize, usize), (usize, usize))) -> String {
+        let sess = match self.sessions.get(&id) {
+            Some(s) => s,
+            None => return String::new(),
+        };
+        let st = match sess.state.lock() {
+            Ok(s) => s,
+            Err(_) => return String::new(),
+        };
+
+        let ((c0, r0), (c1, r1)) = sel;
+        let sb_len = st.scrollback.len();
+        let scroll_offset = st.scroll_offset;
+        let mut text = String::new();
+
+        for drow in r0..=r1 {
+            let virtual_row = (sb_len as isize) - (scroll_offset as isize) + (drow as isize);
+
+            let row_chars: Vec<char> = if virtual_row < 0 {
+                vec![' '; st.cols]
+            } else if (virtual_row as usize) < sb_len {
+                let cells = &st.scrollback[virtual_row as usize];
+                let mut ch: Vec<char> = cells.iter().map(|c| c.ch).collect();
+                ch.resize(st.cols, ' ');
+                ch
+            } else {
+                let screen_row = (virtual_row as usize) - sb_len;
+                if screen_row < st.rows {
+                    st.cells[screen_row * st.cols..(screen_row + 1) * st.cols]
+                        .iter().map(|c| c.ch).collect()
+                } else {
+                    vec![' '; st.cols]
+                }
+            };
+
+            let start_col = if drow == r0 { c0 } else { 0 };
+            let end_col   = if drow == r1 { c1 } else { st.cols.saturating_sub(1) };
+            let end_col   = end_col.min(row_chars.len().saturating_sub(1));
+
+            if start_col < row_chars.len() {
+                let line: String = row_chars[start_col..=end_col].iter().collect();
+                if drow < r1 {
+                    text.push_str(line.trim_end_matches(' '));
+                    text.push('\n');
+                } else {
+                    text.push_str(line.trim_end_matches(' '));
+                }
+            }
+        }
+
+        text
+    }
+
     /// Returns (id, physical-pixel buffer) pairs for all dirty sessions.
-    pub fn drain_dirty(&mut self) -> Vec<(NodeId, SharedPixelBuffer<slint::Rgba8Pixel>)> {
+    /// `selection` carries the active pane selection so it is baked into the render.
+    pub fn drain_dirty(
+        &mut self,
+        selection: Option<(NodeId, ((usize, usize), (usize, usize)))>,
+    ) -> Vec<(NodeId, SharedPixelBuffer<slint::Rgba8Pixel>)> {
         let font = &self.font;
         self.sessions.iter_mut()
             .filter_map(|(id, sess)| {
                 if sess.dirty.load(Ordering::Relaxed) {
                     sess.dirty.store(false, Ordering::Relaxed);
-                    render_terminal(&sess.state, font, true).map(|buf| (*id, buf))
+                    let sel = selection.and_then(|(sid, range)| {
+                        if sid == *id { Some(range) } else { None }
+                    });
+                    render_terminal(&sess.state, font, true, sel).map(|buf| (*id, buf))
                 } else {
                     None
                 }

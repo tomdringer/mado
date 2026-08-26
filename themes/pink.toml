@@ -1,0 +1,56 @@
+# Tailwind CSS — Pink palette
+# https://tailwindcss.com/docs/colors
+
+[meta]
+name = "pink"
+dark = true
+
+[palette]
+"50"  = "#fdf2f8"
+"100" = "#fce7f3"
+"200" = "#fbcfe8"
+"300" = "#f9a8d4"
+"400" = "#f472b6"
+"500" = "#ec4899"
+"600" = "#db2777"
+"700" = "#be185d"
+"800" = "#9d174d"
+"900" = "#831843"
+"950" = "#500724"
+
+[ui]
+window_bg        = "#831843"  # 900
+sidebar_bg       = "#831843"  # 900
+card_bg          = "#9d174d"  # 800
+card_border      = "#be185d"  # 700
+terminal_area_bg = "#500724"  # 950
+pane_bg          = "#831843"  # 900
+pane_toolbar     = "#9d174d"  # 800
+focus_border     = "#f472b6"  # 400
+active_dot       = "#22c55e"  # green-500
+divider_active   = "#f472b6"  # 400
+divider_inactive = "#be185d"  # 700
+text_primary     = "#fce7f3"  # 100
+text_muted       = "#ec4899"  # 500
+
+[terminal]
+foreground = "#cccccc"
+background = "#9d174d"
+
+[terminal.ansi]
+black          = "#1e2030"
+red            = "#f7768e"
+green          = "#9ece6a"
+yellow         = "#e0af68"
+blue           = "#7aa2f7"
+magenta        = "#bb9af7"
+cyan           = "#7dcfff"
+white          = "#c0caf5"
+bright_black   = "#464858"
+bright_red     = "#ff9eb6"
+bright_green   = "#c6f692"
+bright_yellow  = "#ffd790"
+bright_blue    = "#a2caff"
+bright_magenta = "#e3c2ff"
+bright_cyan    = "#a5f7ff"
+bright_white   = "#e8f2ff"

@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use slint::Color;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -29,6 +30,38 @@ fn config_dir() -> PathBuf {
 
 fn workspace_dir() -> PathBuf {
     config_dir().join("workspaces")
+}
+
+// ── Project paths ──────────────────────────────────────────────────────────────
+//
+// Optional ~/.config/mado/projects.toml maps project codes to root directories:
+//
+//   [MDO]
+//   path = "/Users/tom/Sites/mado"
+//
+//   [SB1]
+//   path = "/Users/tom/Sites/supercode"
+
+pub fn load_project_paths() -> HashMap<String, String> {
+    let file = config_dir().join("projects.toml");
+    let content = match fs::read_to_string(&file) {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    let table = match content.parse::<toml::Table>() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("mado: could not parse projects.toml: {e}");
+            return HashMap::new();
+        }
+    };
+    table
+        .into_iter()
+        .filter_map(|(code, val)| {
+            let path = val.get("path")?.as_str()?.to_string();
+            Some((code, path))
+        })
+        .collect()
 }
 
 // ── Tasku fields preference ────────────────────────────────────────────────────
