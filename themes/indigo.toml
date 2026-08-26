@@ -1,0 +1,56 @@
+# Tailwind CSS — Indigo palette
+# https://tailwindcss.com/docs/colors
+
+[meta]
+name = "indigo"
+dark = true
+
+[palette]
+"50"  = "#eef2ff"
+"100" = "#e0e7ff"
+"200" = "#c7d2fe"
+"300" = "#a5b4fc"
+"400" = "#818cf8"
+"500" = "#6366f1"
+"600" = "#4f46e5"
+"700" = "#4338ca"
+"800" = "#3730a3"
+"900" = "#312e81"
+"950" = "#1e1b4b"
+
+[ui]
+window_bg        = "#312e81"  # 900
+sidebar_bg       = "#312e81"  # 900
+card_bg          = "#3730a3"  # 800
+card_border      = "#4338ca"  # 700
+terminal_area_bg = "#1e1b4b"  # 950
+pane_bg          = "#312e81"  # 900
+pane_toolbar     = "#3730a3"  # 800
+focus_border     = "#818cf8"  # 400
+active_dot       = "#22c55e"  # green-500
+divider_active   = "#818cf8"  # 400
+divider_inactive = "#4338ca"  # 700
+text_primary     = "#e0e7ff"  # 100
+text_muted       = "#6366f1"  # 500
+
+[terminal]
+foreground = "#cccccc"
+background = "#3730a3"
+
+[terminal.ansi]
+black          = "#1e2030"
+red            = "#f7768e"
+green          = "#9ece6a"
+yellow         = "#e0af68"
+blue           = "#7aa2f7"
+magenta        = "#bb9af7"
+cyan           = "#7dcfff"
+white          = "#c0caf5"
+bright_black   = "#464858"
+bright_red     = "#ff9eb6"
+bright_green   = "#c6f692"
+bright_yellow  = "#ffd790"
+bright_blue    = "#a2caff"
+bright_magenta = "#e3c2ff"
+bright_cyan    = "#a5f7ff"
+bright_white   = "#e8f2ff"

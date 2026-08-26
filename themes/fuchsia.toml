@@ -1,0 +1,56 @@
+# Tailwind CSS — Fuchsia palette
+# https://tailwindcss.com/docs/colors
+
+[meta]
+name = "fuchsia"
+dark = true
+
+[palette]
+"50"  = "#fdf4ff"
+"100" = "#fae8ff"
+"200" = "#f5d0fe"
+"300" = "#f0abfc"
+"400" = "#e879f9"
+"500" = "#d946ef"
+"600" = "#c026d3"
+"700" = "#a21caf"
+"800" = "#86198f"
+"900" = "#701a75"
+"950" = "#4a044e"
+
+[ui]
+window_bg        = "#701a75"  # 900
+sidebar_bg       = "#701a75"  # 900
+card_bg          = "#86198f"  # 800
+card_border      = "#a21caf"  # 700
+terminal_area_bg = "#4a044e"  # 950
+pane_bg          = "#701a75"  # 900
+pane_toolbar     = "#86198f"  # 800
+focus_border     = "#e879f9"  # 400
+active_dot       = "#22c55e"  # green-500
+divider_active   = "#e879f9"  # 400
+divider_inactive = "#a21caf"  # 700
+text_primary     = "#fae8ff"  # 100
+text_muted       = "#d946ef"  # 500
+
+[terminal]
+foreground = "#cccccc"
+background = "#86198f"
+
+[terminal.ansi]
+black          = "#1e2030"
+red            = "#f7768e"
+green          = "#9ece6a"
+yellow         = "#e0af68"
+blue           = "#7aa2f7"
+magenta        = "#bb9af7"
+cyan           = "#7dcfff"
+white          = "#c0caf5"
+bright_black   = "#464858"
+bright_red     = "#ff9eb6"
+bright_green   = "#c6f692"
+bright_yellow  = "#ffd790"
+bright_blue    = "#a2caff"
+bright_magenta = "#e3c2ff"
+bright_cyan    = "#a5f7ff"
+bright_white   = "#e8f2ff"

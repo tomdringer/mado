@@ -65,7 +65,9 @@ component CmdButton inherits Rectangle {
 
 component TaskuContent inherits Rectangle {
     in property <image> terminal-image;
+    in property <color> theme-terminal-area-bg: #020617;
     callback command(string);
+    callback key-input(string, bool, bool);  // text, ctrl, meta
     callback resize-start();
     callback resize-move(float);   // delta-y in logical px from press point
     callback resize-end();
@@ -76,6 +78,18 @@ component TaskuContent inherits Rectangle {
     private property <float> press-abs-y: 0;
 
     background: transparent;
+
+    // ── Keyboard focus scope ──────────────────────────────────────────────────
+    fs := FocusScope {
+        x: 0; y: 0;
+        width: parent.width;
+        height: parent.height - 8px;
+
+        key-pressed(e) => {
+            root.key-input(e.text, e.modifiers.control, e.modifiers.meta);
+            accept
+        }
+    }
 
     // btn-w: each button is exactly 1/3 of the inner width.
     // Inner width = panel width minus 8px left + 8px right padding = root.width - 16px.
@@ -120,12 +134,13 @@ component TaskuContent inherits Rectangle {
         terminal-rect := Rectangle {
             width: parent.width;
             vertical-stretch: 1;
-            background: #080A12;
+            background: root.theme-terminal-area-bg;
             border-radius: 4px;
             clip: true;
 
             if root.terminal-image.width > 0: Image {
-                width: parent.width; height: parent.height;
+                x: 8px;
+                width: parent.width - 8px; height: parent.height;
                 source: root.terminal-image;
                 image-fit: fill;
             }
@@ -137,9 +152,11 @@ component TaskuContent inherits Rectangle {
                 width: parent.width; height: parent.height;
             }
 
-            // Scroll-wheel capture
+            // Click to focus; scroll-wheel forwarded to the PTY
             TouchArea {
                 width: parent.width; height: parent.height;
+                mouse-cursor: MouseCursor.text;
+                clicked => { fs.focus(); }
                 scroll-event(e) => {
                     root.scroll(e.delta-y / 1px);
                     accept
@@ -280,6 +297,7 @@ component PriorityRow inherits Rectangle {
     in property <float> item-h: 36;
     in property <bool>  is-dragging: false;
     in property <bool>  show-drop-indicator: false;
+    in property <color> theme-focus-border: #7aa2f7;
 
     callback drag-start(int, float);  // (row-index, initial-y)
     callback drag-move(float);        // updated y
@@ -291,7 +309,7 @@ component PriorityRow inherits Rectangle {
     // Drop-before indicator line
     if root.show-drop-indicator: Rectangle {
         x: 0; y: 0; height: 2px; width: parent.width;
-        background: #7aa2f7;
+        background: root.theme-focus-border;
     }
 
     Rectangle {
@@ -386,6 +404,7 @@ component PriorityRow inherits Rectangle {
 
 component PrioritiesContent inherits Rectangle {
     in property <[PriorityProject]> projects;
+    in property <color> theme-focus-border: #7aa2f7;
     callback reordered(int, int);  // (from-index, to-index)
 
     private property <int>   drag-index: -1;
@@ -417,6 +436,7 @@ component PrioritiesContent inherits Rectangle {
                 proj: proj;
                 row-index: i;
                 item-h: root.item-h;
+                theme-focus-border: root.theme-focus-border;
                 is-dragging: root.drag-index == i;
                 show-drop-indicator:
                     root.drag-index >= 0
@@ -440,7 +460,7 @@ component PrioritiesContent inherits Rectangle {
             // Drop indicator after the last item
             if root.drag-index >= 0 && root.drop-index == root.projects.length: Rectangle {
                 height: 2px;
-                background: #7aa2f7;
+                background: root.theme-focus-border;
             }
         }
     }
@@ -578,7 +598,8 @@ component AiContent inherits Rectangle {
         clip: true;
 
         if root.terminal-image.width > 0: Image {
-            width: parent.width; height: parent.height;
+            x: 8px;
+            width: parent.width - 8px; height: parent.height;
             source: root.terminal-image;
             image-fit: fill;
         }
@@ -656,6 +677,7 @@ component PluginRowHeader inherits Rectangle {
     in property <bool>   show-drop-indicator: false;
     in property <bool>   show-drag-handle: true;
     in property <bool>   expanded: false;
+    in property <color>  theme-focus-border: #7aa2f7;
 
     callback toggled();
     callback drag-start(int, float);  // (row-index, initial-sidebar-y)
@@ -668,7 +690,7 @@ component PluginRowHeader inherits Rectangle {
     // Drop-before indicator line
     if root.show-drop-indicator: Rectangle {
         x: 0; y: 0; height: 2px; width: parent.width;
-        background: #7aa2f7;
+        background: root.theme-focus-border;
     }
 
     // Row background
@@ -785,7 +807,13 @@ component PluginRowHeader inherits Rectangle {
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 export component Sidebar inherits Rectangle {
-    background: #0f172a;
+    in property <color> theme-window-bg:        #0f172a;
+    in property <color> theme-terminal-area-bg: #020617;
+    in property <color> theme-card-bg:          #1e293b;
+    in property <color> theme-card-border:      #334155;
+    in property <color> theme-focus-border:     #7aa2f7;
+
+    background: root.theme-window-bg;
 
     in-out property <[PluginItem]> plugins;
     in property <image> tasku-terminal-image;
@@ -798,6 +826,7 @@ export component Sidebar inherits Rectangle {
     callback plugin-reordered(int, int);          // from-index, to-index
     callback tasku-toggled(bool);                 // true = expanded
     callback tasku-command(string);               // button label → CLI command
+    callback tasku-key-input(string, bool, bool); // text, ctrl, meta
     callback tasku-panel-height-changed(float);   // notifies Rust to resize PTY
     callback tasku-scroll(float);                  // scroll-wheel delta-y on terminal
     callback workspace-selected(string);          // project code clicked
@@ -896,9 +925,9 @@ export component Sidebar inherits Rectangle {
             for item[i] in root.plugins: Rectangle {
                 width: parent.width - 16px;  // 8px padding each side
                 border-radius: 6px;
-                background: #1e293b;
+                background: root.theme-card-bg;
                 border-width: 1px;
-                border-color: #334155;
+                border-color: root.theme-card-border;
                 clip: true;
                 height: root.row-h * 1px
                     + (item.id == "tasku"      && root.tasku-expanded      ? root.tasku-panel-h  : 0px)
@@ -916,6 +945,7 @@ export component Sidebar inherits Rectangle {
                     item: item;
                     row-index: i;
                     row-h: root.row-h;
+                    theme-focus-border: root.theme-focus-border;
                     expanded: item.id == "tasku"       ? root.tasku-expanded      :
                               item.id == "ai"          ? root.ai-expanded         :
                               item.id == "clock"       ? root.clock-expanded      :
@@ -977,7 +1007,9 @@ export component Sidebar inherits Rectangle {
                     width: parent.width;
                     height: root.tasku-panel-h;
                     terminal-image: root.tasku-terminal-image;
+                    theme-terminal-area-bg: root.theme-terminal-area-bg;
                     command(cmd) => { root.tasku-command(cmd); }
+                    key-input(text, ctrl, meta) => { root.tasku-key-input(text, ctrl, meta); }
                     scroll(delta) => { root.tasku-scroll(delta); }
                     resize-start => {
                         root.tasku-press-h = root.tasku-panel-h;
@@ -1031,6 +1063,7 @@ export component Sidebar inherits Rectangle {
                     width: parent.width;
                     height: root.prio-panel-h;
                     projects: root.priority-projects;
+                    theme-focus-border: root.theme-focus-border;
                     reordered(from, to) => { root.priority-reordered(from, to); }
                 }
                 }  // end inner VerticalLayout
@@ -1038,7 +1071,7 @@ export component Sidebar inherits Rectangle {
 
             // Drop indicator after the last item
             if root.drag-index >= 0 && root.drop-index == root.plugins.length: Rectangle {
-                height: 2px; background: #7aa2f7;
+                height: 2px; background: root.theme-focus-border;
             }
         }
     }
@@ -1047,6 +1080,6 @@ export component Sidebar inherits Rectangle {
     Rectangle {
         x: parent.width - 1px; y: 0;
         width: 1px; height: parent.height;
-        background: #334155;
+        background: root.theme-card-border;
     }
 }

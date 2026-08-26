@@ -28,7 +28,7 @@ export component MainWindow inherits Window {
     title: "Mado";
     preferred-width: 1200px;
     preferred-height: 800px;
-    background: #0f172a;
+    background: root.theme-window-bg;
 
     // ── Terminal pane data ────────────────────────────────────────────────────
     in property <[FlatPane]>    panes;
@@ -50,6 +50,20 @@ export component MainWindow inherits Window {
     in property <[PriorityProject]> priority-projects;
     in property <ClockData>         clock-data;
 
+    // ── Theme colours (set by Rust at startup from the loaded theme) ──────────
+    in property <color> theme-window-bg:        #0f172a;
+    in property <color> theme-terminal-area-bg: #020617;
+    in property <color> theme-pane-bg:          #0f172a;
+    in property <color> theme-pane-toolbar:     #1e293b;
+    in property <color> theme-focus-border:     #7aa2f7;
+    in property <color> theme-active-dot:       #22c55e;
+    in property <color> theme-card-bg:          #1e293b;
+    in property <color> theme-card-border:      #334155;
+    in property <color> theme-divider-active:   #8888cc;
+    in property <color> theme-divider-inactive: #3a3a55;
+    in property <color> theme-text-primary:     #f1f5f9;
+    in property <color> theme-text-muted:       #64748b;
+
     // ── Terminal area dimensions exposed to Rust ──────────────────────────────
     // Rust uses these (not the full window size) for pane layout math.
     out property <float> window-w: terminal-area.width  / 1px;
@@ -66,6 +80,9 @@ export component MainWindow inherits Window {
     callback pane-key-input(int, string, bool, bool);
     callback pane-focus-request(int);
     callback pane-scroll(int, float);
+    callback pane-mouse-pressed(int, float, float);
+    callback pane-mouse-moved(int, float, float);
+    callback pane-mouse-released(int);
     callback zoom-in();
     callback zoom-out();
     callback zoom-reset();
@@ -73,6 +90,7 @@ export component MainWindow inherits Window {
     callback sidebar-width-changed(float);
     callback tasku-toggled(bool);
     callback tasku-command(string);
+    callback tasku-key-input(string, bool, bool);
     callback tasku-panel-height-changed(float);
     callback tasku-scroll(float);
     callback workspace-selected(string);
@@ -109,9 +127,15 @@ export component MainWindow inherits Window {
             active-project: root.active-project;
             priority-projects: root.priority-projects;
             clock-data: root.clock-data;
+            theme-window-bg: root.theme-window-bg;
+            theme-terminal-area-bg: root.theme-terminal-area-bg;
+            theme-card-bg: root.theme-card-bg;
+            theme-card-border: root.theme-card-border;
+            theme-focus-border: root.theme-focus-border;
             plugin-reordered(from, to) => { root.plugin-reordered(from, to); }
             tasku-toggled(expanded) => { root.tasku-toggled(expanded); }
             tasku-command(cmd) => { root.tasku-command(cmd); }
+            tasku-key-input(text, ctrl, meta) => { root.tasku-key-input(text, ctrl, meta); }
             tasku-panel-height-changed(h) => { root.tasku-panel-height-changed(h); }
             tasku-scroll(delta) => { root.tasku-scroll(delta); }
             workspace-selected(code) => { root.workspace-selected(code); }
@@ -126,7 +150,7 @@ export component MainWindow inherits Window {
         // Pane x/y coordinates are relative to this rectangle's origin.
         terminal-area := Rectangle {
             // fills the remaining width automatically via HorizontalLayout
-            background: #020617;
+            background: root.theme-terminal-area-bg;
 
             // ── Divider drag overlay ──────────────────────────────────────────
             // Declared FIRST (lowest z-order). PaneView elements sit on top and
@@ -170,6 +194,10 @@ export component MainWindow inherits Window {
                 is-closable: pane.is-closable;
                 terminal-image: pane.terminal-image;
                 is-focused: pane.is-focused;
+                theme-pane-bg: root.theme-pane-bg;
+                theme-pane-toolbar: root.theme-pane-toolbar;
+                theme-focus-border: root.theme-focus-border;
+                theme-active-dot: root.theme-active-dot;
                 split-horizontal => { root.split-pane(pane.id, true); }
                 split-vertical   => { root.split-pane(pane.id, false); }
                 close            => { root.close-pane(pane.id); }
@@ -177,6 +205,9 @@ export component MainWindow inherits Window {
                 key-input(text, ctrl, meta) => { root.pane-key-input(pane.id, text, ctrl, meta); }
                 request-focus(id) => { root.pane-focus-request(id); }
                 scroll(delta) => { root.pane-scroll(pane.id, delta); }
+                mouse-pressed(x, y) => { root.pane-mouse-pressed(pane.id, x, y); }
+                mouse-moved(x, y)   => { root.pane-mouse-moved(pane.id, x, y); }
+                mouse-released()    => { root.pane-mouse-released(pane.id); }
                 zoom-in   => { root.zoom-in(); }
                 zoom-out  => { root.zoom-out(); }
                 zoom-reset => { root.zoom-reset(); }
@@ -190,6 +221,8 @@ export component MainWindow inherits Window {
                 height: div.height * 1px;
                 is-vertical: div.is-vertical;
                 active: div.active;
+                theme-divider-active: root.theme-divider-active;
+                theme-divider-inactive: root.theme-divider-inactive;
             }
         }
     }
