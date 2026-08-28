@@ -54,3 +54,14 @@ bright_blue    = "#a2caff"
 bright_magenta = "#e3c2ff"
 bright_cyan    = "#a5f7ff"
 bright_white   = "#e8f2ff"
+
+[starship]
+color_fg0    = "#d1fae5"  # emerald-100     — text on all segments
+color_bg1    = "#022c22"  # emerald-950     — time segment
+color_bg3    = "#064e3b"  # emerald-900     — docker segment
+color_blue   = "#065f46"  # emerald-800     — language segment
+color_aqua   = "#3730a3"  # indigo-700 (green-family: avoid teal)  — git segment
+color_yellow = "#b45309"  # amber-700  — directory segment
+color_orange = "#059669"  # emerald-600  — os/user segment
+color_green  = "#22c55e"  # green-500     — success (semantic)
+color_purple = "#6d28d9"  # violet-700  — vim replace

@@ -79,14 +79,14 @@ bright_white   = "#..."
 
 ### What is a plugin?
 
-A Mado sidebar panel plugin is a binary that Mado spawns and connects to a PTY. Mado handles:
+A Mado sidebar panel plugin is an external binary that Mado spawns and manages. There are two kinds:
 
-- Spawning the process
-- Sizing the PTY to the panel dimensions
-- Forwarding scroll events
-- Resizing when the user drags the panel handle
+| Kind | How it renders |
+|------|---------------|
+| `terminal` | Writes ANSI escape codes to a PTY — any language, crossterm, ratatui, plain ANSI, shell scripts all work |
+| `pixel` | Writes raw RGBA frames to stdout using the Mado frame protocol — full pixel-level control, fonts rendered by the plugin itself |
 
-The plugin just renders to its terminal. Any language, any rendering approach (crossterm, ratatui, plain ANSI, etc.).
+Pixel plugins are better for custom UIs (timers, clipboards, dashboards). Terminal plugins are better for anything that already has a TUI renderer.
 
 ### Built-in panels
 
@@ -96,8 +96,6 @@ These are part of Mado core and are not plugins. They can be toggled on/off in c
 - **Priorities** — reorderable project priority list (driven by Tasku data)
 - **Workspaces** — project switcher and session parking
 
-These three share data and are tightly coupled to Mado's project model, so extracting them as plugins would require a cross-plugin data API that doesn't exist yet.
-
 ### Plugin config
 
 Plugins are declared in `~/.config/mado/config.toml`:
@@ -105,49 +103,209 @@ Plugins are declared in `~/.config/mado/config.toml`:
 ```toml
 [[plugins]]
 id      = "clock"
-command = "mado-clock"
+command = "/Users/you/.config/mado/plugins/clock"
+kind    = "pixel"
+icon    = "\uF017"
 
 [[plugins]]
-id      = "ai"
-command = "mado-ai"
+id      = "notes"
+command = "mado-notes"
+kind    = "terminal"
+icon    = "\uF15C"
 ```
 
-`id` is used to identify the panel in the sidebar. `command` is the binary Mado will spawn — it must be on `$PATH` or an absolute path.
+| Field | Description |
+|-------|-------------|
+| `id` | Unique identifier, shown as the panel title in the sidebar |
+| `command` | Binary to spawn — absolute path or on `$PATH` |
+| `kind` | `"pixel"` or `"terminal"` |
+| `icon` | Nerd Font glyph shown in the sidebar header (e.g. `"\uF017"` = clock) |
 
-### Plugin discovery
+### Plugin configuration files
 
-Known community plugins are listed in `plugins.toml` at the root of the Mado repo. Authors open a PR to add their plugin. Each entry looks like:
+Each plugin can have its own config file at `~/.config/mado/plugins/<id>.toml`. The format is plugin-defined — Mado doesn't read it, the plugin binary loads it directly.
+
+To open a plugin's config in your editor:
+
+```
+mado config <plugin-id>
+```
+
+For example:
+
+```
+mado config clock
+mado config pomodoro
+```
+
+Plain `mado config` still opens the main `config.toml`.
+
+---
+
+## Pixel plugin protocol
+
+Pixel plugins communicate with Mado over stdin/stdout using a binary frame protocol.
+
+### Frames: plugin → Mado (stdout)
+
+#### Pixel frame
+
+Sends a rendered frame. Mado composites it directly into the sidebar panel.
+
+```
+[4 bytes]  magic: b"MADO"
+[4 bytes]  width  as u32 little-endian  (physical pixels)
+[4 bytes]  height as u32 little-endian  (physical pixels)
+[w*h*4 B]  RGBA8 pixel data, row-major, top-to-bottom
+```
+
+#### Action message
+
+Sends an action back to Mado. Currently only `"paste"` is supported — it triggers Mado to paste the current clipboard contents into the focused terminal pane.
+
+```
+[4 bytes]  magic: b"MACT"
+[4 bytes]  JSON length as u32 little-endian
+[N bytes]  UTF-8 JSON
+```
+
+Example:
+
+```json
+{"action": "paste"}
+```
+
+### Events: Mado → plugin (stdin)
+
+Events are newline-delimited JSON written to the plugin's stdin.
+
+#### Resize
+```json
+{"type": "resize", "width": 600, "height": 800}
+```
+Sent on startup and whenever the panel is resized. Width and height are in physical pixels.
+
+#### Click
+```json
+{"type": "click", "x": 42.0, "y": 17.0, "button": "left"}
+```
+
+#### Key
+```json
+{"type": "key", "text": "a", "ctrl": false, "meta": false}
+```
+`text` is the key string (e.g. `"a"`, `"\u{8}"` for backspace, `"\u{1b}"` for escape). `ctrl` and `meta` indicate modifier state.
+
+#### Scroll
+```json
+{"type": "scroll", "delta": -3.0}
+```
+
+#### Focus / Blur
+```json
+{"type": "focus"}
+{"type": "blur"}
+```
+Sent when the plugin panel gains or loses keyboard focus.
+
+### Minimal Rust pixel plugin
+
+```rust
+use std::io::Write;
+
+fn main() {
+    let w: u32 = 300;
+    let h: u32 = 400;
+    let pixels: Vec<u8> = vec![30, 30, 30, 255].repeat((w * h) as usize); // dark grey
+
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::new(stdout.lock());
+
+    loop {
+        out.write_all(b"MADO").unwrap();
+        out.write_all(&w.to_le_bytes()).unwrap();
+        out.write_all(&h.to_le_bytes()).unwrap();
+        out.write_all(&pixels).unwrap();
+        out.flush().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+```
+
+---
+
+## Terminal plugin protocol
+
+Terminal plugins communicate over a PTY. Mado handles:
+
+- Spawning the process with a PTY sized to the panel
+- Forwarding scroll events via `SIGWINCH` and PTY resize
+- Rendering the terminal output into the sidebar panel
+
+The plugin reads `COLUMNS` / `LINES` from the environment, renders ANSI to stdout, and handles resize signals normally.
+
+A working terminal plugin can be a shell script:
+
+```sh
+#!/bin/sh
+while true; do
+  clear
+  date
+  sleep 1
+done
+```
+
+---
+
+## Reference plugins
+
+| Repo | Kind | Description |
+|------|------|-------------|
+| **mado-clock** | pixel | Clock, date, and weather with temperature (°C/°F auto-detected) |
+| **mado-clipboard** | pixel | Clipboard history manager with search and click-to-paste |
+| **mado-pomodoro** | pixel | Pomodoro timer with circular progress, session tracking, and macOS notifications |
+
+### mado-clock config (`~/.config/mado/plugins/clock.toml`)
 
 ```toml
-[[plugins]]
-name        = "mado-clock"
-description = "Clock and weather sidebar panel"
-repo        = "https://github.com/example/mado-clock"
-kind        = "sidebar-panel"
-min_version = "0.1.0"
+# "C" or "F" — leave unset to auto-detect from macOS system preferences
+temperature_unit = "F"
 ```
 
-This gives users a curated, searchable list without requiring any registry infrastructure.
+### mado-pomodoro config (`~/.config/mado/plugins/pomodoro.toml`)
 
-### Reference plugins
+```toml
+work_mins                  = 25
+short_break_mins           = 5
+long_break_mins            = 15
+sessions_before_long_break = 4
+```
 
-Two reference implementations are maintained as separate repos to demonstrate the plugin contract:
+Click anywhere on the timer to start/pause. Click the bottom-right corner to reset.
 
-| Repo | Description | Complexity |
-|------|-------------|------------|
-| **mado-clock** | Time, date, and weather display | Simple — good starting point |
-| **mado-ai** | AI assistant terminal | PTY passthrough, minimal logic |
+---
 
-Start with **mado-clock** if you're building your first plugin. It shows the full shape of a sidebar panel plugin without any PTY complexity beyond rendering.
+## Plugin discovery
 
-### Plugin development
+Known community plugins are listed in the **mado-plugins** registry repo. Authors open a PR to add their plugin. Each entry in `registry.json` looks like:
 
-A plugin only needs to:
+```json
+{
+  "id": "mado-clock",
+  "description": "Clock and weather sidebar panel",
+  "repo": "tomdringer/mado-clock",
+  "kind": "pixel"
+}
+```
 
-1. Render its UI to stdout using ANSI escape codes
-2. Handle `SIGWINCH` to respond to terminal resize events
-3. Read `COLUMNS` / `LINES` env vars (or the initial terminal size) for layout
+Install a plugin from the registry:
 
-There are no Mado-specific APIs, SDKs, or build tools required. A working plugin can be a shell script.
+```
+mado plugin install clock
+```
 
-A `mado-plugin-template` repo will be provided once the plugin contract is stable.
+Or install directly from a GitHub repo (bypasses registry lookup):
+
+```
+mado plugin install tomdringer/mado-clock
+```

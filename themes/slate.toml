@@ -54,3 +54,14 @@ bright_blue    = "#a2caff"
 bright_magenta = "#e3c2ff"
 bright_cyan    = "#a5f7ff"
 bright_white   = "#e8f2ff"
+
+[starship]
+color_fg0    = "#f1f5f9"  # slate-100     — text on all segments
+color_bg1    = "#020617"  # slate-950     — time segment
+color_bg3    = "#0f172a"  # slate-900     — docker segment
+color_blue   = "#1e293b"  # slate-800     — language segment
+color_aqua   = "#0f766e"  # teal-700  — git segment
+color_yellow = "#b45309"  # amber-700  — directory segment
+color_orange = "#475569"  # slate-600  — os/user segment
+color_green  = "#22c55e"  # green-500     — success (semantic)
+color_purple = "#6d28d9"  # violet-700  — vim replace

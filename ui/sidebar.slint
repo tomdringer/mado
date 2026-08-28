@@ -5,10 +5,11 @@
 // Drag the bottom edge of an expanded panel to resize it vertically.
 
 export struct PluginItem {
-    id: string,
-    title: string,
-    subtitle: string,
-    icon: string,
+    id:           string,
+    title:        string,
+    subtitle:     string,
+    icon:         string,
+    plugin-index: int,   // -1 for built-ins; index into [[plugins]] for external
 }
 
 export struct WorkspaceProject {
@@ -21,15 +22,6 @@ export struct PriorityProject {
     name:  string,
     code:  string,
     color: color,
-}
-
-export struct ClockData {
-    time: string,
-    date: string,
-    icon: string,
-    temp: string,
-    desc: string,
-    loc:  string,
 }
 
 // ─── Command button ───────────────────────────────────────────────────────────
@@ -476,105 +468,26 @@ component PrioritiesContent inherits Rectangle {
     }
 }
 
-// ─── Clock / weather panel ────────────────────────────────────────────────────
+// ─── External plugin terminal panel ──────────────────────────────────────────
 //
-// Static display — no PTY, no resize handle.  Rust drives a 10-second timer
-// for time/date and a background thread refreshes weather every 30 minutes.
+// A plain resizable terminal for any external plugin binary.
+// Resize by dragging the pip at the bottom.
 
-component ClockContent inherits Rectangle {
-    in property <ClockData> data;
-
-    background: transparent;
-
-    VerticalLayout {
-        padding: 16px;
-        spacing: 0;
-        alignment: center;
-        width: parent.width;
-        height: parent.height;
-
-        // ── Time ──────────────────────────────────────────────────────────────
-        Text {
-            text: root.data.time;
-            color: rgba(255, 255, 255, 0.92);
-            font-size: 38px;
-            font-weight: 300;
-            letter-spacing: 2px;
-            horizontal-alignment: center;
-        }
-
-        Rectangle { height: 5px; }
-
-        // ── Date ──────────────────────────────────────────────────────────────
-        Text {
-            text: root.data.date;
-            color: rgba(255, 255, 255, 0.35);
-            font-size: 11px;
-            horizontal-alignment: center;
-        }
-
-        Rectangle { height: 16px; }
-
-        // ── Separator ─────────────────────────────────────────────────────────
-        Rectangle {
-            height: 1px;
-            background: rgba(255, 255, 255, 0.07);
-        }
-
-        Rectangle { height: 14px; }
-
-        // ── Weather ───────────────────────────────────────────────────────────
-        HorizontalLayout {
-            alignment: center;
-            spacing: 7px;
-
-            Text {
-                text: root.data.icon;
-                font-size: 20px;
-                vertical-alignment: center;
-            }
-            Text {
-                text: root.data.temp;
-                color: rgba(255, 255, 255, 0.85);
-                font-size: 14px;
-                font-weight: 600;
-                vertical-alignment: center;
-            }
-            Text {
-                text: root.data.desc;
-                color: rgba(255, 255, 255, 0.42);
-                font-size: 11px;
-                vertical-alignment: center;
-            }
-        }
-
-        Rectangle { height: 4px; }
-
-        // ── Location ──────────────────────────────────────────────────────────
-        Text {
-            text: root.data.loc;
-            color: rgba(255, 255, 255, 0.22);
-            font-size: 10px;
-            horizontal-alignment: center;
-        }
-    }
-}
-
-// ─── AI terminal panel ────────────────────────────────────────────────────────
-//
-// A plain resizable terminal — no buttons. Click inside to focus; type directly.
-// Resize by dragging the pip at the bottom, same as the Tasku panel.
-
-component AiContent inherits Rectangle {
+component PluginContent inherits Rectangle {
     in property <image> terminal-image;
+    in property <bool>  is-pixel: false;   // true = pixel plugin, renders full-bleed
     callback resize-start();
-    callback resize-move(float);
+    callback resize-move(float);   // cumulative delta-y from press point (logical px)
     callback resize-end();
     callback key-input(string, bool, bool);  // text, ctrl, meta
     callback scroll(float);                  // scroll-wheel delta-y in logical px
+    callback click(float, float);            // x, y in logical px
+    callback focus-changed(bool);            // true = gained, false = lost
 
     private property <float> press-abs-y: 0;
     background: transparent;
+
+    public function take-focus() { fs.focus(); }
 
     // ── Keyboard focus scope ──────────────────────────────────────────────────
     fs := FocusScope {
@@ -586,10 +499,13 @@ component AiContent inherits Rectangle {
             root.key-input(e.text, e.modifiers.control, e.modifiers.meta);
             accept
         }
+        changed has-focus => {
+            if (root.is-pixel) { root.focus-changed(self.has-focus); }
+        }
     }
 
     // ── Terminal display ──────────────────────────────────────────────────────
-    Rectangle {
+    if !root.is-pixel: Rectangle {
         x: 8px; y: 8px;
         width: parent.width - 16px;
         height: parent.height - 16px;
@@ -616,6 +532,34 @@ component AiContent inherits Rectangle {
             width: parent.width; height: parent.height;
             mouse-cursor: MouseCursor.text;
             clicked => { fs.focus(); }
+            scroll-event(e) => {
+                root.scroll(e.delta-y / 1px);
+                accept
+            }
+        }
+    }
+
+    // ── Pixel plugin display (full-bleed, no terminal chrome) ─────────────────
+    if root.is-pixel: Rectangle {
+        x: 0; y: 0;
+        width: parent.width;
+        height: parent.height - 8px;
+        clip: true;
+
+        if root.terminal-image.width > 0: Image {
+            x: 0; y: 0;
+            width: parent.width;
+            height: parent.height;
+            source: root.terminal-image;
+            image-fit: fill;
+        }
+
+        TouchArea {
+            width: parent.width; height: parent.height;
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.down) { root.take-focus(); }
+            }
+            clicked => { root.click(self.mouse-x / 1px, self.mouse-y / 1px); }
             scroll-event(e) => {
                 root.scroll(e.delta-y / 1px);
                 accept
@@ -747,44 +691,34 @@ component PluginRowHeader inherits Rectangle {
 
             // ── Icon ──────────────────────────────────────────────────────────
             Rectangle {
-                width: 24px; height: parent.height;
+                width: 38px; height: parent.height;
                 Text {
                     text: root.item.icon;
                     color: rgba(255,255,255,0.45);
                     font-family: "Hack Nerd Font";
-                    font-size: 18px;
+                    font-size: 22px;
                     horizontal-alignment: center; vertical-alignment: center;
                     width: parent.width; height: parent.height;
                 }
             }
 
-            // ── Title + subtitle (click to expand/collapse) ───────────────────
+            // ── Title (click to expand/collapse) ─────────────────────────────
             body-ta := TouchArea {
                 horizontal-stretch: 1;
                 height: root.row-h * 1px;
                 mouse-cursor: MouseCursor.pointer;
                 clicked => { root.toggled(); }
 
-                VerticalLayout {
-                    width: parent.width;
-                    padding-left: 10px; padding-right: 4px;
-                    alignment: center; spacing: 2px;
-
-                    Text {
-                        text: root.item.title;
-                        color: rgba(255,255,255,0.80);
-                        font-family: "SF Pro Text";
-                        font-size: 18px; font-weight: 700;
-                        letter-spacing: 0.4px;
-                        overflow: elide;
-                    }
-                    Text {
-                        text: root.item.subtitle;
-                        color: rgba(255,255,255,0.28);
-                        font-family: "SF Pro Text";
-                        font-size: 10px;
-                        overflow: elide;
-                    }
+                Text {
+                    text: root.item.title;
+                    color: rgba(255,255,255,0.80);
+                    font-family: "SF Pro Text";
+                    font-size: 18px; font-weight: 700;
+                    letter-spacing: 0.4px;
+                    overflow: elide;
+                    vertical-alignment: center;
+                    padding-left: 18px; padding-right: 4px;
+                    width: parent.width; height: parent.height;
                 }
             }
 
@@ -817,71 +751,69 @@ export component Sidebar inherits Rectangle {
 
     in-out property <[PluginItem]> plugins;
     in property <image> tasku-terminal-image;
-    in property <image> ai-terminal-image;
     in property <[WorkspaceProject]> ws-projects;
     in property <string> active-project;
     in property <[PriorityProject]> priority-projects;
-    in property <ClockData>         clock-data;
 
-    callback plugin-reordered(int, int);          // from-index, to-index
-    callback tasku-toggled(bool);                 // true = expanded
-    callback tasku-command(string);               // button label → CLI command
-    callback tasku-key-input(string, bool, bool); // text, ctrl, meta
-    callback tasku-panel-height-changed(float);   // notifies Rust to resize PTY
-    callback tasku-scroll(float);                  // scroll-wheel delta-y on terminal
-    callback workspace-selected(string);          // project code clicked
-    callback priority-reordered(int, int);        // priority drag-to-reorder
-    callback ai-toggled(bool);                    // true = expanded
-    callback ai-panel-height-changed(float);      // notifies Rust to resize PTY
-    callback ai-key-input(string, bool, bool);    // text, ctrl, meta
-    callback ai-scroll(float);                    // scroll-wheel delta-y on terminal
+    // ── External plugin data (parallel arrays, one entry per [[plugins]] item) ─
+    in property <[image]>  plugin-images;
+    in property <[bool]>   plugin-pixel;   // true = pixel protocol, false = PTY terminal
+    in-out property <[bool]>  plugin-expanded;
+    in-out property <[float]> plugin-panel-h;
+    // True when any external plugin panel is open (drives drag-lock like built-ins).
+    in property <bool> plugin-any-expanded: false;
+    // Sum of open external plugin panel heights, in logical px. Rust keeps this
+    // updated so total-content-h stays correct without a fold in Slint.
+    in property <float> external-plugins-total-h: 0;
+
+    callback plugin-reordered(int, int);            // from-index, to-index
+    callback tasku-toggled(bool);                   // true = expanded
+    callback tasku-command(string);                 // button label → CLI command
+    callback tasku-key-input(string, bool, bool);   // text, ctrl, meta
+    callback tasku-panel-height-changed(float);     // notifies Rust to resize PTY
+    callback tasku-scroll(float);                   // scroll-wheel delta-y on terminal
+    callback workspace-selected(string);            // project code clicked
+    callback priority-reordered(int, int);          // priority drag-to-reorder
+    callback plugin-toggled(int);                   // plugin-index toggled (Rust updates plugin-expanded)
+    callback plugin-panel-height-changed(int, float); // plugin-index, new height
+    callback plugin-key-input(int, string, bool, bool); // plugin-index, text, ctrl, meta
+    callback plugin-scroll(int, float);             // plugin-index, scroll delta-y
+    callback plugin-click(int, float, float);       // plugin-index, x, y
+    callback plugin-focus-changed(int, bool);       // plugin-index, focused
 
     // ── Drag state ────────────────────────────────────────────────────────────
     private property <int>   drag-index: -1;
     private property <float> drag-y: 0;
     private property <float> row-h: 52;
 
-    // ── Per-plugin expanded state ─────────────────────────────────────────────
-    // Each plugin can be open independently — multiple panels visible at once.
+    // ── Per-built-in expanded state ───────────────────────────────────────────
     private property <bool> tasku-expanded:      false;
-    private property <bool> ai-expanded:         false;
-    private property <bool> clock-expanded:      false;
     private property <bool> workspaces-expanded: false;
     private property <bool> priorities-expanded: false;
 
-    // True when at least one panel is open (drag-reorder is disabled in this state).
+    // True when at least one panel (built-in or external) is open.
     private property <bool> any-expanded:
-        root.tasku-expanded || root.ai-expanded || root.clock-expanded
-        || root.workspaces-expanded || root.priorities-expanded;
+        root.tasku-expanded || root.workspaces-expanded || root.priorities-expanded
+        || root.plugin-any-expanded;
 
     // ── Tasku panel resize state ──────────────────────────────────────────────
-    // tasku-panel-h: current panel height (user can drag to resize).
-    // tasku-press-h: panel height captured at the start of a resize drag.
     private property <length> tasku-panel-h: 400px;
     private property <length> tasku-press-h: 0px;
 
-    // ── AI panel resize state ─────────────────────────────────────────────────
-    private property <length> ai-panel-h: 300px;
-    private property <length> ai-press-h: 0px;
+    // ── External plugin resize tracking ──────────────────────────────────────
+    // Only one plugin can be resized at a time; track which one and its press height.
+    private property <int>   plugin-resize-index: -1;
+    private property <float> plugin-resize-press-h: 0;
 
     // ── Workspaces panel height ───────────────────────────────────────────────
-    // Computed from project count + tile geometry so the Flickable viewport
-    // knows the full content height without needing a preferred-height query.
     private property <length> ws-tile-w: (root.width - 28px) / 3;
-    // ceil(n / 3) via float: floor((n + 2) / 3)
     private property <float>  ws-rows:   floor((root.ws-projects.length + 2) / 3);
     private property <length> ws-panel-h:
         root.ws-projects.length == 0
         ? 60px
         : 16px + root.ws-rows * root.ws-tile-w + max(root.ws-rows - 1, 0) * 6px;
 
-    // ── Clock panel height ────────────────────────────────────────────────────
-    // Fixed — layout is deterministic, no resize handle needed.
-    private property <length> clock-panel-h: 178px;
-
     // ── Priorities panel height ───────────────────────────────────────────────
-    // Each row is 36px; clamp to 300px max and rely on the internal Flickable
-    // for scrolling when there are many projects.
     private property <float>  prio-count: root.priority-projects.length;
     private property <length> prio-panel-h:
         root.prio-count == 0
@@ -895,21 +827,16 @@ export component Sidebar inherits Rectangle {
     }
 
     // Total viewport height: sum of all row headers + all expanded panel heights.
-    // Computed explicitly because Slint's preferred-height on a VerticalLayout
-    // inside a Flickable is clamped to the visible area, not the natural content.
     private property <length> total-content-h:
         root.plugins.length * root.row-h * 1px
         + (root.tasku-expanded      ? root.tasku-panel-h  : 0px)
-        + (root.ai-expanded         ? root.ai-panel-h     : 0px)
-        + (root.clock-expanded      ? root.clock-panel-h  : 0px)
         + (root.workspaces-expanded ? root.ws-panel-h     : 0px)
         + (root.priorities-expanded ? root.prio-panel-h   : 0px)
-        + 16px                                                       // 8px top + 8px bottom padding
-        + max(root.plugins.length - 1, 0) * 6px;                    // 6px gap between cards
+        + root.external-plugins-total-h * 1px
+        + 16px                                             // 8px top + 8px bottom padding
+        + max(root.plugins.length - 1, 0) * 6px;          // 6px gap between cards
 
     // ── Flickable plugin list ─────────────────────────────────────────────────
-    // Flickable is Slint's native scroll primitive; it handles mouse-wheel and
-    // trackpad gestures without the ScrollView wrapper that was causing issues.
     flickable := Flickable {
         x: 0; y: 0;
         width: parent.width - 1px;
@@ -930,11 +857,11 @@ export component Sidebar inherits Rectangle {
                 border-color: root.theme-card-border;
                 clip: true;
                 height: root.row-h * 1px
-                    + (item.id == "tasku"      && root.tasku-expanded      ? root.tasku-panel-h  : 0px)
-                    + (item.id == "ai"         && root.ai-expanded         ? root.ai-panel-h     : 0px)
-                    + (item.id == "clock"      && root.clock-expanded      ? root.clock-panel-h  : 0px)
-                    + (item.id == "workspaces" && root.workspaces-expanded ? root.ws-panel-h     : 0px)
-                    + (item.id == "priorities" && root.priorities-expanded ? root.prio-panel-h   : 0px);
+                    + (item.id == "tasku"      && root.tasku-expanded      ? root.tasku-panel-h : 0px)
+                    + (item.id == "workspaces" && root.workspaces-expanded ? root.ws-panel-h    : 0px)
+                    + (item.id == "priorities" && root.priorities-expanded ? root.prio-panel-h  : 0px)
+                    + (item.plugin-index >= 0  && root.plugin-expanded[item.plugin-index]
+                       ? root.plugin-panel-h[item.plugin-index] * 1px : 0px);
 
                 VerticalLayout {
                 width: parent.width;
@@ -947,10 +874,9 @@ export component Sidebar inherits Rectangle {
                     row-h: root.row-h;
                     theme-focus-border: root.theme-focus-border;
                     expanded: item.id == "tasku"       ? root.tasku-expanded      :
-                              item.id == "ai"          ? root.ai-expanded         :
-                              item.id == "clock"       ? root.clock-expanded      :
                               item.id == "workspaces"  ? root.workspaces-expanded :
-                              item.id == "priorities"  ? root.priorities-expanded : false;
+                              item.id == "priorities"  ? root.priorities-expanded :
+                              item.plugin-index >= 0   ? root.plugin-expanded[item.plugin-index] : false;
                     is-dragging: root.drag-index == i;
                     show-drag-handle: !root.any-expanded;
                     show-drop-indicator:
@@ -969,23 +895,14 @@ export component Sidebar inherits Rectangle {
                                 root.tasku-toggled(true);
                             }
                         }
-                        if (item.id == "ai") {
-                            if (root.ai-expanded) {
-                                root.ai-expanded = false;
-                                root.ai-toggled(false);
-                            } else {
-                                root.ai-expanded = true;
-                                root.ai-toggled(true);
-                            }
-                        }
-                        if (item.id == "clock") {
-                            root.clock-expanded = root.clock-expanded ? false : true;
-                        }
                         if (item.id == "workspaces") {
                             root.workspaces-expanded = root.workspaces-expanded ? false : true;
                         }
                         if (item.id == "priorities") {
                             root.priorities-expanded = root.priorities-expanded ? false : true;
+                        }
+                        if (item.plugin-index >= 0) {
+                            root.plugin-toggled(item.plugin-index);
                         }
                     }
                     drag-start(idx, y) => { root.drag-index = idx; root.drag-y = y; }
@@ -1022,32 +939,6 @@ export component Sidebar inherits Rectangle {
                         );
                         root.tasku-panel-height-changed(root.tasku-panel-h / 1px);
                     }
-                    resize-end => { /* final size already set on last resize-move */ }
-                }
-
-                if item.id == "clock" && root.clock-expanded: ClockContent {
-                    width: parent.width;
-                    height: root.clock-panel-h;
-                    data: root.clock-data;
-                }
-
-                if item.id == "ai" && root.ai-expanded: AiContent {
-                    width: parent.width;
-                    height: root.ai-panel-h;
-                    terminal-image: root.ai-terminal-image;
-                    key-input(text, ctrl, meta) => { root.ai-key-input(text, ctrl, meta); }
-                    scroll(delta) => { root.ai-scroll(delta); }
-                    resize-start => {
-                        root.ai-press-h = root.ai-panel-h;
-                    }
-                    resize-move(delta) => {
-                        root.ai-panel-h = clamp(
-                            root.ai-press-h + delta * 1px,
-                            100px,
-                            1400px
-                        );
-                        root.ai-panel-height-changed(root.ai-panel-h / 1px);
-                    }
                     resize-end => { }
                 }
 
@@ -1065,6 +956,32 @@ export component Sidebar inherits Rectangle {
                     projects: root.priority-projects;
                     theme-focus-border: root.theme-focus-border;
                     reordered(from, to) => { root.priority-reordered(from, to); }
+                }
+
+                if item.plugin-index >= 0 && root.plugin-expanded[item.plugin-index]: PluginContent {
+                    width: parent.width;
+                    height: root.plugin-panel-h[item.plugin-index] * 1px;
+                    terminal-image: root.plugin-images[item.plugin-index];
+                    is-pixel: root.plugin-pixel[item.plugin-index];
+                    key-input(text, ctrl, meta) => {
+                        root.plugin-key-input(item.plugin-index, text, ctrl, meta);
+                    }
+                    scroll(delta) => { root.plugin-scroll(item.plugin-index, delta); }
+                    click(x, y) => { root.plugin-click(item.plugin-index, x, y); }
+                    focus-changed(focused) => { root.plugin-focus-changed(item.plugin-index, focused); }
+                    resize-start => {
+                        root.plugin-resize-index   = item.plugin-index;
+                        root.plugin-resize-press-h = root.plugin-panel-h[item.plugin-index];
+                    }
+                    resize-move(delta) => {
+                        root.plugin-panel-height-changed(
+                            item.plugin-index,
+                            clamp(root.plugin-resize-press-h + delta, 100, 1400)
+                        );
+                    }
+                    resize-end => {
+                        root.plugin-resize-index = -1;
+                    }
                 }
                 }  // end inner VerticalLayout
             }  // end card Rectangle

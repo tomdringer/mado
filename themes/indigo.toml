@@ -54,3 +54,14 @@ bright_blue    = "#a2caff"
 bright_magenta = "#e3c2ff"
 bright_cyan    = "#a5f7ff"
 bright_white   = "#e8f2ff"
+
+[starship]
+color_fg0    = "#e0e7ff"  # indigo-100     — text on all segments
+color_bg1    = "#1e1b4b"  # indigo-950     — time segment
+color_bg3    = "#312e81"  # indigo-900     — docker segment
+color_blue   = "#3730a3"  # indigo-800     — language segment
+color_aqua   = "#0f766e"  # teal-700  — git segment
+color_yellow = "#b45309"  # amber-700  — directory segment
+color_orange = "#4f46e5"  # indigo-600  — os/user segment
+color_green  = "#22c55e"  # green-500     — success (semantic)
+color_purple = "#be123c"  # rose-700  — vim replace
