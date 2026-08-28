@@ -192,8 +192,14 @@ pub fn fetch_projects(tasku_path: &str) -> Vec<FetchedProject> {
                 AND t.code IS NOT NULL AND t.code != '' LIMIT 1) AS proj_code \
                FROM projects p ORDER BY p.name";
 
-    let out = Command::new(tasku_path)
-        .args(["sql", sql])
+    // Run via login shell so asdf/homebrew shims resolve correctly when Mado
+    // launches as a .app bundle without the user's shell PATH.
+    let shell_cmd = format!("{} sql '{}'",
+        tasku_path.replace('\'', "'\\''"),
+        sql.replace('\'', "'\\''"),
+    );
+    let out = Command::new("/bin/sh")
+        .args(["-lc", &shell_cmd])
         .output();
 
     match out {

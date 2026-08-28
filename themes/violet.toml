@@ -54,3 +54,14 @@ bright_blue    = "#a2caff"
 bright_magenta = "#e3c2ff"
 bright_cyan    = "#a5f7ff"
 bright_white   = "#e8f2ff"
+
+[starship]
+color_fg0    = "#ede9fe"  # violet-100     — text on all segments
+color_bg1    = "#2e1065"  # violet-950     — time segment
+color_bg3    = "#4c1d95"  # violet-900     — docker segment
+color_blue   = "#5b21b6"  # violet-800     — language segment
+color_aqua   = "#0f766e"  # teal-700  — git segment
+color_yellow = "#b45309"  # amber-700  — directory segment
+color_orange = "#7c3aed"  # violet-600  — os/user segment
+color_green  = "#22c55e"  # green-500     — success (semantic)
+color_purple = "#be123c"  # rose-700  — vim replace

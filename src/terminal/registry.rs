@@ -69,6 +69,25 @@ impl TerminalRegistry {
         self.sessions.insert(id, session);
     }
 
+    /// Spawn an arbitrary program+args at `id` with optional extra env vars.
+    pub fn spawn_cmd(&mut self, id: NodeId, logical_w: f32, logical_h: f32,
+                     program: &str, args: &[&str], cwd: Option<&str>,
+                     extra_env: &[(&str, &str)]) {
+        let (cols, rows) = self.logical_to_cells(logical_w, logical_h);
+        let session = PtySession::spawn_cmd(cols as u16, rows as u16, program, args, cwd, extra_env);
+        self.sessions.insert(id, session);
+    }
+
+    /// Spawn the shell with `banner` already in the terminal state before the
+    /// reader thread starts — guaranteed to appear before any shell output.
+    pub fn spawn_with_banner(&mut self, id: NodeId, logical_w: f32, logical_h: f32,
+                              cwd: Option<&str>, banner: &[u8]) {
+        let (cols, rows) = self.logical_to_cells(logical_w, logical_h);
+        let session = PtySession::spawn_with_banner(
+            cols as u16, rows as u16, &self.shell.clone(), cwd, banner);
+        self.sessions.insert(id, session);
+    }
+
     /// Return the working directory for a session.
     /// Prefers OSC 7 (accurate for nested shells / ssh).
     /// Falls back to querying the shell process's cwd via lsof when OSC 7
@@ -169,6 +188,21 @@ impl TerminalRegistry {
         }
     }
 
+    /// Inject raw bytes (ANSI sequences, text) directly into a session's
+    /// terminal state, bypassing the PTY. Used for the welcome banner.
+    pub fn inject_bytes(&self, id: NodeId, data: &[u8]) {
+        if let Some(sess) = self.sessions.get(&id) {
+            sess.inject_bytes(data);
+        }
+    }
+
+    /// Return the current column count for a session (defaults to 80).
+    pub fn cols(&self, id: NodeId) -> usize {
+        self.sessions.get(&id)
+            .and_then(|s| s.state.lock().ok().map(|st| st.cols))
+            .unwrap_or(80)
+    }
+
     /// Force the session for `id` to re-render on the next timer tick.
     pub fn mark_dirty(&self, id: NodeId) {
         if let Some(sess) = self.sessions.get(&id) {
@@ -251,6 +285,12 @@ impl TerminalRegistry {
                 }
             })
             .collect()
+    }
+
+    /// Estimate the terminal column count for a given logical pane width.
+    pub fn logical_to_cols(&self, logical_w: f32) -> usize {
+        let phys_w = (logical_w * self.scale) as usize;
+        (phys_w / self.font.cell_w.max(1)).max(1)
     }
 
     /// Convert logical pixel dimensions to terminal cols/rows using physical cell size.

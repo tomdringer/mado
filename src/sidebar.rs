@@ -1,7 +1,8 @@
 // ─── Sidebar plugin system ────────────────────────────────────────────────────
 //
-// The only plugin that ships with Mado is Tasku. Additional plugins can be
-// installed by the user into ~/.mado/plugins/ (future work).
+// Built-in panels: Tasku, Priorities, Workspaces (can be disabled in config).
+// External panels: any binary listed under [[plugins]] in config.toml —
+//   spawned as a PTY, sized to the panel, receives SIGWINCH on resize.
 
 // ─── Sidebar runtime state ────────────────────────────────────────────────────
 
@@ -12,28 +13,33 @@ pub struct SidebarState {
     pub tasku_path: Option<String>,
     /// Current sidebar width in logical pixels.
     pub width: f32,
-    /// Current Tasku panel height in logical pixels (full panel, not just terminal).
-    /// Kept in sync with the Slint `tasku-panel-h` property so that
-    /// `on_sidebar_width_changed` can pass the correct terminal height to the PTY.
+    /// Current Tasku panel height in logical pixels.
     pub tasku_panel_h: f32,
-    /// Current AI panel height in logical pixels. Same sync contract as tasku_panel_h.
-    pub ai_panel_h: f32,
+    /// External plugins from config (ordered by config position).
+    pub ext_plugins: Vec<crate::config::PluginConfig>,
 }
 
 impl SidebarState {
-    pub fn new(width: f32, tasku_path: Option<String>) -> Self {
+    pub fn new(
+        width: f32,
+        tasku_path: Option<String>,
+        ext_plugins: Vec<crate::config::PluginConfig>,
+        disable_tasku: bool,
+        disable_priorities: bool,
+        disable_workspaces: bool,
+    ) -> Self {
+        let mut order: Vec<String> = Vec::new();
+        if !disable_tasku      { order.push("tasku".to_string()); }
+        if !disable_priorities { order.push("priorities".to_string()); }
+        if !disable_workspaces { order.push("workspaces".to_string()); }
+        for p in &ext_plugins  { order.push(p.id.clone()); }
+
         Self {
-            plugin_order: vec![
-                "tasku".to_string(),
-                "ai".to_string(),
-                "clock".to_string(),
-                "priorities".to_string(),
-                "workspaces".to_string(),
-            ],
+            plugin_order: order,
             tasku_path,
             width,
             tasku_panel_h: crate::DEFAULT_TASKU_PANEL_H,
-            ai_panel_h:    crate::DEFAULT_AI_PANEL_H,
+            ext_plugins,
         }
     }
 
@@ -54,7 +60,6 @@ impl SidebarState {
     }
 
     /// Reorder: move the plugin at `from` to position `to` (insert-before semantics).
-    /// No-op if indices are out of range or equivalent.
     pub fn reorder(&mut self, from: usize, to: usize) {
         let len = self.plugin_order.len();
         if from >= len { return; }
@@ -65,46 +70,55 @@ impl SidebarState {
         self.plugin_order.insert(effective_to, item);
     }
 
-    /// Produce ordered `(id, title, subtitle, icon)` tuples for the Slint plugin model.
-    pub fn ordered_items(&self) -> Vec<(&'static str, &'static str, String, &'static str)> {
-        self.plugin_order
-            .iter()
-            .filter_map(|id| match id.as_str() {
-                "tasku" => Some((
-                    "tasku",
-                    "TASKU",
-                    match &self.tasku_path {
-                        Some(p) => p.clone(),
-                        None    => String::from("not found — install tasku"),
-                    },
-                    "\u{F0AE}",  // nf-fa-tasks
-                )),
-                "ai" => Some((
-                    "ai",
-                    "AI",
-                    String::from("terminal client"),
-                    "\u{EB03}",  // nf-cod-hubot
-                )),
-                "clock" => Some((
-                    "clock",
-                    "CLOCK",
-                    String::from("time · date · weather"),
-                    "\u{F017}",  // nf-fa-clock_o
-                )),
-                "priorities" => Some((
-                    "priorities",
-                    "PRIORITIES",
-                    String::from("drag to rank"),
-                    "\u{F005}",  // nf-fa-star
-                )),
-                "workspaces" => Some((
-                    "workspaces",
-                    "WORKSPACES",
-                    String::from("terminal layouts"),
-                    "\u{EB20}",  // nf-cod-dashboard
-                )),
-                _ => None,
-            })
-            .collect()
+    /// Produce ordered `(id, title, subtitle, icon, plugin_index)` tuples for the
+    /// Slint plugin model. `plugin_index` is -1 for built-ins; for external plugins
+    /// it is the index into `self.ext_plugins`.
+    pub fn ordered_items(&self) -> Vec<(String, String, String, String, i32)> {
+        self.plugin_order.iter().filter_map(|id| match id.as_str() {
+            "tasku" => Some((
+                "tasku".to_string(),
+                "TASKU".to_string(),
+                match &self.tasku_path {
+                    Some(p) => p.clone(),
+                    None    => "not found — install tasku".to_string(),
+                },
+                "\u{F0AE}".to_string(),  // nf-fa-tasks
+                -1i32,
+            )),
+            "priorities" => Some((
+                "priorities".to_string(),
+                "PRIORITIES".to_string(),
+                "drag to rank".to_string(),
+                "\u{F005}".to_string(),  // nf-fa-star
+                -1i32,
+            )),
+            "workspaces" => Some((
+                "workspaces".to_string(),
+                "WORKSPACES".to_string(),
+                "terminal layouts".to_string(),
+                "\u{EB20}".to_string(),  // nf-cod-dashboard
+                -1i32,
+            )),
+            id => {
+                // Look up in ext_plugins by id
+                if let Some(pos) = self.ext_plugins.iter().position(|p| p.id == id) {
+                    let p = &self.ext_plugins[pos];
+                    let icon = if p.icon.is_empty() {
+                        "\u{F489}".to_string()  // nf-fa-terminal (default)
+                    } else {
+                        p.icon.clone()
+                    };
+                    Some((
+                        p.id.clone(),
+                        p.id.to_uppercase(),
+                        p.command.clone(),
+                        icon,
+                        pos as i32,
+                    ))
+                } else {
+                    None
+                }
+            }
+        }).collect()
     }
 }

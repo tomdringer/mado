@@ -1,6 +1,6 @@
-mod clock;
 mod config;
 mod pane_tree;
+mod pixel_plugin;
 mod sidebar;
 mod tasku;
 mod terminal;
@@ -16,6 +16,7 @@ use std::collections::HashMap;
 
 use config::Config;
 use pane_tree::{FlatDividerData, NodeId, SplitDir};
+use pixel_plugin::PixelPlugin;
 use sidebar::SidebarState;
 use tasku::detect as detect_tasku;
 use terminal::TerminalRegistry;
@@ -23,13 +24,15 @@ use slint::{Image, Model, ModelRc, Timer, TimerMode, VecModel};
 
 // Special NodeIds for sidebar terminals — must not collide with pane IDs.
 // Pane IDs are allocated sequentially from the PaneTree counter; u32::MAX
-// and u32::MAX-1 are safe sentinels.
+// is a safe sentinel. External plugin IDs count down from u32::MAX - 1.
 const SIDEBAR_TASKU_ID: NodeId = u32::MAX;
-const SIDEBAR_AI_ID:    NodeId = u32::MAX - 1;
+
+/// NodeId for external plugin at index `i`.
+fn plugin_node_id(i: usize) -> NodeId { u32::MAX - 1 - i as u32 }
 
 // Default panel heights (match sidebar.slint initial values).
-pub const DEFAULT_TASKU_PANEL_H: f32 = 400.0;
-pub const DEFAULT_AI_PANEL_H:    f32 = 300.0;
+pub const DEFAULT_TASKU_PANEL_H:  f32 = 400.0;
+pub const DEFAULT_PLUGIN_PANEL_H: f32 = 300.0;
 
 // Space consumed by toolbar + margins (must match pane_view.slint).
 // 5px top gap + 28px toolbar = 33px before terminal image.
@@ -48,17 +51,17 @@ const PANE_H_INSET:   f32 = 40.0;
 //   total fixed:           162 px
 const TASKU_PANEL_FIXED_H: f32 = 162.0;
 
-// Fixed height of the AI panel: top padding (8 px) + resize handle (8 px).
-const AI_PANEL_FIXED_H: f32 = 16.0;
+// Fixed height of external plugin panel: top+bottom padding (8 px each) + resize handle (8 px).
+const PLUGIN_PANEL_FIXED_H: f32 = 16.0;
 
 /// Terminal rect height inside the Tasku panel.
 fn tasku_terminal_h(panel_h: f32) -> f32 {
     (panel_h - TASKU_PANEL_FIXED_H).max(50.0)
 }
 
-/// Terminal rect height inside the AI panel.
-fn ai_terminal_h(panel_h: f32) -> f32 {
-    (panel_h - AI_PANEL_FIXED_H).max(50.0)
+/// Terminal rect height inside an external plugin panel.
+fn plugin_terminal_h(panel_h: f32) -> f32 {
+    (panel_h - PLUGIN_PANEL_FIXED_H).max(50.0)
 }
 
 slint::include_modules!();
@@ -257,20 +260,200 @@ fn do_zoom(
     push_images(pane_model, &images.borrow(), *focused_id.borrow(), None);
 }
 
+// ── First-launch welcome ──────────────────────────────────────────────────────
+
+/// Write ~/.config/mado/starship.toml with theme colours and point STARSHIP_CONFIG at it.
+/// Reads the user's existing ~/.config/starship.toml, strips its palette block, injects a
+/// Mado-themed palette with the same colour role names, so format/segments are unchanged.
+fn apply_starship_theme(t: &theme::Theme) {
+    let home = match std::env::var("HOME") { Ok(h) => h, Err(_) => return };
+    let dir      = std::path::PathBuf::from(&home).join(".config").join("mado");
+    let out_path = dir.join("starship.toml");
+    let _ = std::fs::create_dir_all(&dir);
+
+    // Read the user's config (fall back to empty string — Starship will use defaults).
+    let user_path = std::path::PathBuf::from(&home).join(".config").join("starship.toml");
+    let source = std::fs::read_to_string(&user_path).unwrap_or_default();
+
+    // Discover the active palette name (single or double quoted).
+    let palette_name = source.lines()
+        .find(|l| l.trim_start().starts_with("palette") && l.contains('='))
+        .and_then(|l| {
+            let after = l.splitn(2, '=').nth(1)?.trim();
+            let q = after.chars().next()?;
+            if q == '\'' || q == '"' {
+                after[1..].split(q).next().map(str::to_string)
+            } else { None }
+        })
+        .unwrap_or_default();
+
+    let hex = |c: [u8; 3]| format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]);
+    let sp = &t.starship;
+
+    // Strip existing palette declaration + block from user config.
+    let mut out = String::new();
+    let mut skip = false;
+    let old_block_header = if palette_name.is_empty() {
+        String::new()
+    } else {
+        format!("[palettes.{}]", palette_name)
+    };
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        // Skip the "palette = '...'" line (we inject our own at the top).
+        if trimmed.starts_with("palette") && trimmed.contains('=')
+            && !trimmed.starts_with("[palettes")
+        {
+            continue;
+        }
+        // Start skipping when we hit the old palette block.
+        if !old_block_header.is_empty() && trimmed == old_block_header {
+            skip = true;
+            continue;
+        }
+        // Stop skipping at the next top-level section.
+        if skip && trimmed.starts_with('[') {
+            skip = false;
+        }
+        if !skip {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+
+    // palette = 'mado' must appear before any module config so Starship finds it.
+    // [palettes.mado] goes at the END so its keys don't absorb the user's config.
+    let palette_block = format!(
+        "\n# Managed by Mado — edit your theme to change colours\n\
+         # Disable: set theme_starship = false in ~/.config/mado/config.toml\n\
+         [palettes.mado]\n\
+         color_fg0    = '{fg0}'   # text on every segment\n\
+         color_bg1    = '{bg1}'   # time segment (darkest)\n\
+         color_bg3    = '{bg3}'   # docker/conda segment\n\
+         color_blue   = '{blue}'  # language segment\n\
+         color_aqua   = '{aqua}'  # git segment\n\
+         color_yellow = '{yellow}'# directory segment\n\
+         color_orange = '{orange}'# os/user segment (brightest)\n\
+         color_green  = '{green}' # success prompt\n\
+         color_red    = '#CC241D' # error prompt (kept semantic)\n\
+         color_purple = '{purple}'# vim replace mode\n",
+        fg0    = hex(sp.color_fg0),
+        bg1    = hex(sp.color_bg1),
+        bg3    = hex(sp.color_bg3),
+        blue   = hex(sp.color_blue),
+        aqua   = hex(sp.color_aqua),
+        yellow = hex(sp.color_yellow),
+        orange = hex(sp.color_orange),
+        green  = hex(sp.color_green),
+        purple = hex(sp.color_purple),
+    );
+
+    let final_toml = format!("palette = 'mado'\n{out}{palette_block}");
+
+    match std::fs::write(&out_path, &final_toml) {
+        Ok(_) => {
+            eprintln!("mado: starship theme written to {}", out_path.display());
+            // Safe: single-threaded at this point (called before any threads are spawned).
+            unsafe { std::env::set_var("STARSHIP_CONFIG", &out_path); }
+        }
+        Err(e) => eprintln!("mado: failed to write starship theme: {e}"),
+    }
+}
+
+/// Build the welcome banner as raw bytes ready to inject into a TerminalState.
+/// `cols` is the terminal width so the block can be centred.
+fn welcome_banner(cols: usize, t: &theme::Theme) -> Vec<u8> {
+    let [br, bg, bb] = t.welcome_border;
+    let [mr, mg, mb] = t.welcome_muted;
+    let [dr, dg, db] = t.welcome_dim;
+    let red   = format!("\x1b[38;2;{br};{bg};{bb}m");
+    let muted = format!("\x1b[38;2;{mr};{mg};{mb}m");
+    let dim   = format!("\x1b[38;2;{dr};{dg};{db}m");
+    let red   = red.as_str();
+    let muted = muted.as_str();
+    let dim   = dim.as_str();
+    let reset = "\x1b[0m";
+
+    // Logo lines are exactly 36 visible chars wide.
+    // Box layout: ║ + space + 36 content + space + ║ = 40 total.
+    const CONTENT_W: usize = 36;
+    const BOX_W:     usize = CONTENT_W + 4; // 2 border + 2 padding chars
+    let pad = " ".repeat((cols.saturating_sub(BOX_W)) / 2);
+
+    // Helper: pad a content line to CONTENT_W then close with the right border.
+    // Total per row: ║(1) + sp(1) + content + padding + sp(1) + ║(1) = BOX_W.
+    let row = |line: &str, visible_len: usize| -> String {
+        let spaces = CONTENT_W.saturating_sub(visible_len);
+        format!("{pad}{red}║{reset} {line}{} {red}║{reset}\r\n",
+                " ".repeat(spaces))
+    };
+
+    let inner  = BOX_W - 2; // space between the two border chars
+    let top    = format!("{pad}{red}╔{}╗{reset}\r\n", "═".repeat(inner));
+    let spacer = format!("{pad}{red}║{}║{reset}\r\n", " ".repeat(inner));
+    let bot    = format!("{pad}{red}╚{}╝{reset}\r\n", "═".repeat(inner));
+
+    // Logo lines (each exactly 37 visible chars — trailing space makes 38).
+    let logo = [
+        "███╗   ███╗ █████╗ ██████╗  ██████╗ ",
+        "████╗ ████║██╔══██╗██╔══██╗██╔═══██╗",
+        "██╔████╔██║███████║██║  ██║██║   ██║",
+        "██║╚██╔╝██║██╔══██║██║  ██║██║   ██║",
+        "██║ ╚═╝ ██║██║  ██║██████╔╝╚██████╔╝",
+        "╚═╝     ╚═╝╚═╝  ╚═╝╚═════╝  ╚═════╝ ",
+    ];
+    let logo_rows: String = logo.iter()
+        .map(|l| row(&format!("{red}{l}{reset}"), l.chars().count()))
+        .collect();
+
+    let subtitle_text = "terminal multiplexer";
+    let subtitle_pad  = (CONTENT_W.saturating_sub(subtitle_text.len())) / 2;
+    let subtitle = row(
+        &format!("{}{muted}{subtitle_text}{reset}", " ".repeat(subtitle_pad)),
+        subtitle_pad + subtitle_text.len(),
+    );
+
+    let h1t = "mado config";
+    let h1d = "open your config file";
+    let h2t = "mado projects";
+    let h2d = "manage project paths";
+    let hint1 = row(&format!("{muted}{h1t}{reset}  {dim}{h1d}{reset}"),
+                    h1t.len() + 2 + h1d.len());
+    let hint2 = row(&format!("{muted}{h2t}{reset}  {dim}{h2d}{reset}"),
+                    h2t.len() + 2 + h2d.len());
+
+    let s = format!("\r\n{top}{spacer}{logo_rows}{spacer}{subtitle}{spacer}{hint1}{hint2}{spacer}{bot}\r\n");
+    s.into_bytes()
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
     // Handle CLI subcommands before launching the UI.
-    let args: Vec<String> = std::env::args().collect();
+    // macOS injects a `-psn_XXXXXXXX` Process Serial Number arg when launching
+    // binaries inside .app bundles — strip it so subcommand matching works.
+    let args: Vec<String> = std::env::args()
+        .filter(|a| !a.starts_with("-psn_"))
+        .collect();
     if args.get(1).map(|s| s.as_str()) == Some("config") {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        let config_path = std::path::PathBuf::from(&home)
-            .join(".config")
-            .join("mado")
-            .join("config.toml");
 
-        // Create the file with commented defaults if it doesn't exist yet.
-        if !config_path.exists() {
+        // `mado config <plugin-id>` → open ~/.config/mado/plugins/<id>.toml
+        let config_path = if let Some(plugin_id) = args.get(2) {
+            std::path::PathBuf::from(&home)
+                .join(".config/mado/plugins")
+                .join(format!("{plugin_id}.toml"))
+        } else {
+            std::path::PathBuf::from(&home)
+                .join(".config")
+                .join("mado")
+                .join("config.toml")
+        };
+
+        // Create the file with commented defaults if it doesn't exist yet
+        // (only for the main config; plugin configs are created empty).
+        if !config_path.exists() && args.get(2).is_none() {
             if let Some(parent) = config_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -280,8 +463,19 @@ fn main() {
                 "# font_family  = \"\"     # empty = bundled Hack Nerd Font Mono\n",
                 "# shell        = \"\"     # empty = $SHELL → /bin/sh\n",
                 "# sidebar_width = 300.0\n",
-                "# theme        = \"slate\"\n",
+                "# theme        = \"gray\"\n",
                 "# editor       = \"\"     # e.g. \"nvim\", \"nano\" — overrides $VISUAL/$EDITOR\n",
+                "# theme_starship = false  # true = Mado themes your Starship prompt to match\n",
+                "\n",
+                "# Disable built-in sidebar panels:\n",
+                "# disable_tasku      = false\n",
+                "# disable_priorities = false\n",
+                "# disable_workspaces = false\n",
+                "\n",
+                "# External sidebar plugins (any binary that renders ANSI to stdout):\n",
+                "# [[plugins]]\n",
+                "# id      = \"clock\"       # label shown in the sidebar\n",
+                "# command = \"mado-clock\"  # binary on $PATH or absolute path\n",
             );
             let _ = std::fs::write(&config_path, defaults);
         }
@@ -302,6 +496,93 @@ fn main() {
                 eprintln!("mado: could not launch editor '{editor}': {e}");
                 std::process::exit(1);
             });
+        return;
+    }
+
+    if args.get(1).map(|s| s.as_str()) == Some("projects") {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        let projects_path = std::path::PathBuf::from(&home)
+            .join(".config")
+            .join("mado")
+            .join("projects.toml");
+
+        if !projects_path.exists() {
+            if let Some(parent) = projects_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let defaults = concat!(
+                "# Mado project paths\n",
+                "# Map a Tasku project code to its root directory.\n",
+                "#\n",
+                "# [paths]\n",
+                "# MYAPP = \"/Users/you/Sites/myapp\"\n",
+                "# WORK  = \"/Users/you/work/project\"\n",
+            );
+            let _ = std::fs::write(&projects_path, defaults);
+        }
+
+        let cfg = Config::load();
+        let editor = if !cfg.editor.is_empty() {
+            cfg.editor.clone()
+        } else {
+            std::env::var("VISUAL")
+                .or_else(|_| std::env::var("EDITOR"))
+                .unwrap_or_else(|_| "vi".into())
+        };
+
+        std::process::Command::new(&editor)
+            .arg(&projects_path)
+            .status()
+            .unwrap_or_else(|e| {
+                eprintln!("mado: could not launch editor '{editor}': {e}");
+                std::process::exit(1);
+            });
+        return;
+    }
+
+    // ── mado plugin <install|add|remove|list> ───────────────────────────────
+    if args.get(1).map(|s| s.as_str()) == Some("plugin") {
+        match args.get(2).map(|s| s.as_str()) {
+            Some("install") => {
+                let name = match args.get(3) {
+                    Some(s) => s.as_str(),
+                    None => { eprintln!("usage: mado plugin install <name|org/repo>"); std::process::exit(1); }
+                };
+                plugin_install(name);
+            }
+            Some("add") => {
+                let id = match args.get(3) {
+                    Some(s) => s.as_str(),
+                    None => { eprintln!("usage: mado plugin add <id> <command>"); std::process::exit(1); }
+                };
+                let command = match args.get(4) {
+                    Some(s) => s.as_str(),
+                    None => { eprintln!("usage: mado plugin add <id> <command>"); std::process::exit(1); }
+                };
+                plugin_add(id, command);
+            }
+            Some("remove") => {
+                let id = match args.get(3) {
+                    Some(s) => s.as_str(),
+                    None => { eprintln!("usage: mado plugin remove <id>"); std::process::exit(1); }
+                };
+                plugin_remove(id);
+            }
+            Some("list") => {
+                plugin_list();
+            }
+            Some("update") => {
+                let name = match args.get(3) {
+                    Some(s) => s.as_str(),
+                    None => { eprintln!("usage: mado plugin update <name|org/repo>"); std::process::exit(1); }
+                };
+                plugin_update(name);
+            }
+            _ => {
+                eprintln!("usage: mado plugin <install|add|remove|list|update>");
+                std::process::exit(1);
+            }
+        }
         return;
     }
 
@@ -333,7 +614,11 @@ fn main() {
 
     // Load config first — font size, shell, theme, etc.
     let config = Config::load();
-    apply_theme(&ui, &theme::Theme::load(&config.theme));
+    let loaded_theme = Rc::new(theme::Theme::load(&config.theme));
+    apply_theme(&ui, &loaded_theme);
+    if config.theme_starship {
+        apply_starship_theme(&loaded_theme);
+    }
     let default_font_size = config.font_size;
     let shell = config.resolved_shell();
 
@@ -352,7 +637,16 @@ fn main() {
         println!("mado: tasku not found");
     }
 
-    let sidebar = Rc::new(RefCell::new(SidebarState::new(config.sidebar_width, tasku_path)));
+    let ext_plugins = config.plugins.clone();
+    let num_ext_plugins = ext_plugins.len();
+    let sidebar = Rc::new(RefCell::new(SidebarState::new(
+        config.sidebar_width,
+        tasku_path,
+        ext_plugins,
+        config.disable_tasku,
+        config.disable_priorities,
+        config.disable_workspaces,
+    )));
     {
         let saved_order = workspace::load_plugin_order();
         if !saved_order.is_empty() {
@@ -420,16 +714,37 @@ fn main() {
     // Push initial plugin list to Slint
     {
         let items: Vec<PluginItem> = sidebar.borrow().ordered_items().into_iter().map(
-            |(id, title, subtitle, icon)| PluginItem {
-                id:       id.into(),
-                title:    title.into(),
-                subtitle: subtitle.into(),
-                icon:     icon.into(),
+            |(id, title, subtitle, icon, plugin_index)| PluginItem {
+                id:           id.into(),
+                title:        title.into(),
+                subtitle:     subtitle.into(),
+                icon:         icon.into(),
+                plugin_index,
             }
         ).collect();
         let plugin_model = Rc::new(VecModel::<PluginItem>::from(items));
         ui.set_plugins(ModelRc::new(Rc::clone(&plugin_model)));
     }
+
+    // ── External plugin state models ─────────────────────────────────────────
+    let plugin_expanded_model: Rc<VecModel<bool>> =
+        Rc::new(VecModel::from(vec![false; num_ext_plugins]));
+    let plugin_panel_h_model: Rc<VecModel<f32>> =
+        Rc::new(VecModel::from(vec![DEFAULT_PLUGIN_PANEL_H; num_ext_plugins]));
+    let plugin_images_model: Rc<VecModel<Image>> =
+        Rc::new(VecModel::from(vec![Image::default(); num_ext_plugins]));
+    let plugin_pixel_model: Rc<VecModel<bool>> = Rc::new(VecModel::from(
+        config.plugins.iter().map(|p| p.kind == "pixel").collect::<Vec<_>>()
+    ));
+
+    ui.set_plugin_expanded(ModelRc::new(Rc::clone(&plugin_expanded_model)));
+    ui.set_plugin_panel_h(ModelRc::new(Rc::clone(&plugin_panel_h_model)));
+    ui.set_plugin_images(ModelRc::new(Rc::clone(&plugin_images_model)));
+    ui.set_plugin_pixel(ModelRc::new(Rc::clone(&plugin_pixel_model)));
+
+    // index → PixelPlugin for plugins with kind = "pixel"
+    let pixel_plugins: Rc<RefCell<std::collections::HashMap<usize, PixelPlugin>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
 
     let pane_model = Rc::new(VecModel::<FlatPane>::from(vec![]));
     let div_model  = Rc::new(VecModel::<FlatDivider>::from(vec![]));
@@ -450,14 +765,10 @@ fn main() {
     // ── Text selection (for copy/paste) ──────────────────────────────────────
     let selection: Rc<RefCell<Option<Selection>>> = Rc::new(RefCell::new(None));
 
-    // ── Spawn initial terminal ──────────────────────────────────────────────
-    {
-        let root_id = tree.borrow().root;
-        let w = ui.get_window_w();
-        let h = ui.get_window_h();
-        registry.borrow_mut().spawn(root_id, w, h, None);
-        *focused_id.borrow_mut() = Some(root_id);
-    }
+    // Initial terminal is spawned lazily inside on_window_resized so we have
+    // real PTY dimensions and can prepend the welcome banner before the shell prompt.
+    let initial_spawned: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
+    *focused_id.borrow_mut() = Some(tree.borrow().root);
 
     // ── 60fps render timer ──────────────────────────────────────────────────
     // Uses set_row_data so PaneView instances (and their FocusScopes) are never
@@ -469,6 +780,8 @@ fn main() {
         let images = Rc::clone(&images);
         let focused_id = Rc::clone(&focused_id);
         let selection = Rc::clone(&selection);
+        let plugin_images_model = Rc::clone(&plugin_images_model);
+        let pixel_plugins = Rc::clone(&pixel_plugins);
         let ui_weak = ui.as_weak();
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, std::time::Duration::from_millis(16), move || {
@@ -477,35 +790,69 @@ fn main() {
                 s.as_ref().map(|s| (s.pane_id, s.normalized()))
             };
             let dirty_bufs = registry.borrow_mut().drain_dirty(sel);
-            if dirty_bufs.is_empty() { return; }
 
             let mut tasku_buf: Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> = None;
-            let mut ai_buf:    Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> = None;
+            // plugin_index → pixel buffer for external plugins
+            let mut plugin_bufs: Vec<(usize, slint::SharedPixelBuffer<slint::Rgba8Pixel>)> = Vec::new();
             let mut pane_dirty_ids: Vec<NodeId> = Vec::new();
             let mut imgs = images.borrow_mut();
 
             for (id, buf) in dirty_bufs {
                 if id == SIDEBAR_TASKU_ID {
                     tasku_buf = Some(buf);
-                } else if id == SIDEBAR_AI_ID {
-                    ai_buf = Some(buf);
+                } else if id < SIDEBAR_TASKU_ID && id > u32::MAX - 1 - num_ext_plugins as u32 {
+                    // External plugin NodeId: u32::MAX - 1 - i
+                    let i = (u32::MAX - 1 - id) as usize;
+                    if i < num_ext_plugins {
+                        plugin_bufs.push((i, buf));
+                    }
                 } else {
                     pane_dirty_ids.push(id);
                     imgs.insert(id, Image::from_rgba8(buf));
                 }
             }
 
+            // Drain dirty pixel plugins + check for paste actions
+            {
+                let mut pp = pixel_plugins.borrow_mut();
+                for (i, plugin) in pp.iter_mut() {
+                    if plugin.dirty.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        if let Ok(guard) = plugin.image.lock() {
+                            if let Some(ref buf) = *guard {
+                                plugin_bufs.push((*i, buf.clone()));
+                            }
+                        }
+                    }
+                    if plugin.paste_pending.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        if let Ok(out) = std::process::Command::new("pbpaste").output() {
+                            let mut data = out.stdout;
+                            if data.ends_with(b"\r\n") { data.truncate(data.len() - 2); }
+                            else if data.ends_with(b"\n") { data.truncate(data.len() - 1); }
+                            if !data.is_empty() {
+                                if let Some(id) = *focused_id.borrow() {
+                                    registry.borrow_mut().write_key(id, &data);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if pane_dirty_ids.is_empty() && tasku_buf.is_none() && plugin_bufs.is_empty() {
+                return;
+            }
+
             if !pane_dirty_ids.is_empty() {
                 push_images(&pane_model, &imgs, *focused_id.borrow(), Some(&pane_dirty_ids));
             }
 
-            if tasku_buf.is_some() || ai_buf.is_some() {
+            if tasku_buf.is_some() || !plugin_bufs.is_empty() {
                 if let Some(ui) = ui_weak.upgrade() {
                     if let Some(buf) = tasku_buf {
                         ui.set_tasku_terminal_image(Image::from_rgba8(buf));
                     }
-                    if let Some(buf) = ai_buf {
-                        ui.set_ai_terminal_image(Image::from_rgba8(buf));
+                    for (i, buf) in plugin_bufs {
+                        plugin_images_model.set_row_data(i, Image::from_rgba8(buf));
                     }
                 }
             }
@@ -706,25 +1053,50 @@ fn main() {
             let zoom_mod = ctrl || meta;
             let t = text.as_str();
 
-            // Cmd+C: copy selection to clipboard (never forward to terminal).
-            if meta && t == "c" {
-                let sel = selection.borrow();
-                if let Some(ref s) = *sel {
-                    if !s.is_empty() && s.pane_id == id as NodeId {
-                        let norm = s.normalized();
-                        let text = registry.borrow().get_selection_text(id as NodeId, norm);
-                        if !text.is_empty() {
-                            if let Ok(mut cb) = arboard::Clipboard::new() {
-                                let _ = cb.set_text(text);
-                            }
-                        }
+            // Cmd+C: copy selection to clipboard (primary shortcut on macOS).
+            // Ctrl+C: smart copy — copies if selection exists, otherwise sends ^C to terminal.
+            let is_copy = (meta && t == "c") || (ctrl && t == "c");
+            if is_copy {
+                let has_sel = {
+                    let sel = selection.borrow();
+                    sel.as_ref().map_or(false, |s| !s.is_empty() && s.pane_id == id as NodeId)
+                };
+                if has_sel {
+                    let norm = {
+                        let sel = selection.borrow();
+                        sel.as_ref().unwrap().normalized()
+                    };
+                    let copied = registry.borrow().get_selection_text(id as NodeId, norm);
+                    if !copied.is_empty() {
+                        let _ = std::process::Command::new("/bin/sh")
+                            .args(["-c", &format!("printf '%s' {} | pbcopy",
+                                shell_escape(&copied))])
+                            .status();
                     }
+                    // Clear selection; do NOT forward the keystroke.
+                    let prev_id = selection.borrow().as_ref().map(|s| s.pane_id);
+                    *selection.borrow_mut() = None;
+                    if let Some(sid) = prev_id {
+                        registry.borrow().mark_dirty(sid);
+                    }
+                    return;
                 }
-                return;
+                // No selection + Cmd+C → do nothing. No selection + Ctrl+C → fall through (^C).
+                if meta { return; }
             }
 
-            // Any other key: clear active selection so it doesn't linger.
-            {
+            // Clear active selection on regular keystrokes, but NOT when:
+            // - a bare modifier key is pressed (ctrl/shift/meta/alt alone)
+            // - ctrl or meta is held (user may be mid-chord, e.g. about to press C)
+            let is_modifier_only = matches!(t,
+                "\u{0010}" | "\u{0015}" | // Shift L/R
+                "\u{0011}" | "\u{0016}" | // Control L/R
+                "\u{0012}" | "\u{0013}" | // Alt / AltGr
+                "\u{0014}" |              // CapsLock
+                "\u{0017}" | "\u{0018}" | // Meta L/R
+                "\u{0019}"               // Backtab
+            );
+            if !is_modifier_only && !ctrl && !meta {
                 let prev_id = selection.borrow().as_ref().map(|s| s.pane_id);
                 *selection.borrow_mut() = None;
                 if let Some(sid) = prev_id {
@@ -732,11 +1104,15 @@ fn main() {
                 }
             }
 
-            // Cmd+V: paste clipboard contents.
-            if meta && t == "v" {
-                if let Ok(mut cb) = arboard::Clipboard::new() {
-                    if let Ok(text) = cb.get_text() {
-                        registry.borrow_mut().write_key(id as NodeId, text.as_bytes());
+            // Ctrl+V / Cmd+V: paste clipboard contents.
+            if (ctrl && t == "v") || (meta && t == "v") {
+                if let Ok(out) = std::process::Command::new("pbpaste").output() {
+                    let mut data = out.stdout;
+                    // Strip one trailing newline so paste doesn't auto-execute commands.
+                    if data.ends_with(b"\r\n") { data.truncate(data.len() - 2); }
+                    else if data.ends_with(b"\n") { data.truncate(data.len() - 1); }
+                    if !data.is_empty() {
+                        registry.borrow_mut().write_key(id as NodeId, &data);
                     }
                 }
                 return;
@@ -836,7 +1212,7 @@ fn main() {
         }
     });
 
-    // ── Window resize ────────────────────────────────────────────────────────
+    // ── Window resize + initial spawn ────────────────────────────────────────
     ui.on_window_resized({
         let tree = Rc::clone(&tree);
         let registry = Rc::clone(&registry);
@@ -845,6 +1221,8 @@ fn main() {
         let div_model = Rc::clone(&div_model);
         let images = Rc::clone(&images);
         let focused_id = Rc::clone(&focused_id);
+        let initial_spawned = Rc::clone(&initial_spawned);
+        let loaded_theme = Rc::clone(&loaded_theme);
         let ui_weak = ui.as_weak();
         let last_size: Rc<RefCell<(f32, f32)>> = Rc::new(RefCell::new((0.0, 0.0)));
         move |w, h| {
@@ -853,9 +1231,23 @@ fn main() {
                 *last_size.borrow_mut() = (w, h);
                 let panes = tree.borrow().flatten(w, h);
                 let mut reg = registry.borrow_mut();
-                for p in &panes {
-                    reg.resize(p.id, (p.width - PANE_H_INSET).max(10.0), (p.height - PANE_TOP_INSET).max(10.0));
+
+                if !initial_spawned.get() && w > 50.0 && h > 50.0 {
+                    initial_spawned.set(true);
+                    let root_id = tree.borrow().root;
+                    if let Some(p) = panes.iter().find(|p| p.id == root_id) {
+                        let pane_w = (p.width  - PANE_H_INSET).max(10.0);
+                        let pane_h = (p.height - PANE_TOP_INSET).max(10.0);
+                        let cols   = reg.logical_to_cols(pane_w);
+                        let banner = welcome_banner(cols, &loaded_theme);
+                        reg.spawn_with_banner(root_id, pane_w, pane_h, None, &banner);
+                    }
+                } else {
+                    for p in &panes {
+                        reg.resize(p.id, (p.width - PANE_H_INSET).max(10.0), (p.height - PANE_TOP_INSET).max(10.0));
+                    }
                 }
+
                 drop(reg);
                 if let Some(ui) = ui_weak.upgrade() {
                     full_push(&ui, &tree.borrow(), &dividers_cache, &pane_model, &div_model,
@@ -923,11 +1315,12 @@ fn main() {
             // Rebuild and push the updated plugin list
             if let Some(ui) = ui_weak.upgrade() {
                 let items: Vec<PluginItem> = sidebar.borrow().ordered_items().into_iter().map(
-                    |(id, title, subtitle, icon)| PluginItem {
-                        id:       id.into(),
-                        title:    title.into(),
-                        subtitle: subtitle.into(),
-                        icon:     icon.into(),
+                    |(id, title, subtitle, icon, plugin_index)| PluginItem {
+                        id:           id.into(),
+                        title:        title.into(),
+                        subtitle:     subtitle.into(),
+                        icon:         icon.into(),
+                        plugin_index,
                     }
                 ).collect();
                 let plugin_model = Rc::new(VecModel::<PluginItem>::from(items));
@@ -967,16 +1360,33 @@ fn main() {
     ui.on_sidebar_width_changed({
         let sidebar = Rc::clone(&sidebar);
         let registry = Rc::clone(&registry);
+        let plugin_expanded_model = Rc::clone(&plugin_expanded_model);
+        let plugin_panel_h_model = Rc::clone(&plugin_panel_h_model);
+        let pixel_plugins = Rc::clone(&pixel_plugins);
         move |new_width| {
-            let (tasku_h, ai_h) = {
+            let tasku_h = {
                 let mut s = sidebar.borrow_mut();
                 s.width = new_width;
-                (s.tasku_panel_h, s.ai_panel_h)
+                s.tasku_panel_h
             };
             let sidebar_w = (new_width - 24.0).max(50.0);
             let mut reg = registry.borrow_mut();
             reg.resize(SIDEBAR_TASKU_ID, sidebar_w, tasku_terminal_h(tasku_h));
-            reg.resize(SIDEBAR_AI_ID,    sidebar_w, ai_terminal_h(ai_h));
+            // Resize any open external plugins
+            let mut pp = pixel_plugins.borrow_mut();
+            for i in 0..num_ext_plugins {
+                if plugin_expanded_model.row_data(i).unwrap_or(false) {
+                    let h = plugin_panel_h_model.row_data(i).unwrap_or(DEFAULT_PLUGIN_PANEL_H);
+                    if let Some(plugin) = pp.get_mut(&i) {
+                        plugin.send_resize(
+                            (sidebar_w * scale) as u32,
+                            (h * scale) as u32,
+                        );
+                    } else {
+                        reg.resize(plugin_node_id(i), sidebar_w, plugin_terminal_h(h));
+                    }
+                }
+            }
         }
     });
 
@@ -1184,119 +1594,171 @@ fn main() {
         }
     });
 
-    // ── AI panel expand/collapse ─────────────────────────────────────────────
-    ui.on_ai_toggled({
+    // ── External plugin panel expand/collapse ────────────────────────────────
+    ui.on_plugin_toggled({
         let registry = Rc::clone(&registry);
         let sidebar = Rc::clone(&sidebar);
-        move |expanded| {
+        let plugin_expanded_model = Rc::clone(&plugin_expanded_model);
+        let plugin_panel_h_model = Rc::clone(&plugin_panel_h_model);
+        let pixel_plugins = Rc::clone(&pixel_plugins);
+        let ui_weak = ui.as_weak();
+        move |idx| {
+            let idx = idx as usize;
+            if idx >= num_ext_plugins { return; }
+            let current = plugin_expanded_model.row_data(idx).unwrap_or(false);
+            let now_expanded = !current;
+            plugin_expanded_model.set_row_data(idx, now_expanded);
+
+            let sidebar_w = (sidebar.borrow().width - 24.0).max(50.0);
+            let panel_h = plugin_panel_h_model.row_data(idx).unwrap_or(DEFAULT_PLUGIN_PANEL_H);
+            let (command, kind, plugin_id) = {
+                let s = sidebar.borrow();
+                let p = s.ext_plugins.get(idx);
+                (
+                    p.map(|p| p.command.clone()).unwrap_or_default(),
+                    p.map(|p| p.kind.clone()).unwrap_or_default(),
+                    p.map(|p| p.id.clone()).unwrap_or_default(),
+                )
+            };
+            let mut parts = command.split_whitespace();
+            let program = parts.next().unwrap_or("").to_string();
+            let args: Vec<String> = parts.map(|s| s.to_string()).collect();
+            let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
             let mut reg = registry.borrow_mut();
-            if expanded {
-                let (sidebar_w, panel_h) = {
-                    let s = sidebar.borrow();
-                    ((s.width - 24.0).max(50.0), s.ai_panel_h)
-                };
-                reg.spawn(SIDEBAR_AI_ID, sidebar_w, ai_terminal_h(panel_h), None);
+            if now_expanded {
+                if kind == "pixel" {
+                    let phys_w = (sidebar_w * scale) as u32;
+                    let phys_h = (panel_h * scale) as u32;
+                    if let Some(plugin) = PixelPlugin::spawn(&program, &args_ref, phys_w, phys_h) {
+                        pixel_plugins.borrow_mut().insert(idx, plugin);
+                    } else {
+                        eprintln!("mado: failed to spawn pixel plugin '{plugin_id}'");
+                    }
+                } else {
+                    reg.spawn_cmd(plugin_node_id(idx), sidebar_w, plugin_terminal_h(panel_h),
+                                  &program, &args_ref, None,
+                                  &[("MADO_PLUGIN_ID", &plugin_id)]);
+                }
+            } else if kind == "pixel" {
+                pixel_plugins.borrow_mut().remove(&idx);
             } else {
-                reg.remove(SIDEBAR_AI_ID);
+                reg.remove(plugin_node_id(idx));
+            }
+            drop(reg);
+
+            // Update any-expanded and total-h for the viewport
+            let any = (0..num_ext_plugins)
+                .any(|i| plugin_expanded_model.row_data(i).unwrap_or(false));
+            let total: f32 = (0..num_ext_plugins)
+                .map(|i| if plugin_expanded_model.row_data(i).unwrap_or(false) {
+                    plugin_panel_h_model.row_data(i).unwrap_or(DEFAULT_PLUGIN_PANEL_H)
+                } else { 0.0 })
+                .sum();
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_plugin_any_expanded(any);
+                ui.set_external_plugins_total_h(total);
             }
         }
     });
 
-    // ── AI panel height (drag-to-resize) ─────────────────────────────────────
-    ui.on_ai_panel_height_changed({
+    // ── External plugin panel height (drag-to-resize) ────────────────────────
+    ui.on_plugin_panel_height_changed({
         let registry = Rc::clone(&registry);
         let sidebar = Rc::clone(&sidebar);
-        move |new_h| {
-            let sidebar_w = {
-                let mut s = sidebar.borrow_mut();
-                s.ai_panel_h = new_h;
-                (s.width - 24.0).max(50.0)
-            };
-            registry.borrow_mut().resize(SIDEBAR_AI_ID, sidebar_w, ai_terminal_h(new_h));
-        }
-    });
-
-    // ── AI key input ─────────────────────────────────────────────────────────
-    ui.on_ai_key_input({
-        let registry = Rc::clone(&registry);
-        move |text, ctrl, meta| {
-            let zoom_mod = ctrl || meta;
-            let t = text.as_str();
-            // Let zoom shortcuts still work when the AI panel has keyboard focus
-            if zoom_mod && (t == "=" || t == "+" || t == "-" || t == "0") { return; }
-            let bytes = key_text_to_bytes(&text);
-            registry.borrow_mut().write_key(SIDEBAR_AI_ID, &bytes);
-        }
-    });
-
-    // ── AI terminal scroll wheel ─────────────────────────────────────────────
-    ui.on_ai_scroll({
-        let registry = Rc::clone(&registry);
-        move |delta_px| {
-            let cell_h_logical = {
-                let reg = registry.borrow();
-                reg.font.cell_h as f32 / reg.scale
-            };
-            if cell_h_logical > 0.0 {
-                let delta_rows = (-delta_px / cell_h_logical).round() as i32;
-                if delta_rows != 0 {
-                    registry.borrow_mut().scroll(SIDEBAR_AI_ID, delta_rows);
-                }
-            }
-        }
-    });
-
-    // ── Clock: initial values ────────────────────────────────────────────────
-    ui.set_clock_data(ClockData {
-        time: clock::current_time().into(),
-        date: clock::current_date().into(),
-        icon: "○".into(),
-        temp: "--".into(),
-        desc: "fetching…".into(),
-        loc:  "".into(),
-    });
-
-    // ── Clock: 10-second time/date refresh ───────────────────────────────────
-    {
+        let plugin_expanded_model = Rc::clone(&plugin_expanded_model);
+        let plugin_panel_h_model = Rc::clone(&plugin_panel_h_model);
+        let pixel_plugins = Rc::clone(&pixel_plugins);
         let ui_weak = ui.as_weak();
-        let clock_timer = Timer::default();
-        clock_timer.start(TimerMode::Repeated, std::time::Duration::from_secs(10), move || {
+        move |idx, new_h| {
+            let idx = idx as usize;
+            if idx >= num_ext_plugins { return; }
+            plugin_panel_h_model.set_row_data(idx, new_h);
+            let sidebar_w = (sidebar.borrow().width - 24.0).max(50.0);
+            if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
+                plugin.send_resize((sidebar_w * scale) as u32, (new_h * scale) as u32);
+            } else {
+                registry.borrow_mut().resize(plugin_node_id(idx), sidebar_w, plugin_terminal_h(new_h));
+            }
+            // Update viewport total height
+            let total: f32 = (0..num_ext_plugins)
+                .map(|i| if plugin_expanded_model.row_data(i).unwrap_or(false) {
+                    plugin_panel_h_model.row_data(i).unwrap_or(DEFAULT_PLUGIN_PANEL_H)
+                } else { 0.0 })
+                .sum();
             if let Some(ui) = ui_weak.upgrade() {
-                let mut data = ui.get_clock_data();
-                data.time = clock::current_time().into();
-                data.date = clock::current_date().into();
-                ui.set_clock_data(data);
+                ui.set_external_plugins_total_h(total);
             }
-        });
-        std::mem::forget(clock_timer);
-    }
+        }
+    });
 
-    // ── Clock: weather fetch (startup + every 30 min) ────────────────────────
-    {
-        let ui_weak = ui.as_weak();
-        std::thread::spawn(move || {
-            loop {
-                if let Some(w) = clock::fetch_weather() {
-                    let icon    = w.icon;
-                    let temp    = w.temp;
-                    let desc    = w.desc;
-                    let loc     = w.loc;
-                    let handle  = ui_weak.clone();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = handle.upgrade() {
-                            let mut data = ui.get_clock_data();
-                            data.icon = icon.into();
-                            data.temp = temp.into();
-                            data.desc = desc.into();
-                            data.loc  = loc.into();
-                            ui.set_clock_data(data);
-                        }
-                    });
-                }
-                std::thread::sleep(std::time::Duration::from_secs(30 * 60));
+    // ── External plugin key input ─────────────────────────────────────────────
+    ui.on_plugin_key_input({
+        let registry = Rc::clone(&registry);
+        let pixel_plugins = Rc::clone(&pixel_plugins);
+        move |idx, text, ctrl, meta| {
+            let idx = idx as usize;
+            if idx >= num_ext_plugins { return; }
+            if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
+                plugin.send_key(text.as_str(), ctrl, meta);
+            } else {
+                let zoom_mod = ctrl || meta;
+                let t = text.as_str();
+                if zoom_mod && (t == "=" || t == "+" || t == "-" || t == "0") { return; }
+                let bytes = key_text_to_bytes(&text);
+                registry.borrow_mut().write_key(plugin_node_id(idx), &bytes);
             }
-        });
-    }
+        }
+    });
+
+    // ── External plugin scroll wheel ─────────────────────────────────────────
+    ui.on_plugin_scroll({
+        let registry = Rc::clone(&registry);
+        let pixel_plugins = Rc::clone(&pixel_plugins);
+        move |idx, delta_px| {
+            let idx = idx as usize;
+            if idx >= num_ext_plugins { return; }
+            if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
+                plugin.send_scroll(delta_px);
+            } else {
+                let cell_h_logical = {
+                    let reg = registry.borrow();
+                    reg.font.cell_h as f32 / reg.scale
+                };
+                if cell_h_logical > 0.0 {
+                    let delta_rows = (-delta_px / cell_h_logical).round() as i32;
+                    if delta_rows != 0 {
+                        registry.borrow_mut().scroll(plugin_node_id(idx), delta_rows);
+                    }
+                }
+            }
+        }
+    });
+
+    // ── External plugin click ────────────────────────────────────────────────
+    ui.on_plugin_click({
+        let pixel_plugins = Rc::clone(&pixel_plugins);
+        let registry      = Rc::clone(&registry);
+        let focused_id    = Rc::clone(&focused_id);
+        move |idx, x, y| {
+            let idx = idx as usize;
+            if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
+                plugin.send_click(x, y);
+                // Paste is handled in the render timer by watching paste_pending.
+            }
+        }
+    });
+
+    // ── External plugin focus ────────────────────────────────────────────────
+    ui.on_plugin_focus_changed({
+        let pixel_plugins = Rc::clone(&pixel_plugins);
+        move |idx, focused| {
+            let idx = idx as usize;
+            if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
+                plugin.send_focus(focused);
+            }
+        }
+    });
 
     // ── Initial render ───────────────────────────────────────────────────────
     full_push(&ui, &tree.borrow(), &dividers_cache, &pane_model, &div_model,
@@ -1349,6 +1811,388 @@ fn main() {
     ui.run().unwrap();
 }
 
+// ── Plugin CLI helpers ───────────────────────────────────────────────────────
+
+const REGISTRY_URL: &str =
+    "https://raw.githubusercontent.com/tomdringer/mado-plugins/main/registry.json";
+
+fn plugin_config_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home).join(".config").join("mado").join("config.toml")
+}
+
+fn plugins_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home).join(".config").join("mado").join("plugins")
+}
+
+fn platform_triple() -> &'static str {
+    #[cfg(all(target_os = "macos",   target_arch = "aarch64"))] return "aarch64-apple-darwin";
+    #[cfg(all(target_os = "macos",   target_arch = "x86_64"))]  return "x86_64-apple-darwin";
+    #[cfg(all(target_os = "linux",   target_arch = "aarch64"))] return "aarch64-unknown-linux-gnu";
+    #[cfg(all(target_os = "linux",   target_arch = "x86_64"))]  return "x86_64-unknown-linux-gnu";
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]  return "x86_64-pc-windows-msvc";
+    #[allow(unreachable_code)]
+    "unknown"
+}
+
+/// Fetch a URL and return the body as a string. Uses curl, which is available
+/// on macOS, all major Linux distros, and Windows 10+.
+fn curl_get(url: &str) -> Result<String, String> {
+    let out = std::process::Command::new("curl")
+        .args(["-sL", "--fail",
+               "-H", "User-Agent: mado",
+               "-H", "Accept: application/vnd.github+json",
+               url])
+        .output()
+        .map_err(|e| format!("curl not available: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("request failed (HTTP error) for {url}"));
+    }
+    String::from_utf8(out.stdout).map_err(|e| e.to_string())
+}
+
+/// Download a URL to a file on disk.
+fn curl_download(url: &str, dest: &std::path::Path) -> Result<(), String> {
+    let status = std::process::Command::new("curl")
+        .args(["-sL", "--fail",
+               "-H", "User-Agent: mado",
+               "-o", dest.to_str().unwrap_or(""),
+               url])
+        .status()
+        .map_err(|e| format!("curl not available: {e}"))?;
+    if !status.success() {
+        return Err(format!("download failed from {url}"));
+    }
+    Ok(())
+}
+
+/// Resolve a short name ("clock") to an org/repo ("mado-plugins/mado-clock")
+/// via the registry. If `name` already contains '/' it is returned as-is.
+fn resolve_repo(name: &str) -> Result<String, String> {
+    if name.contains('/') {
+        return Ok(name.to_string());
+    }
+    let json = curl_get(REGISTRY_URL)?;
+    let registry: serde_json::Value = serde_json::from_str(&json)
+        .map_err(|e| format!("invalid registry JSON: {e}"))?;
+    registry.get(name)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("'{name}' not found in mado-plugins registry"))
+}
+
+fn plugin_install(name: &str) {
+    // 1. Resolve to org/repo
+    print!("resolving '{name}'... ");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let repo = resolve_repo(name).unwrap_or_else(|e| {
+        eprintln!("\nmado: {e}");
+        std::process::exit(1);
+    });
+
+    // Derive the plugin id (short name) and the repo binary name.
+    // Short name: last segment after '/' if user passed org/repo directly, else the original name.
+    let id = if name.contains('/') {
+        name.split('/').last().unwrap_or(name)
+            .trim_start_matches("mado-")  // strip conventional "mado-" prefix
+    } else {
+        name
+    };
+    // Repo binary name is the repo part of org/repo, e.g. "mado-clock"
+    let repo_bin = repo.split('/').last().unwrap_or(id);
+
+    println!("found {repo}");
+
+    // 2. Fetch latest GitHub release
+    let api_url = format!("https://api.github.com/repos/{repo}/releases/latest");
+    print!("fetching latest release... ");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let json = curl_get(&api_url).unwrap_or_else(|e| {
+        eprintln!("\nmado: {e}");
+        std::process::exit(1);
+    });
+    let release: serde_json::Value = serde_json::from_str(&json).unwrap_or_else(|e| {
+        eprintln!("\nmado: invalid release JSON: {e}");
+        std::process::exit(1);
+    });
+    let tag = release["tag_name"].as_str().unwrap_or("unknown");
+    println!("{tag}");
+
+    // 3. Find the asset matching the current platform
+    let triple = platform_triple();
+    let asset_suffix = if cfg!(target_os = "windows") {
+        format!("{repo_bin}-{triple}.exe")
+    } else {
+        format!("{repo_bin}-{triple}")
+    };
+
+    let empty = vec![];
+    let assets = release["assets"].as_array().unwrap_or(&empty);
+    let download_url = assets.iter()
+        .find(|a| a["name"].as_str().map_or(false, |n| n == asset_suffix))
+        .and_then(|a| a["browser_download_url"].as_str())
+        .unwrap_or_else(|| {
+            eprintln!("mado: no binary for {triple} in {repo} {tag}");
+            eprintln!("      expected asset name: {asset_suffix}");
+            std::process::exit(1);
+        });
+
+    // 4. Download to plugins dir
+    let dir = plugins_dir();
+    std::fs::create_dir_all(&dir).unwrap_or_else(|e| {
+        eprintln!("mado: cannot create plugins dir: {e}");
+        std::process::exit(1);
+    });
+    let bin_name = if cfg!(target_os = "windows") { format!("{id}.exe") } else { id.to_string() };
+    let dest = dir.join(&bin_name);
+
+    print!("downloading {asset_suffix}... ");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    curl_download(download_url, &dest).unwrap_or_else(|e| {
+        eprintln!("\nmado: {e}");
+        std::process::exit(1);
+    });
+    println!("done");
+
+    // 5. Make executable on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&dest) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o755);
+            let _ = std::fs::set_permissions(&dest, perms);
+        }
+    }
+
+    // 6. Fetch mado-plugin.json to determine kind and icon
+    let meta_url = format!("https://raw.githubusercontent.com/{repo}/HEAD/mado-plugin.json");
+    let (kind, icon) = curl_get(&meta_url)
+        .ok()
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        .map(|v| (
+            v["kind"].as_str().unwrap_or("").to_string(),
+            v["icon"].as_str().unwrap_or("").to_string(),
+        ))
+        .unwrap_or_default();
+
+    // 7. Register in config (id + absolute path as command + kind + icon)
+    let command = dest.to_string_lossy();
+    plugin_register(id, &command, &kind, &icon);
+
+    println!("installed '{id}' — restart Mado to activate");
+}
+
+/// `mado plugin update <name>` — download the latest release binary for an
+/// already-registered plugin, overwriting the existing binary in place.
+/// Does not touch the config (the plugin is already registered).
+fn plugin_update(name: &str) {
+    // Resolve id the same way install does
+    let id = if name.contains('/') {
+        name.split('/').last().unwrap_or(name)
+            .trim_start_matches("mado-")
+    } else {
+        name
+    };
+
+    // Ensure the plugin is actually registered
+    let cfg = Config::load();
+    let plugin = cfg.plugins.iter().find(|p| p.id == id).unwrap_or_else(|| {
+        eprintln!("mado: plugin '{id}' not installed — use 'mado plugin install {id}' first");
+        std::process::exit(1);
+    });
+
+    print!("resolving '{id}'... ");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let repo = resolve_repo(name).unwrap_or_else(|e| {
+        eprintln!("\nmado: {e}");
+        std::process::exit(1);
+    });
+    let repo_bin = repo.split('/').last().unwrap_or(id);
+    println!("found {repo}");
+
+    let api_url = format!("https://api.github.com/repos/{repo}/releases/latest");
+    print!("fetching latest release... ");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let json = curl_get(&api_url).unwrap_or_else(|e| {
+        eprintln!("\nmado: {e}");
+        std::process::exit(1);
+    });
+    let release: serde_json::Value = serde_json::from_str(&json).unwrap_or_else(|e| {
+        eprintln!("\nmado: invalid release JSON: {e}");
+        std::process::exit(1);
+    });
+    let tag = release["tag_name"].as_str().unwrap_or("unknown");
+    println!("{tag}");
+
+    let triple = platform_triple();
+    let asset_suffix = if cfg!(target_os = "windows") {
+        format!("{repo_bin}-{triple}.exe")
+    } else {
+        format!("{repo_bin}-{triple}")
+    };
+
+    let empty = vec![];
+    let assets = release["assets"].as_array().unwrap_or(&empty);
+    let download_url = assets.iter()
+        .find(|a| a["name"].as_str().map_or(false, |n| n == asset_suffix))
+        .and_then(|a| a["browser_download_url"].as_str())
+        .unwrap_or_else(|| {
+            eprintln!("mado: no binary for {triple} in {repo} {tag}");
+            eprintln!("      expected asset name: {asset_suffix}");
+            std::process::exit(1);
+        });
+
+    let dest = std::path::Path::new(&plugin.command);
+    print!("downloading {asset_suffix}... ");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    curl_download(download_url, dest).unwrap_or_else(|e| {
+        eprintln!("\nmado: {e}");
+        std::process::exit(1);
+    });
+    println!("done");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(dest) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o755);
+            let _ = std::fs::set_permissions(dest, perms);
+        }
+    }
+
+    println!("updated '{id}' to {tag} — restart Mado to activate");
+}
+
+/// Low-level: append a [[plugins]] entry to config.toml.
+/// Called by both plugin_install and plugin_add.
+fn plugin_register(id: &str, command: &str, kind: &str, icon: &str) {
+    if id.is_empty() || id.contains('"') || id.contains('\n') {
+        eprintln!("mado: invalid plugin id '{id}'");
+        std::process::exit(1);
+    }
+
+    let path = plugin_config_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    // Check for duplicate
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let cfg: Config = toml::from_str(&existing).unwrap_or_default();
+    if cfg.plugins.iter().any(|p| p.id == id) {
+        eprintln!("mado: plugin '{id}' is already registered");
+        std::process::exit(1);
+    }
+
+    let kind_line = if kind == "pixel" { "kind    = \"pixel\"\n".to_string() } else { String::new() };
+    let icon_line = if !icon.is_empty() { format!("icon    = \"{icon}\"\n") } else { String::new() };
+    let block = format!("\n[[plugins]]\nid      = \"{id}\"\ncommand = \"{command}\"\n{kind_line}{icon_line}");
+    use std::io::Write as _;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true).append(true).open(&path)
+        .unwrap_or_else(|e| { eprintln!("mado: cannot open config: {e}"); std::process::exit(1); });
+    file.write_all(block.as_bytes())
+        .unwrap_or_else(|e| { eprintln!("mado: cannot write config: {e}"); std::process::exit(1); });
+}
+
+/// `mado plugin add <id> <command>` — register any binary directly.
+fn plugin_add(id: &str, command: &str) {
+    if command.is_empty() || command.contains('"') || command.contains('\n') {
+        eprintln!("mado: invalid command '{command}'");
+        std::process::exit(1);
+    }
+    plugin_register(id, command, "", "");
+    println!("registered plugin '{id}' — restart Mado to activate");
+}
+
+fn plugin_remove(id: &str) {
+    let path = plugin_config_path();
+    let content = std::fs::read_to_string(&path).unwrap_or_else(|_| {
+        eprintln!("mado: no config file found");
+        std::process::exit(1);
+    });
+
+    let cfg: Config = toml::from_str(&content).unwrap_or_default();
+    let plugin = cfg.plugins.iter().find(|p| p.id == id).unwrap_or_else(|| {
+        eprintln!("mado: plugin '{id}' not found");
+        std::process::exit(1);
+    });
+
+    // Delete the binary if it lives inside the managed plugins dir
+    let managed = plugins_dir();
+    let cmd_path = std::path::Path::new(&plugin.command);
+    if cmd_path.starts_with(&managed) && cmd_path.exists() {
+        let _ = std::fs::remove_file(cmd_path);
+    }
+
+    let new_content = remove_plugin_block(&content, id);
+    std::fs::write(&path, &new_content)
+        .unwrap_or_else(|e| { eprintln!("mado: cannot write config: {e}"); std::process::exit(1); });
+
+    println!("removed plugin '{id}' — restart Mado to deactivate");
+}
+
+fn plugin_list() {
+    let cfg = Config::load();
+    if cfg.plugins.is_empty() {
+        println!("no plugins installed");
+        return;
+    }
+    for p in &cfg.plugins {
+        println!("{:<20} {}", p.id, p.command);
+    }
+}
+
+/// Remove the `[[plugins]]` block whose `id` field matches `target_id`.
+/// Preserves all other content and comments exactly.
+fn remove_plugin_block(content: &str, target_id: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let had_trailing_newline = content.ends_with('\n');
+    let mut result: Vec<&str> = Vec::new();
+    let mut i = 0;
+
+    while i < lines.len() {
+        if lines[i].trim() == "[[plugins]]" {
+            // Collect indices of this block: from [[plugins]] up to (not including) the next section header
+            let mut block: Vec<usize> = vec![i];
+            let mut j = i + 1;
+            while j < lines.len() {
+                if lines[j].trim().starts_with('[') { break; }
+                block.push(j);
+                j += 1;
+            }
+            // Check if this block contains `id = "target_id"`
+            let needle = format!("\"{}\"", target_id);
+            let is_target = block.iter().any(|&k| {
+                let t = lines[k].trim();
+                t.starts_with("id") && t.contains(needle.as_str())
+            });
+            if !is_target {
+                for &k in &block {
+                    result.push(lines[k]);
+                }
+            }
+            i = j;
+            continue;
+        }
+        result.push(lines[i]);
+        i += 1;
+    }
+
+    let mut s = result.join("\n");
+    if had_trailing_newline || s.ends_with('\n') {
+        if !s.ends_with('\n') { s.push('\n'); }
+    }
+    // Collapse more than two consecutive blank lines
+    while s.contains("\n\n\n\n") {
+        s = s.replace("\n\n\n\n", "\n\n\n");
+    }
+    s
+}
+
 // ── Key translation ──────────────────────────────────────────────────────────
 
 /// Translate Slint key text to terminal byte sequences.
@@ -1357,6 +2201,10 @@ fn main() {
 ///   Modifier keys live in the C0 control range (U+0010–U+0019) and MUST be
 ///   filtered — they alias Ctrl+P, Ctrl+U, Ctrl+Q etc. and cause visible damage.
 ///   Navigation/function keys are in the Specials range (U+F700+).
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn key_text_to_bytes(text: &str) -> Vec<u8> {
     match text {
         // ── Modifier keys — never forward to terminal ────────────────────────

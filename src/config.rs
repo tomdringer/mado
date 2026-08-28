@@ -1,6 +1,19 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
+#[derive(Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct PluginConfig {
+    pub id:      String,
+    pub command: String,
+    /// "pixel" for native UI plugins using the RGBA frame protocol.
+    /// Anything else (including the default "") is treated as a PTY terminal.
+    pub kind:    String,
+    /// Nerd Font codepoint string for the sidebar header icon.
+    /// Defaults to the terminal icon if empty.
+    pub icon:    String,
+}
+
 #[derive(Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -18,6 +31,17 @@ pub struct Config {
     pub theme: String,
     /// Editor to use for `mado config`. Overrides $VISUAL/$EDITOR. Default: "".
     pub editor: String,
+    /// If true, Mado writes ~/.config/mado/starship.toml with theme colours and
+    /// sets STARSHIP_CONFIG so all spawned shells use it. Default: false.
+    pub theme_starship: bool,
+    /// External sidebar plugins. Each spawns as a PTY panel in the sidebar.
+    pub plugins: Vec<PluginConfig>,
+    /// Disable the built-in Tasku panel (still installed, just hidden). Default: false.
+    pub disable_tasku: bool,
+    /// Disable the built-in Priorities panel. Default: false.
+    pub disable_priorities: bool,
+    /// Disable the built-in Workspaces panel. Default: false.
+    pub disable_workspaces: bool,
 }
 
 impl Default for Config {
@@ -27,8 +51,13 @@ impl Default for Config {
             font_family: String::new(),
             shell: None,
             sidebar_width: 300.0,
-            theme: "slate".into(),
+            theme: "gray".into(),
             editor: String::new(),
+            theme_starship: false,
+            plugins: vec![],
+            disable_tasku: false,
+            disable_priorities: false,
+            disable_workspaces: false,
         }
     }
 }

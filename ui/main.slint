@@ -1,6 +1,6 @@
 import { PaneView }     from "pane_view.slint";
 import { DividerHandle } from "divider_handle.slint";
-import { Sidebar, PluginItem, WorkspaceProject, PriorityProject, ClockData } from "sidebar.slint";
+import { Sidebar, PluginItem, WorkspaceProject, PriorityProject } from "sidebar.slint";
 
 export struct FlatPane {
     id: int,
@@ -43,12 +43,18 @@ export component MainWindow inherits Window {
     in-out property <[PluginItem]> plugins;
     in-out property <float> sidebar-width: 300;
     in property <image> tasku-terminal-image;
-    in property <image> ai-terminal-image;
     in property <[WorkspaceProject]> ws-projects;
     in-out property <string> active-project;
     in property <int> force-focus-id: -1;
     in property <[PriorityProject]> priority-projects;
-    in property <ClockData>         clock-data;
+
+    // ── External plugin parallel arrays ───────────────────────────────────────
+    in property <[image]>     plugin-images;
+    in property <[bool]>      plugin-pixel;
+    in-out property <[bool]>  plugin-expanded;
+    in-out property <[float]> plugin-panel-h;
+    in property <bool>        plugin-any-expanded: false;
+    in property <float>       external-plugins-total-h: 0;
 
     // ── Theme colours (set by Rust at startup from the loaded theme) ──────────
     in property <color> theme-window-bg:        #0f172a;
@@ -95,10 +101,12 @@ export component MainWindow inherits Window {
     callback tasku-scroll(float);
     callback workspace-selected(string);
     callback priority-reordered(int, int);
-    callback ai-toggled(bool);
-    callback ai-panel-height-changed(float);
-    callback ai-key-input(string, bool, bool);
-    callback ai-scroll(float);
+    callback plugin-toggled(int);
+    callback plugin-panel-height-changed(int, float);
+    callback plugin-key-input(int, string, bool, bool);
+    callback plugin-scroll(int, float);
+    callback plugin-click(int, float, float);
+    callback plugin-focus-changed(int, bool);
 
     changed window-w => { root.window-resized(root.window-w, root.window-h); }
     changed window-h => { root.window-resized(root.window-w, root.window-h); }
@@ -122,11 +130,15 @@ export component MainWindow inherits Window {
             height: parent.height;
             plugins: root.plugins;
             tasku-terminal-image: root.tasku-terminal-image;
-            ai-terminal-image: root.ai-terminal-image;
             ws-projects: root.ws-projects;
             active-project: root.active-project;
             priority-projects: root.priority-projects;
-            clock-data: root.clock-data;
+            plugin-images: root.plugin-images;
+            plugin-pixel: root.plugin-pixel;
+            plugin-expanded: root.plugin-expanded;
+            plugin-panel-h: root.plugin-panel-h;
+            plugin-any-expanded: root.plugin-any-expanded;
+            external-plugins-total-h: root.external-plugins-total-h;
             theme-window-bg: root.theme-window-bg;
             theme-terminal-area-bg: root.theme-terminal-area-bg;
             theme-card-bg: root.theme-card-bg;
@@ -140,10 +152,12 @@ export component MainWindow inherits Window {
             tasku-scroll(delta) => { root.tasku-scroll(delta); }
             workspace-selected(code) => { root.workspace-selected(code); }
             priority-reordered(from, to) => { root.priority-reordered(from, to); }
-            ai-toggled(expanded) => { root.ai-toggled(expanded); }
-            ai-panel-height-changed(h) => { root.ai-panel-height-changed(h); }
-            ai-key-input(text, ctrl, meta) => { root.ai-key-input(text, ctrl, meta); }
-            ai-scroll(delta) => { root.ai-scroll(delta); }
+            plugin-toggled(idx) => { root.plugin-toggled(idx); }
+            plugin-panel-height-changed(idx, h) => { root.plugin-panel-height-changed(idx, h); }
+            plugin-key-input(idx, text, ctrl, meta) => { root.plugin-key-input(idx, text, ctrl, meta); }
+            plugin-scroll(idx, delta) => { root.plugin-scroll(idx, delta); }
+            plugin-click(idx, x, y) => { root.plugin-click(idx, x, y); }
+            plugin-focus-changed(idx, focused) => { root.plugin-focus-changed(idx, focused); }
         }
 
         // ── Terminal area ─────────────────────────────────────────────────────
