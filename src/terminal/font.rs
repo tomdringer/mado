@@ -259,6 +259,16 @@ impl FontRaster {
         });
     }
 
+    /// Pre-warm the glyph cache with printable ASCII (0x20–0x7E) so the first
+    /// rendered frame has no rasterization stalls.
+    pub fn prewarm(&self) {
+        for ch in ' '..='~' {
+            if !self.cache.borrow().contains_key(&ch) {
+                self.rasterize_and_cache(ch);
+            }
+        }
+    }
+
     /// Render a character directly into `buf` at cell position (`dst_x`, `dst_y`).
     /// `stride` is the row width of `buf` in pixels (total columns × cell_w).
     pub fn render_char_into(

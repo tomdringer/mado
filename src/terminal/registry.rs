@@ -113,6 +113,14 @@ impl TerminalRegistry {
         self.sessions.remove(&id);
     }
 
+    /// Rename a session key — used when the pane tree promotes a sibling leaf
+    /// into its parent's slot, changing the node ID without changing the PTY.
+    pub fn remap_id(&mut self, old_id: NodeId, new_id: NodeId) {
+        if let Some(sess) = self.sessions.remove(&old_id) {
+            self.sessions.insert(new_id, sess);
+        }
+    }
+
     /// Move the given sessions out of `sessions` into the parked map for `project`.
     /// The PTY threads keep running; they just won't be rendered until restored.
     pub fn park_project(&mut self, project: &str, leaf_ids: &[NodeId]) {
@@ -190,6 +198,7 @@ impl TerminalRegistry {
 
     /// Inject raw bytes (ANSI sequences, text) directly into a session's
     /// terminal state, bypassing the PTY. Used for the welcome banner.
+    #[allow(dead_code)]
     pub fn inject_bytes(&self, id: NodeId, data: &[u8]) {
         if let Some(sess) = self.sessions.get(&id) {
             sess.inject_bytes(data);
@@ -197,6 +206,7 @@ impl TerminalRegistry {
     }
 
     /// Return the current column count for a session (defaults to 80).
+    #[allow(dead_code)]
     pub fn cols(&self, id: NodeId) -> usize {
         self.sessions.get(&id)
             .and_then(|s| s.state.lock().ok().map(|st| st.cols))

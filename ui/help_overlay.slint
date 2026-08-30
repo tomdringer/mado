@@ -1,0 +1,148 @@
+// ── Help / keybindings overlay ────────────────────────────────────────────────
+
+component ShortcutRow inherits HorizontalLayout {
+    in property <string> keys;
+    in property <string> desc;
+    spacing: 10px;
+    alignment: start;
+    padding-top: 2px;
+    padding-bottom: 2px;
+
+    Text {
+        text: root.keys;
+        color: #7aa2f7;
+        font-family: "Hack Nerd Font";
+        font-size: 12px;
+        width: 168px;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+    Text {
+        text: root.desc;
+        color: #cbd5e1;
+        font-family: "SF Pro Text";
+        font-size: 13px;
+        vertical-alignment: center;
+    }
+}
+
+component SectionTitle inherits Rectangle {
+    in property <string> label;
+    height: 28px;
+    Text {
+        text: root.label;
+        color: #475569;
+        font-family: "SF Pro Text";
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 1.5px;
+        vertical-alignment: center;
+    }
+}
+
+export component HelpOverlay inherits Rectangle {
+    callback dismissed();
+
+    background: rgba(0, 0, 0, 0.75);
+
+    // Backdrop — click anywhere outside the card to close
+    TouchArea {
+        width: parent.width; height: parent.height;
+        clicked => { root.dismissed(); }
+    }
+
+    // Centered card
+    card := Rectangle {
+        private property <length> cw: min(760px, parent.width  - 60px);
+        private property <length> ch: min(520px, parent.height - 60px);
+        x: (parent.width  - self.cw) / 2;
+        y: (parent.height - self.ch) / 2;
+        width:  self.cw;
+        height: self.ch;
+        background: #0f172a;
+        border-radius: 12px;
+        border-width: 1px;
+        border-color: #1e293b;
+        clip: true;
+
+        // Eat clicks so they don't reach the backdrop
+        TouchArea { width: parent.width; height: parent.height; }
+
+        VerticalLayout {
+            padding: 28px;
+            spacing: 0px;
+
+            // ── Title ─────────────────────────────────────────────────────────
+            Text {
+                text: "Keyboard Shortcuts";
+                color: #f1f5f9;
+                font-family: "SF Pro Text";
+                font-size: 18px;
+                font-weight: 700;
+                horizontal-alignment: left;
+            }
+
+            Rectangle { height: 20px; }
+
+            // ── Two columns ───────────────────────────────────────────────────
+            HorizontalLayout {
+                spacing: 36px;
+                alignment: start;
+                vertical-stretch: 1;
+
+                // ── Left column ───────────────────────────────────────────────
+                VerticalLayout {
+                    spacing: 0px;
+                    alignment: start;
+                    horizontal-stretch: 1;
+
+                    SectionTitle { label: "PANE MANAGEMENT"; }
+                    ShortcutRow { keys: "Cmd + D";           desc: "Split right"; }
+                    ShortcutRow { keys: "Cmd + Shift + D";   desc: "Split down"; }
+                    ShortcutRow { keys: "Cmd + W";           desc: "Close pane"; }
+
+                    SectionTitle { label: "PANE FOCUS"; }
+                    ShortcutRow { keys: "Cmd + Opt + H / ←"; desc: "Focus left"; }
+                    ShortcutRow { keys: "Cmd + Opt + L / →"; desc: "Focus right"; }
+                    ShortcutRow { keys: "Cmd + Opt + K / ↑"; desc: "Focus up"; }
+                    ShortcutRow { keys: "Cmd + Opt + J / ↓"; desc: "Focus down"; }
+                }
+
+                // ── Right column ──────────────────────────────────────────────
+                VerticalLayout {
+                    spacing: 0px;
+                    alignment: start;
+                    horizontal-stretch: 1;
+
+                    SectionTitle { label: "PANELS"; }
+                    ShortcutRow { keys: "Cmd + [";   desc: "Toggle left sidebar"; }
+                    ShortcutRow { keys: "Cmd + ]";   desc: "Toggle right sidebar"; }
+                    ShortcutRow { keys: "Cmd + T";   desc: "Toggle top bar"; }
+                    ShortcutRow { keys: "Cmd + B";   desc: "Toggle bottom bar"; }
+
+                    SectionTitle { label: "SIDEBAR NAVIGATION"; }
+                    ShortcutRow { keys: "↑ / ↓";      desc: "Move between panels"; }
+                    ShortcutRow { keys: "Enter";       desc: "Open / close panel"; }
+                    ShortcutRow { keys: "Cmd + [ / ]"; desc: "Collapse & return to pane"; }
+                    ShortcutRow { keys: "Esc";         desc: "Return to pane"; }
+
+                    SectionTitle { label: "WORKSPACES  (in sidebar)"; }
+                    ShortcutRow { keys: "Enter";        desc: "Enter tile navigation"; }
+                    ShortcutRow { keys: "← → ↑ ↓";    desc: "Navigate projects"; }
+                    ShortcutRow { keys: "Enter";        desc: "Switch to project"; }
+                    ShortcutRow { keys: "Esc";          desc: "Back to panels"; }
+                }
+            }
+
+            // ── Footer ────────────────────────────────────────────────────────
+            Rectangle { height: 16px; }
+            Text {
+                text: "Press Esc or Cmd+? to close";
+                color: #334155;
+                font-family: "SF Pro Text";
+                font-size: 11px;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}

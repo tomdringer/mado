@@ -15,19 +15,38 @@ export component PaneView inherits Rectangle {
     callback split-horizontal();
     callback split-vertical();
     callback close();
-    // text, ctrl, meta(Cmd)
-    callback key-input(string, bool, bool);
+    callback toggle-left-sidebar();
+    callback toggle-right-sidebar();
+    callback toggle-top-bar();
+    callback toggle-bottom-bar();
+    callback toggle-help();
+    in property <bool> help-visible: false;
+    // Incremented by MainWindow when a sidebar/overlay releases focus back to panes.
+    // Avoids the Rust set_force_focus_id round-trip which Slint can batch away.
+    in property <int> refocus-counter: 0;
+    // text, ctrl, meta(Cmd), alt(Opt), shift
+    callback key-input(string, bool, bool, bool, bool);
     callback request-focus(int);
     callback zoom-in();
     callback zoom-out();
     callback zoom-reset();
     callback scroll(float);
+    // Directional pane focus (triggered by keyboard shortcut)
+    callback focus-neighbor(int);  // 0=left 1=right 2=up 3=down
     // Selection / clipboard
     callback mouse-pressed(float, float);
     callback mouse-moved(float, float);
     callback mouse-released();
 
     background: root.theme-pane-bg;
+
+    // Grab keyboard focus when this pane is first rendered (components are
+    // created lazily so init fires after the window is visible).
+    init => {
+        if (root.is-focused) {
+            scope.focus();
+        }
+    }
 
     // When Rust sets is-focused = true, give the FocusScope actual keyboard focus.
     // This handles both the initial pane and any programmatic focus changes.
@@ -41,6 +60,14 @@ export component PaneView inherits Rectangle {
             scope.focus();
         }
     }
+    // Pure-Slint path: when the sidebar releases focus back to panes, this
+    // counter increments on the focused pane so scope.focus() fires without
+    // needing a Rust round-trip (which Slint may batch and lose).
+    changed refocus-counter => {
+        if (root.is-focused) {
+            scope.focus();
+        }
+    }
 
     // Keyboard handler — active when this pane is focused
     scope := FocusScope {
@@ -49,9 +76,43 @@ export component PaneView inherits Rectangle {
         height: parent.height;
 
         key-pressed(e) => {
-            // Pass text + modifier flags to Rust, which handles zoom detection
-            // and terminal forwarding in one place.
-            root.key-input(e.text, e.modifiers.control, e.modifiers.meta);
+            // ── Help overlay: swallow all keys when visible ───────────────
+            if (root.help-visible) {
+                if (e.text == "\u{001B}" || ((e.modifiers.meta || e.modifiers.control) && e.text == "/")) {
+                    root.toggle-help();
+                }
+                return accept;
+            }
+            // ── Pane management shortcuts ─────────────────────────────────
+            // Accept either meta (Cmd) or control as the command modifier —
+            // some setups swap Cmd↔Ctrl at the OS level. Checking text=="d"
+            // (not "\u{0004}") safely excludes a real terminal Ctrl+D (EOF).
+            if ((e.modifiers.meta || e.modifiers.control) && !e.modifiers.alt) {
+                // Cmd+D — split right (vertical divider)
+                if (e.text == "d") { root.split-vertical(); return accept; }
+                // Cmd+Shift+D — split down (horizontal divider)
+                if (e.text == "D") { root.split-horizontal(); return accept; }
+                // Cmd+W — close pane
+                if (e.text == "w") { root.close(); return accept; }
+                // Cmd+[ / Cmd+] — toggle left / right sidebar
+                if (e.text == "[") { root.toggle-left-sidebar(); return accept; }
+                if (e.text == "]") { root.toggle-right-sidebar(); return accept; }
+                // Cmd+T / Cmd+B — toggle top / bottom bar
+                if (e.text == "t") { root.toggle-top-bar(); return accept; }
+                if (e.text == "b") { root.toggle-bottom-bar(); return accept; }
+                // Cmd+/ — toggle help overlay
+                if (e.text == "/") { root.toggle-help(); return accept; }
+            }
+            // Cmd+Opt+Arrows — focus neighbour pane (arrows are unambiguous)
+            // hjkl variants included but may produce Opt-modified chars on macOS
+            if ((e.modifiers.meta || e.modifiers.control) && e.modifiers.alt) {
+                if (e.text == "h" || e.text == "\u{F702}") { root.focus-neighbor(0); return accept; }
+                if (e.text == "l" || e.text == "\u{F703}") { root.focus-neighbor(1); return accept; }
+                if (e.text == "k" || e.text == "\u{F700}") { root.focus-neighbor(2); return accept; }
+                if (e.text == "j" || e.text == "\u{F701}") { root.focus-neighbor(3); return accept; }
+            }
+            // Pass everything else through to Rust for zoom / terminal forwarding.
+            root.key-input(e.text, e.modifiers.control, e.modifiers.meta, e.modifiers.alt, e.modifiers.shift);
             accept
         }
     }
@@ -117,10 +178,10 @@ export component PaneView inherits Rectangle {
             padding-top: 4px;
             padding-bottom: 4px;
 
-            // Active pane indicator — always visible, dim when unfocused
+            // Active pane indicator — green when focused, dim gray when not
             Text {
                 text: "●";
-                color: root.is-focused ? root.theme-active-dot : #ffffff12;
+                color: root.is-focused ? root.theme-active-dot : #3a3a4a;
                 font-family: "Hack Nerd Font";
                 font-size: 18px;
                 vertical-alignment: center;

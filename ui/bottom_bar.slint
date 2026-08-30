@@ -1,0 +1,237 @@
+// ─── Bottom Bar ───────────────────────────────────────────────────────────────
+//
+// Always-visible 52px footer strip. Clicking the header toggles the full-height
+// runner overlay in main.slint — content is rendered there, not here.
+
+export component BottomBar inherits Rectangle {
+    in property <color> theme-card-bg:    #1e293b;
+    in property <color> theme-card-border:#334155;
+
+    in-out property <bool> expanded: false;
+    callback expanded-changed(bool);
+
+    background: root.theme-card-bg;
+
+    // Top separator line
+    Rectangle {
+        x: 0; y: 0; width: parent.width; height: 1px;
+        background: root.theme-card-border;
+    }
+
+    HorizontalLayout {
+        padding: 0; spacing: 0;
+        width: parent.width; height: parent.height;
+
+        // Icon
+        Rectangle {
+            width: 38px; height: parent.height;
+            Text {
+                text: "\u{F144}";   // nf-fa-play_circle
+                color: rgba(255, 255, 255, 0.45);
+                font-family: "Hack Nerd Font";
+                font-size: 22px;
+                horizontal-alignment: center; vertical-alignment: center;
+                width: parent.width; height: parent.height;
+            }
+        }
+
+        // Title — click to toggle overlay
+        TouchArea {
+            horizontal-stretch: 1;
+            height: parent.height;
+            mouse-cursor: MouseCursor.pointer;
+            clicked => {
+                root.expanded = !root.expanded;
+                root.expanded-changed(root.expanded);
+            }
+            Text {
+                text: "RUNNER";
+                color: rgba(255, 255, 255, 0.80);
+                font-family: "SF Pro Text";
+                font-size: 18px; font-weight: 700;
+                letter-spacing: 0.4px;
+                overflow: elide;
+                vertical-alignment: center;
+                x: 18px;
+                width: parent.width - 22px; height: parent.height;
+            }
+        }
+
+        // Chevron — ↑ when collapsed (expand upward), ↓ when expanded (collapse)
+        Rectangle {
+            width: 24px; height: parent.height;
+            Text {
+                text: root.expanded ? "↓" : "↑";
+                color: rgba(255, 255, 255, 0.22);
+                font-family: "SF Pro Text";
+                font-size: 12px;
+                horizontal-alignment: center; vertical-alignment: center;
+                width: parent.width; height: parent.height;
+            }
+        }
+    }
+}
+
+// ─── Runner content ───────────────────────────────────────────────────────────
+//
+// Horizontal layout: play/stop buttons on the left, terminal fills the right.
+
+export component RunnerContent inherits Rectangle {
+    in property <image> terminal-image;
+    in property <color> theme-terminal-area-bg: #020617;
+    in property <string> current-command: "";
+    in property <bool> is-running: false;
+
+    callback play();
+    callback stop();
+    callback restart();
+    callback key-input(string, bool, bool);
+    callback scroll(float);
+    callback mouse-pressed(float, float);
+    callback mouse-moved(float, float);
+    callback mouse-released();
+
+    background: transparent;
+
+    fs := FocusScope {
+        x: 0; y: 0;
+        width: parent.width;
+        height: parent.height;
+        key-pressed(e) => {
+            root.key-input(e.text, e.modifiers.control, e.modifiers.meta);
+            accept
+        }
+    }
+
+    HorizontalLayout {
+        x: 0; y: 0;
+        width: parent.width;
+        height: parent.height;
+        padding: 8px;
+        spacing: 6px;
+
+        // ── Play / Stop buttons ───────────────────────────────────────────────
+        Rectangle {
+            width: 60px;
+
+            VerticalLayout {
+                width: parent.width;
+                height: parent.height;
+                alignment: start;
+                padding-top: 4px;
+                spacing: 6px;
+
+                // Play
+                Rectangle {
+                    width: parent.width; height: 36px;
+                    border-radius: 4px;
+                    background: play-ta.has-hover ? #ffffff1C : #ffffff0E;
+                    play-ta := TouchArea {
+                        width: parent.width; height: parent.height;
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => { root.play(); }
+                    }
+                    Text {
+                        text: "▶";
+                        color: root.is-running
+                            ? rgba(255, 255, 255, 0.25)
+                            : rgba(255, 255, 255, 0.80);
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: parent.width; height: parent.height;
+                    }
+                }
+
+                // Stop
+                Rectangle {
+                    width: parent.width; height: 36px;
+                    border-radius: 4px;
+                    background: stop-ta.has-hover ? #ffffff1C : #ffffff0E;
+                    stop-ta := TouchArea {
+                        width: parent.width; height: parent.height;
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => { root.stop(); }
+                    }
+                    Text {
+                        text: "■";
+                        color: root.is-running
+                            ? rgba(255, 255, 255, 0.80)
+                            : rgba(255, 255, 255, 0.25);
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: parent.width; height: parent.height;
+                    }
+                }
+
+                // Restart
+                Rectangle {
+                    width: parent.width; height: 36px;
+                    border-radius: 4px;
+                    background: restart-ta.has-hover ? #ffffff1C : #ffffff0E;
+                    restart-ta := TouchArea {
+                        width: parent.width; height: parent.height;
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => { root.restart(); }
+                    }
+                    Text {
+                        text: "↺";
+                        color: rgba(255, 255, 255, 0.80);
+                        font-size: 16px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: parent.width; height: parent.height;
+                    }
+                }
+            }
+        }
+
+        // ── Terminal ──────────────────────────────────────────────────────────
+        runner-term := Rectangle {
+            horizontal-stretch: 1;
+            background: root.theme-terminal-area-bg;
+            border-radius: 4px;
+            clip: true;
+
+            if root.terminal-image.width > 0: Image {
+                x: 0; y: 0;
+                width: parent.width; height: parent.height;
+                source: root.terminal-image;
+                image-fit: fill;
+            }
+            if root.terminal-image.width == 0: Text {
+                text: root.current-command == ""
+                    ? "no task configured for this workspace"
+                    : "▶  " + root.current-command;
+                color: rgba(255, 255, 255, 0.18);
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: parent.width; height: parent.height;
+            }
+
+            term-ta := TouchArea {
+                width: parent.width; height: parent.height;
+                mouse-cursor: MouseCursor.text;
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        fs.focus();
+                        root.mouse-pressed(self.mouse-x / 1px, self.mouse-y / 1px);
+                    } else if (e.kind == PointerEventKind.up) {
+                        root.mouse-released();
+                    }
+                }
+                moved => {
+                    if (self.pressed) {
+                        root.mouse-moved(self.mouse-x / 1px, self.mouse-y / 1px);
+                    }
+                }
+                scroll-event(e) => {
+                    root.scroll(e.delta-y / 1px);
+                    accept
+                }
+            }
+        }
+    }
+}

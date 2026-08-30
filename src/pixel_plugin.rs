@@ -141,3 +141,11 @@ impl PixelPlugin {
             r#"{{"type":"scroll","delta":{delta:.1}}}"#);
     }
 }
+
+impl Drop for PixelPlugin {
+    fn drop(&mut self) {
+        // Kill the child process when the plugin panel is collapsed or removed,
+        // so it doesn't orphan. The reader thread exits naturally once stdout closes.
+        let _ = self._child.kill();
+    }
+}

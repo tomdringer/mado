@@ -82,28 +82,32 @@ impl PtySession {
         // Inject pre_bytes BEFORE the reader thread starts — no contention possible.
         if !pre_bytes.is_empty() {
             let mut parser = Parser::new();
-            let mut handler = VteHandler(Arc::clone(&state));
+            let mut st = state.lock().unwrap();
+            let mut handler = VteHandler(&mut *st);
             for &b in pre_bytes {
                 parser.advance(&mut handler, b);
             }
             dirty.store(true, Ordering::Relaxed);
         }
 
-        // Background reader thread
+        // Background reader thread — lock once per buffer read (not per byte).
         {
             let state = Arc::clone(&state);
             let dirty = Arc::clone(&dirty);
             let mut reader = pair.master.try_clone_reader().expect("clone_reader failed");
             thread::spawn(move || {
                 let mut parser = Parser::new();
-                let mut handler = VteHandler(Arc::clone(&state));
                 let mut buf = [0u8; 4096];
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
-                            for &b in &buf[..n] {
-                                parser.advance(&mut handler, b);
+                            {
+                                let mut st = state.lock().unwrap();
+                                let mut handler = VteHandler(&mut *st);
+                                for &b in &buf[..n] {
+                                    parser.advance(&mut handler, b);
+                                }
                             }
                             dirty.store(true, Ordering::Relaxed);
                         }
@@ -128,9 +132,11 @@ impl PtySession {
 
     /// Inject raw bytes (e.g. ANSI art) directly into the terminal state,
     /// bypassing the PTY. Safe to call from the main thread.
+    #[allow(dead_code)]
     pub fn inject_bytes(&self, data: &[u8]) {
         let mut parser = Parser::new();
-        let mut handler = VteHandler(Arc::clone(&self.state));
+        let mut st = self.state.lock().unwrap();
+        let mut handler = VteHandler(&mut *st);
         for &b in data {
             parser.advance(&mut handler, b);
         }

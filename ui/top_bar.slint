@@ -1,0 +1,96 @@
+// ─── Top Bar ──────────────────────────────────────────────────────────────────
+//
+// Always-visible 52px header strip. Clicking a plugin header toggles the
+// full-height overlay in main.slint — content is rendered there, not here.
+
+import { PluginItem } from "sidebar.slint";
+
+export component TopBar inherits Rectangle {
+    in property <color> theme-card-bg:    #1e293b;
+    in property <color> theme-card-border:#334155;
+
+    in-out property <[PluginItem]> top-plugins;
+    in-out property <bool> expanded: false;
+
+    callback expanded-changed(bool);
+
+    background: root.theme-card-bg;
+
+    private property <int> n: root.top-plugins.length;
+
+    // One header column per plugin
+    for item[i] in root.top-plugins: Rectangle {
+        x: (root.width / root.n) * i;
+        y: 0px;
+        width: root.width / root.n;
+        height: parent.height;
+        background: root.theme-card-bg;
+        clip: true;
+
+        // Left-edge separator (except first column)
+        if i > 0: Rectangle {
+            x: 0; y: 0; width: 1px; height: parent.height;
+            background: root.theme-card-border;
+        }
+
+        HorizontalLayout {
+            padding: 0; spacing: 0;
+            width: parent.width; height: parent.height;
+
+            // Icon
+            Rectangle {
+                width: 38px; height: parent.height;
+                Text {
+                    text: item.icon;
+                    color: rgba(255, 255, 255, 0.45);
+                    font-family: "Hack Nerd Font";
+                    font-size: 22px;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: parent.width; height: parent.height;
+                }
+            }
+
+            // Title — click to toggle overlay
+            TouchArea {
+                horizontal-stretch: 1;
+                height: parent.height;
+                mouse-cursor: MouseCursor.pointer;
+                clicked => {
+                    root.expanded = !root.expanded;
+                    root.expanded-changed(root.expanded);
+                }
+                Text {
+                    text: item.title;
+                    color: rgba(255, 255, 255, 0.80);
+                    font-family: "SF Pro Text";
+                    font-size: 18px; font-weight: 700;
+                    letter-spacing: 0.4px;
+                    overflow: elide;
+                    vertical-alignment: center;
+                    x: 18px;
+                    width: parent.width - 22px; height: parent.height;
+                }
+            }
+
+            // Chevron
+            Rectangle {
+                width: 24px; height: parent.height;
+                Text {
+                    text: root.expanded ? "↑" : "↓";
+                    color: rgba(255, 255, 255, 0.22);
+                    font-family: "SF Pro Text";
+                    font-size: 12px;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: parent.width; height: parent.height;
+                }
+            }
+        }
+    }
+
+    // Bottom separator line
+    Rectangle {
+        x: 0; y: parent.height - 1px;
+        width: parent.width; height: 1px;
+        background: root.theme-card-border;
+    }
+}

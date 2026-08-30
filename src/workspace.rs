@@ -57,9 +57,15 @@ pub fn load_project_paths() -> HashMap<String, String> {
     };
     table
         .into_iter()
-        .filter_map(|(code, val)| {
+        .filter_map(|(section, val)| {
             let path = val.get("path")?.as_str()?.to_string();
-            Some((code, path))
+            // If `project` is set, use the Tasku project name as key so
+            // name-based fallback lookup works. Otherwise use the section name.
+            let key = val.get("project")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or(section);
+            Some((key, path))
         })
         .collect()
 }
@@ -87,6 +93,47 @@ pub fn save_tasku_fields(fields: &str) {
 pub fn load_tasku_fields() -> String {
     fs::read_to_string(config_dir().join("tasku_fields"))
         .unwrap_or_else(|_| DEFAULT_TASKU_FIELDS.to_string())
+}
+
+// ── Task runner commands ───────────────────────────────────────────────────────
+//
+// Read from ~/.config/mado/projects.toml — same file that maps codes to paths.
+// Each section may also contain a `task` key:
+//
+//   [MDO]
+//   path = "/Users/tom/Sites/mado"
+//   task = "cargo run"
+//
+//   [APP]
+//   path = "/Users/tom/Sites/app"
+//   task = "npm run dev"
+//
+// The bottom bar runner looks up the active workspace's entry on play.
+
+pub fn load_runner_tasks() -> HashMap<String, String> {
+    let file = config_dir().join("projects.toml");
+    let content = match fs::read_to_string(&file) {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    let table = match content.parse::<toml::Table>() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("mado: could not parse projects.toml: {e}");
+            return HashMap::new();
+        }
+    };
+    table
+        .into_iter()
+        .filter_map(|(section, val)| {
+            let task = val.get("task")?.as_str()?.to_string();
+            let key = val.get("project")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or(section);
+            Some((key, task))
+        })
+        .collect()
 }
 
 // ── Plugin order persistence ───────────────────────────────────────────────────
