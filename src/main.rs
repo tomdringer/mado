@@ -12,10 +12,11 @@ use pane_tree::PaneTree;
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::collections::HashMap;
 
 use config::Config;
-use pane_tree::{FlatDividerData, NodeId, SplitDir};
+use pane_tree::{FlatDividerData, NavDir, NodeId, SplitDir};
 use pixel_plugin::PixelPlugin;
 use sidebar::SidebarState;
 use tasku::detect as detect_tasku;
@@ -27,8 +28,14 @@ use slint::{Image, Model, ModelRc, Timer, TimerMode, VecModel};
 // is a safe sentinel. External plugin IDs count down from u32::MAX - 1.
 const SIDEBAR_TASKU_ID: NodeId = u32::MAX;
 
-/// NodeId for external plugin at index `i`.
+/// NodeId for LEFT external plugin at index `i`.
 fn plugin_node_id(i: usize) -> NodeId { u32::MAX - 1 - i as u32 }
+
+/// NodeId for RIGHT external plugin at index `i`.
+fn right_plugin_node_id(i: usize) -> NodeId { u32::MAX / 2 - i as u32 }
+
+/// NodeId for TOP external plugin at index `i`.
+fn top_plugin_node_id(i: usize) -> NodeId { u32::MAX / 4 - i as u32 }
 
 // Default panel heights (match sidebar.slint initial values).
 pub const DEFAULT_TASKU_PANEL_H:  f32 = 400.0;
@@ -53,6 +60,34 @@ const TASKU_PANEL_FIXED_H: f32 = 162.0;
 
 // Fixed height of external plugin panel: top+bottom padding (8 px each) + resize handle (8 px).
 const PLUGIN_PANEL_FIXED_H: f32 = 16.0;
+
+// Horizontal (top-bar) Tasku layout constants.
+// Button column: 8px pad-L + 176px (3×56+2×4) + 6px spacing + 8px pad-R = 198px
+// Terminal height: panel_h minus 8px top pad + 8px bot pad = panel_h - 16px
+const TASKU_HORIZ_BTN_W: f32 = 198.0;
+const TASKU_HORIZ_PAD_H: f32 = 16.0;
+
+// Runner (bottom bar) PTY node ID and layout constants.
+// Button column: 8px pad + 60px btns + 6px spacing + 8px pad = 82px.
+const RUNNER_ID:      NodeId = u32::MAX / 8;
+const RUNNER_BTN_W:   f32   = 82.0;
+const RUNNER_PAD_H:   f32   = 16.0;
+const RUNNER_PANEL_H: f32   = 300.0;  // overlay height, kept fixed (matches main.slint 300px)
+
+fn runner_size(overlay_w: f32) -> (f32, f32) {
+    let term_w = (overlay_w - RUNNER_BTN_W).max(50.0).round();
+    let term_h = (RUNNER_PANEL_H - RUNNER_PAD_H).max(50.0).round();
+    (term_w, term_h)
+}
+
+/// PTY size for Tasku in the top bar overlay (horizontal layout).
+/// `overlay_w` = full window width; `overlay_h` = window height minus the 52px header.
+fn tasku_top_bar_size(overlay_w: f32, overlay_h: f32) -> (f32, f32) {
+    // Round to integer pixels so image-fit:fill is always a 1:1 mapping.
+    let term_w = (overlay_w - TASKU_HORIZ_BTN_W).max(50.0).round();
+    let term_h = (overlay_h - TASKU_HORIZ_PAD_H).max(50.0).round();
+    (term_w, term_h)
+}
 
 /// Terminal rect height inside the Tasku panel.
 fn tasku_terminal_h(panel_h: f32) -> f32 {
@@ -104,6 +139,13 @@ fn px_to_cell(x: f32, y: f32, reg: &TerminalRegistry) -> (usize, usize) {
     const IMG_Y: f32 = 28.0;
     let col = (((x - IMG_X).max(0.0) * reg.scale) / reg.font.cell_w as f32) as usize;
     let row = (((y - IMG_Y).max(0.0) * reg.scale) / reg.font.cell_h as f32) as usize;
+    (col, row)
+}
+
+fn runner_px_to_cell(x: f32, y: f32, reg: &TerminalRegistry) -> (usize, usize) {
+    // Runner terminal image fills its rectangle with no offset.
+    let col = ((x.max(0.0) * reg.scale) / reg.font.cell_w as f32) as usize;
+    let row = ((y.max(0.0) * reg.scale) / reg.font.cell_h as f32) as usize;
     (col, row)
 }
 
@@ -187,6 +229,11 @@ fn hit_test(x: f32, y: f32, dividers: &[FlatDividerData]) -> Option<usize> {
 }
 
 /// Full layout + image push — used when pane geometry changes (split, close, resize).
+///
+/// Uses `set_row_data` (not `set_vec`) whenever the pane count is unchanged, so
+/// existing PaneView component instances are reused. `set_vec` recreates every
+/// component, causing `init =>` to fire and `scope.focus()` to steal keyboard
+/// focus away from the sidebar. `set_row_data` avoids that entirely.
 fn full_push(
     ui: &MainWindow,
     tree: &PaneTree,
@@ -200,7 +247,17 @@ fn full_push(
     let w = ui.get_window_w();
     let h = ui.get_window_h();
 
-    pane_model.set_vec(make_panes(tree, w, h, images, focused_id));
+    let new_panes = make_panes(tree, w, h, images, focused_id);
+    if new_panes.len() != pane_model.row_count() {
+        // Count changed (split / close) — must replace the whole model.
+        pane_model.set_vec(new_panes);
+    } else {
+        // Count unchanged — update each row in place so PaneView instances
+        // (and their FocusScopes) are never recreated.
+        for (row, pane) in new_panes.into_iter().enumerate() {
+            pane_model.set_row_data(row, pane);
+        }
+    }
 
     let dividers = tree.flatten_dividers(w, h);
     *dividers_cache.borrow_mut() = dividers.clone();
@@ -628,6 +685,7 @@ fn main() {
 
     let tree = Rc::new(RefCell::new(PaneTree::new()));
     let registry = Rc::new(RefCell::new(TerminalRegistry::new(default_font_size, scale, shell, config.font_family.clone())));
+    registry.borrow().font.prewarm();
 
     // ── Sidebar + Tasku detection ────────────────────────────────────────────
     let tasku_path = detect_tasku().map(|t| t.path.to_string_lossy().into_owned());
@@ -637,15 +695,32 @@ fn main() {
         println!("mado: tasku not found");
     }
 
-    let ext_plugins = config.plugins.clone();
-    let num_ext_plugins = ext_plugins.len();
+    let all_plugins = config.plugins.clone();
+    let left_ext_plugins: Vec<_> = all_plugins.iter()
+        .filter(|p| p.position.is_empty() || p.position == "left")
+        .cloned().collect();
+    let right_ext_plugins: Vec<_> = all_plugins.iter()
+        .filter(|p| p.position == "right")
+        .cloned().collect();
+    let top_ext_plugins: Vec<_> = all_plugins.iter()
+        .filter(|p| p.position == "top")
+        .cloned().collect();
+    let num_left_ext = left_ext_plugins.len();
+    let num_right_ext = right_ext_plugins.len();
+    let num_top_ext = top_ext_plugins.len();
+
     let sidebar = Rc::new(RefCell::new(SidebarState::new(
         config.sidebar_width,
+        config.right_sidebar_width,
+        config.top_bar_height,
         tasku_path,
-        ext_plugins,
+        left_ext_plugins,
+        right_ext_plugins.clone(),
+        top_ext_plugins.clone(),
         config.disable_tasku,
         config.disable_priorities,
         config.disable_workspaces,
+        config.tasku_position.clone(),
     )));
     {
         let saved_order = workspace::load_plugin_order();
@@ -654,8 +729,15 @@ fn main() {
         }
     }
     ui.set_sidebar_width(config.sidebar_width);
+    ui.set_right_sidebar_width(config.right_sidebar_width);
+    ui.set_top_bar_height(config.top_bar_height);
 
     let tasku_fields = Rc::new(workspace::load_tasku_fields());
+
+    // ── Task runner ──────────────────────────────────────────────────────────
+    let runner_tasks: Rc<std::collections::HashMap<String, String>> =
+        Rc::new(workspace::load_runner_tasks());
+    let runner_is_running: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
 
     // ── Workspace + priority projects ────────────────────────────────────────
     // Fetch projects once at startup.  Build:
@@ -726,15 +808,60 @@ fn main() {
         ui.set_plugins(ModelRc::new(Rc::clone(&plugin_model)));
     }
 
-    // ── External plugin state models ─────────────────────────────────────────
+    // Push initial left sidebar plugin list
+    {
+        let right_items: Vec<PluginItem> = sidebar.borrow().right_items().into_iter().map(
+            |(id, title, subtitle, icon, plugin_index)| PluginItem {
+                id:           id.into(),
+                title:        title.into(),
+                subtitle:     subtitle.into(),
+                icon:         icon.into(),
+                plugin_index,
+            }
+        ).collect();
+        ui.set_right_plugins(ModelRc::new(Rc::new(VecModel::from(right_items))));
+    }
+
+    // Determine show-right-sidebar (right sidebar auto-shows when plugins exist).
+    // Top and bottom bars intentionally start hidden regardless of config so that
+    // the first Cmd+T / Cmd+B press always shows them (predictable first-use UX).
+    let has_top_plugins = {
+        let s = sidebar.borrow();
+        !s.top_items().is_empty()
+    };
+    let has_right_plugins = {
+        let s = sidebar.borrow();
+        !s.right_items().is_empty()
+    };
+    // Top bar: always start hidden; Cmd+T to show.
+    let _ = has_top_plugins;
+    ui.set_show_right_sidebar(has_right_plugins);
+    // Bottom bar: always start hidden; Cmd+B to show.
+    // (config.show_bottom_bar is kept for future session-restore use.)
+
+    // Push top bar plugin list
+    {
+        let top_items: Vec<PluginItem> = sidebar.borrow().top_items().into_iter().map(
+            |(id, title, subtitle, icon, plugin_index)| PluginItem {
+                id:           id.into(),
+                title:        title.into(),
+                subtitle:     subtitle.into(),
+                icon:         icon.into(),
+                plugin_index,
+            }
+        ).collect();
+        ui.set_top_plugins(ModelRc::new(Rc::new(VecModel::from(top_items))));
+    }
+
+    // ── External plugin state models (left sidebar) ──────────────────────────
     let plugin_expanded_model: Rc<VecModel<bool>> =
-        Rc::new(VecModel::from(vec![false; num_ext_plugins]));
+        Rc::new(VecModel::from(vec![false; num_left_ext]));
     let plugin_panel_h_model: Rc<VecModel<f32>> =
-        Rc::new(VecModel::from(vec![DEFAULT_PLUGIN_PANEL_H; num_ext_plugins]));
+        Rc::new(VecModel::from(vec![DEFAULT_PLUGIN_PANEL_H; num_left_ext]));
     let plugin_images_model: Rc<VecModel<Image>> =
-        Rc::new(VecModel::from(vec![Image::default(); num_ext_plugins]));
+        Rc::new(VecModel::from(vec![Image::default(); num_left_ext]));
     let plugin_pixel_model: Rc<VecModel<bool>> = Rc::new(VecModel::from(
-        config.plugins.iter().map(|p| p.kind == "pixel").collect::<Vec<_>>()
+        sidebar.borrow().left_ext_plugins.iter().map(|p| p.kind == "pixel").collect::<Vec<_>>()
     ));
 
     ui.set_plugin_expanded(ModelRc::new(Rc::clone(&plugin_expanded_model)));
@@ -742,8 +869,37 @@ fn main() {
     ui.set_plugin_images(ModelRc::new(Rc::clone(&plugin_images_model)));
     ui.set_plugin_pixel(ModelRc::new(Rc::clone(&plugin_pixel_model)));
 
-    // index → PixelPlugin for plugins with kind = "pixel"
+    // ── External plugin state models (right sidebar) ─────────────────────────
+    let right_plugin_expanded_model: Rc<VecModel<bool>> =
+        Rc::new(VecModel::from(vec![false; num_right_ext]));
+    let right_plugin_panel_h_model: Rc<VecModel<f32>> =
+        Rc::new(VecModel::from(vec![DEFAULT_PLUGIN_PANEL_H; num_right_ext]));
+    let right_plugin_images_model: Rc<VecModel<Image>> =
+        Rc::new(VecModel::from(vec![Image::default(); num_right_ext]));
+    let right_plugin_pixel_model: Rc<VecModel<bool>> = Rc::new(VecModel::from(
+        right_ext_plugins.iter().map(|p| p.kind == "pixel").collect::<Vec<_>>()
+    ));
+
+    ui.set_right_plugin_expanded(ModelRc::new(Rc::clone(&right_plugin_expanded_model)));
+    ui.set_right_plugin_panel_h(ModelRc::new(Rc::clone(&right_plugin_panel_h_model)));
+    ui.set_right_plugin_images(ModelRc::new(Rc::clone(&right_plugin_images_model)));
+    ui.set_right_plugin_pixel(ModelRc::new(Rc::clone(&right_plugin_pixel_model)));
+
+    // ── External plugin state models (top bar) ───────────────────────────────
+    let top_plugin_images_model: Rc<VecModel<Image>> =
+        Rc::new(VecModel::from(vec![Image::default(); num_top_ext]));
+    let top_plugin_pixel_model: Rc<VecModel<bool>> = Rc::new(VecModel::from(
+        top_ext_plugins.iter().map(|p| p.kind == "pixel").collect::<Vec<_>>()
+    ));
+
+    ui.set_top_plugin_images(ModelRc::new(Rc::clone(&top_plugin_images_model)));
+    ui.set_top_plugin_pixel(ModelRc::new(Rc::clone(&top_plugin_pixel_model)));
+
+    // index → PixelPlugin for plugins with kind = "pixel" (left sidebar)
     let pixel_plugins: Rc<RefCell<std::collections::HashMap<usize, PixelPlugin>>> =
+        Rc::new(RefCell::new(std::collections::HashMap::new()));
+    // index → PixelPlugin for right sidebar pixel plugins
+    let right_pixel_plugins: Rc<RefCell<std::collections::HashMap<usize, PixelPlugin>>> =
         Rc::new(RefCell::new(std::collections::HashMap::new()));
 
     let pane_model = Rc::new(VecModel::<FlatPane>::from(vec![]));
@@ -765,10 +921,19 @@ fn main() {
     // ── Text selection (for copy/paste) ──────────────────────────────────────
     let selection: Rc<RefCell<Option<Selection>>> = Rc::new(RefCell::new(None));
 
+    // ── Float plugin state ────────────────────────────────────────────────────
+    let float_plugin: Rc<RefCell<Option<(usize, bool)>>> = // (index, is_right)
+        Rc::new(RefCell::new(None));
+
     // Initial terminal is spawned lazily inside on_window_resized so we have
     // real PTY dimensions and can prepend the welcome banner before the shell prompt.
     let initial_spawned: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
     *focused_id.borrow_mut() = Some(tree.borrow().root);
+
+    // Shared pending paste: key handler runs pbpaste on a background thread,
+    // timer drains the result via try_lock. Avoids blocking the UI thread.
+    let pending_paste: Rc<RefCell<Option<(NodeId, Arc<std::sync::Mutex<Option<Vec<u8>>>>)>>> =
+        Rc::new(RefCell::new(None));
 
     // ── 60fps render timer ──────────────────────────────────────────────────
     // Uses set_row_data so PaneView instances (and their FocusScopes) are never
@@ -781,7 +946,12 @@ fn main() {
         let focused_id = Rc::clone(&focused_id);
         let selection = Rc::clone(&selection);
         let plugin_images_model = Rc::clone(&plugin_images_model);
+        let right_plugin_images_model = Rc::clone(&right_plugin_images_model);
+        let _top_plugin_images_model = Rc::clone(&top_plugin_images_model);
         let pixel_plugins = Rc::clone(&pixel_plugins);
+        let right_pixel_plugins = Rc::clone(&right_pixel_plugins);
+        let float_plugin = Rc::clone(&float_plugin);
+        let pending_paste = Rc::clone(&pending_paste);
         let ui_weak = ui.as_weak();
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, std::time::Duration::from_millis(16), move || {
@@ -789,22 +959,56 @@ fn main() {
                 let s = selection.borrow();
                 s.as_ref().map(|s| (s.pane_id, s.normalized()))
             };
+            // Drain async paste (background thread runs pbpaste, stores result here).
+            {
+                let paste_ready: Option<(NodeId, Vec<u8>)> = {
+                    let guard = pending_paste.borrow();
+                    if let Some((paste_id, result)) = guard.as_ref() {
+                        if let Ok(mut lock) = result.try_lock() {
+                            lock.take().map(|data| (*paste_id, data))
+                        } else { None }
+                    } else { None }
+                };
+                if let Some((paste_id, mut data)) = paste_ready {
+                    if data.ends_with(b"\r\n") { data.truncate(data.len() - 2); }
+                    else if data.ends_with(b"\n") { data.truncate(data.len() - 1); }
+                    if !data.is_empty() {
+                        registry.borrow_mut().write_key(paste_id, &data);
+                    }
+                    *pending_paste.borrow_mut() = None;
+                }
+            }
+
             let dirty_bufs = registry.borrow_mut().drain_dirty(sel);
 
-            let mut tasku_buf: Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> = None;
-            // plugin_index → pixel buffer for external plugins
+            let mut tasku_buf:  Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> = None;
+            let mut runner_buf: Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> = None;
+            // plugin_index → pixel buffer for left external plugins
             let mut plugin_bufs: Vec<(usize, slint::SharedPixelBuffer<slint::Rgba8Pixel>)> = Vec::new();
+            // plugin_index → pixel buffer for right external plugins
+            let mut right_plugin_bufs: Vec<(usize, slint::SharedPixelBuffer<slint::Rgba8Pixel>)> = Vec::new();
             let mut pane_dirty_ids: Vec<NodeId> = Vec::new();
             let mut imgs = images.borrow_mut();
 
             for (id, buf) in dirty_bufs {
                 if id == SIDEBAR_TASKU_ID {
                     tasku_buf = Some(buf);
-                } else if id < SIDEBAR_TASKU_ID && id > u32::MAX - 1 - num_ext_plugins as u32 {
-                    // External plugin NodeId: u32::MAX - 1 - i
+                } else if id == RUNNER_ID {
+                    runner_buf = Some(buf);
+                } else if id < SIDEBAR_TASKU_ID && id > u32::MAX - 1 - num_left_ext as u32 {
+                    // Left external plugin NodeId: u32::MAX - 1 - i
                     let i = (u32::MAX - 1 - id) as usize;
-                    if i < num_ext_plugins {
+                    if i < num_left_ext {
                         plugin_bufs.push((i, buf));
+                    }
+                } else if num_right_ext > 0
+                    && id <= u32::MAX / 2
+                    && id >= u32::MAX / 2 - (num_right_ext as u32).saturating_sub(1)
+                {
+                    // Right external plugin NodeId: u32::MAX / 2 - i
+                    let i = (u32::MAX / 2 - id) as usize;
+                    if i < num_right_ext {
+                        right_plugin_bufs.push((i, buf));
                     }
                 } else {
                     pane_dirty_ids.push(id);
@@ -824,21 +1028,38 @@ fn main() {
                         }
                     }
                     if plugin.paste_pending.swap(false, std::sync::atomic::Ordering::Relaxed) {
-                        if let Ok(out) = std::process::Command::new("pbpaste").output() {
-                            let mut data = out.stdout;
-                            if data.ends_with(b"\r\n") { data.truncate(data.len() - 2); }
-                            else if data.ends_with(b"\n") { data.truncate(data.len() - 1); }
-                            if !data.is_empty() {
-                                if let Some(id) = *focused_id.borrow() {
-                                    registry.borrow_mut().write_key(id, &data);
+                        if let Some(paste_id) = *focused_id.borrow() {
+                            let result: Arc<std::sync::Mutex<Option<Vec<u8>>>> =
+                                Arc::new(std::sync::Mutex::new(None));
+                            let result2 = Arc::clone(&result);
+                            std::thread::spawn(move || {
+                                if let Ok(out) = std::process::Command::new("pbpaste").output() {
+                                    *result2.lock().unwrap() = Some(out.stdout);
                                 }
+                            });
+                            *pending_paste.borrow_mut() = Some((paste_id, result));
+                        }
+                    }
+                }
+            }
+
+            // Drain dirty right sidebar pixel plugins
+            {
+                let mut pp = right_pixel_plugins.borrow_mut();
+                for (i, plugin) in pp.iter_mut() {
+                    if plugin.dirty.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        if let Ok(guard) = plugin.image.lock() {
+                            if let Some(ref buf) = *guard {
+                                right_plugin_bufs.push((*i, buf.clone()));
                             }
                         }
                     }
                 }
             }
 
-            if pane_dirty_ids.is_empty() && tasku_buf.is_none() && plugin_bufs.is_empty() {
+            if pane_dirty_ids.is_empty() && tasku_buf.is_none() && runner_buf.is_none()
+                && plugin_bufs.is_empty() && right_plugin_bufs.is_empty()
+            {
                 return;
             }
 
@@ -846,13 +1067,30 @@ fn main() {
                 push_images(&pane_model, &imgs, *focused_id.borrow(), Some(&pane_dirty_ids));
             }
 
-            if tasku_buf.is_some() || !plugin_bufs.is_empty() {
+            if tasku_buf.is_some() || runner_buf.is_some()
+                || !plugin_bufs.is_empty() || !right_plugin_bufs.is_empty()
+            {
                 if let Some(ui) = ui_weak.upgrade() {
                     if let Some(buf) = tasku_buf {
                         ui.set_tasku_terminal_image(Image::from_rgba8(buf));
                     }
+                    if let Some(buf) = runner_buf {
+                        ui.set_runner_terminal_image(Image::from_rgba8(buf));
+                    }
                     for (i, buf) in plugin_bufs {
-                        plugin_images_model.set_row_data(i, Image::from_rgba8(buf));
+                        let img = Image::from_rgba8(buf);
+                        // Also route to float overlay if this plugin is floated
+                        if float_plugin.borrow().as_ref() == Some(&(i, false)) {
+                            ui.set_float_plugin_image(img.clone());
+                        }
+                        plugin_images_model.set_row_data(i, img);
+                    }
+                    for (i, buf) in right_plugin_bufs {
+                        let img = Image::from_rgba8(buf);
+                        if float_plugin.borrow().as_ref() == Some(&(i, true)) {
+                            ui.set_float_plugin_image(img.clone());
+                        }
+                        right_plugin_images_model.set_row_data(i, img);
                     }
                 }
             }
@@ -1024,13 +1262,39 @@ fn main() {
         move |id| {
             registry.borrow_mut().remove(id as NodeId);
             images.borrow_mut().remove(&(id as NodeId));
-            tree.borrow_mut().close(id as u32);
+            let remap = tree.borrow_mut().close(id as u32);
 
-            let remaining = tree.borrow().leaf_ids();
-            let focus = remaining.first().copied();
-            *focused_id.borrow_mut() = focus;
+            // When a leaf sibling is promoted into the parent slot its node ID
+            // changes.  Remap the images and PTY session to the new key so the
+            // surviving pane keeps its content.
+            let new_focus = if let Some((old_id, new_id)) = remap {
+                // Extract first so the RefMut is dropped before the next borrow.
+                let img = images.borrow_mut().remove(&old_id);
+                if let Some(img) = img {
+                    images.borrow_mut().insert(new_id, img);
+                }
+                registry.borrow_mut().remap_id(old_id, new_id);
+                Some(new_id)
+            } else {
+                tree.borrow().leaf_ids().first().copied()
+            };
+            *focused_id.borrow_mut() = new_focus;
 
             if let Some(ui) = ui_weak.upgrade() {
+                // Resize every surviving pane's PTY to its new geometry.
+                // Without this the terminal renders at the old (split) size and
+                // the image gets stretched, making text appear giant.
+                let w = ui.get_window_w();
+                let h = ui.get_window_h();
+                let panes = tree.borrow().flatten(w, h);
+                let mut reg = registry.borrow_mut();
+                for p in &panes {
+                    reg.resize(p.id,
+                        (p.width  - PANE_H_INSET).max(10.0),
+                        (p.height - PANE_TOP_INSET).max(10.0));
+                }
+                drop(reg);
+
                 full_push(&ui, &tree.borrow(), &dividers_cache, &pane_model, &div_model,
                           &images.borrow(), *focused_id.borrow(), None);
             }
@@ -1046,12 +1310,14 @@ fn main() {
         let pane_model = Rc::clone(&pane_model);
         let images = Rc::clone(&images);
         let selection = Rc::clone(&selection);
+        let pending_paste = Rc::clone(&pending_paste);
         let ui_weak = ui.as_weak();
-        move |id, text, ctrl, meta| {
+        move |id, text, ctrl, meta, alt, shift| {
             if *focused_id.borrow() != Some(id as NodeId) { return; }
 
             let zoom_mod = ctrl || meta;
             let t = text.as_str();
+
 
             // Cmd+C: copy selection to clipboard (primary shortcut on macOS).
             // Ctrl+C: smart copy — copies if selection exists, otherwise sends ^C to terminal.
@@ -1096,7 +1362,7 @@ fn main() {
                 "\u{0017}" | "\u{0018}" | // Meta L/R
                 "\u{0019}"               // Backtab
             );
-            if !is_modifier_only && !ctrl && !meta {
+            if !is_modifier_only && !ctrl && !meta && !shift {
                 let prev_id = selection.borrow().as_ref().map(|s| s.pane_id);
                 *selection.borrow_mut() = None;
                 if let Some(sid) = prev_id {
@@ -1104,17 +1370,17 @@ fn main() {
                 }
             }
 
-            // Ctrl+V / Cmd+V: paste clipboard contents.
+            // Ctrl+V / Cmd+V: paste clipboard contents (async — avoids blocking UI thread).
             if (ctrl && t == "v") || (meta && t == "v") {
-                if let Ok(out) = std::process::Command::new("pbpaste").output() {
-                    let mut data = out.stdout;
-                    // Strip one trailing newline so paste doesn't auto-execute commands.
-                    if data.ends_with(b"\r\n") { data.truncate(data.len() - 2); }
-                    else if data.ends_with(b"\n") { data.truncate(data.len() - 1); }
-                    if !data.is_empty() {
-                        registry.borrow_mut().write_key(id as NodeId, &data);
+                let result: Arc<std::sync::Mutex<Option<Vec<u8>>>> =
+                    Arc::new(std::sync::Mutex::new(None));
+                let result2 = Arc::clone(&result);
+                std::thread::spawn(move || {
+                    if let Ok(out) = std::process::Command::new("pbpaste").output() {
+                        *result2.lock().unwrap() = Some(out.stdout);
                     }
-                }
+                });
+                *pending_paste.borrow_mut() = Some((id as NodeId, result));
                 return;
             }
 
@@ -1142,6 +1408,31 @@ fn main() {
                 return;
             }
 
+            // Modified arrow / navigation keys → xterm modifier sequences.
+            // Format: ESC [ 1 ; <N> <dir>  where N = 1 + shift(1) + alt(2) + ctrl(4).
+            // Using Opt+Arrow (alt=true) for word movement — avoids conflict with
+            // BetterStage which intercepts Cmd+Arrow at the OS level.
+            //   Opt+Left/Right       → N=3 → word movement (macOS terminal standard)
+            //   Shift+Opt+Left/Right → N=4 → word selection
+            //   Shift+Arrow          → N=2 → character selection
+            let arrow_dir: Option<u8> = match t {
+                "\u{F700}" => Some(b'A'), // Up
+                "\u{F701}" => Some(b'B'), // Down
+                "\u{F702}" => Some(b'D'), // Left
+                "\u{F703}" => Some(b'C'), // Right
+                _ => None,
+            };
+            if let Some(dir) = arrow_dir {
+                if alt || shift {
+                    let n: u32 = 1
+                        + if shift { 1 } else { 0 }
+                        + if alt   { 2 } else { 0 };
+                    let seq = format!("\x1b[1;{}{}", n, char::from(dir));
+                    registry.borrow_mut().write_key(id as NodeId, seq.as_bytes());
+                    return;
+                }
+            }
+
             let bytes = key_text_to_bytes(&text);
             registry.borrow_mut().write_key(id as NodeId, &bytes);
         }
@@ -1155,6 +1446,31 @@ fn main() {
         move |id| {
             *focused_id.borrow_mut() = Some(id as NodeId);
             push_images(&pane_model, &images.borrow(), Some(id as NodeId), None);
+        }
+    });
+
+    // ── Directional focus (keyboard shortcuts) ───────────────────────────────
+    ui.on_pane_focus_neighbor({
+        let tree       = Rc::clone(&tree);
+        let focused_id = Rc::clone(&focused_id);
+        let pane_model = Rc::clone(&pane_model);
+        let images     = Rc::clone(&images);
+        let ui_weak    = ui.as_weak();
+        move |id, dir| {
+            let nav = match dir {
+                0 => NavDir::Left,
+                1 => NavDir::Right,
+                2 => NavDir::Up,
+                _ => NavDir::Down,
+            };
+            if let Some(ui) = ui_weak.upgrade() {
+                let w = ui.get_window_w();
+                let h = ui.get_window_h();
+                if let Some(neighbor) = tree.borrow().neighbor(id as NodeId, nav, w, h) {
+                    *focused_id.borrow_mut() = Some(neighbor);
+                    push_images(&pane_model, &images.borrow(), Some(neighbor), None);
+                }
+            }
         }
     });
 
@@ -1216,6 +1532,7 @@ fn main() {
     ui.on_window_resized({
         let tree = Rc::clone(&tree);
         let registry = Rc::clone(&registry);
+        let sidebar = Rc::clone(&sidebar);
         let dividers_cache = Rc::clone(&dividers_cache);
         let pane_model = Rc::clone(&pane_model);
         let div_model = Rc::clone(&div_model);
@@ -1232,6 +1549,21 @@ fn main() {
                 let panes = tree.borrow().flatten(w, h);
                 let mut reg = registry.borrow_mut();
 
+                // Tasku top-bar sizing: overlay covers full window width and the
+                // height below the 52px header (= terminal-area h, since the
+                // VerticalLayout places them sequentially).
+                let (tasku_pos, tasku_found) = {
+                    let s = sidebar.borrow();
+                    (s.tasku_position.clone(), s.tasku_path.is_some())
+                };
+                let tasku_in_top = tasku_pos == "top" && tasku_found;
+                // overlay_w = full window width from Slint (accounts for icon-only sidebars).
+                let overlay_w = ui_weak.upgrade()
+                    .map(|ui| ui.get_overlay_total_w())
+                    .unwrap_or(w + 300.0);
+                // overlay_h = terminal-area height (window height minus 52px header)
+                let overlay_h = h;
+
                 if !initial_spawned.get() && w > 50.0 && h > 50.0 {
                     initial_spawned.set(true);
                     let root_id = tree.borrow().root;
@@ -1242,9 +1574,18 @@ fn main() {
                         let banner = welcome_banner(cols, &loaded_theme);
                         reg.spawn_with_banner(root_id, pane_w, pane_h, None, &banner);
                     }
+                    if tasku_in_top {
+                        let (term_w, term_h) = tasku_top_bar_size(overlay_w, overlay_h);
+                        reg.spawn(SIDEBAR_TASKU_ID, term_w, term_h, None);
+                        reg.write_key(SIDEBAR_TASKU_ID, b"tasku list\n");
+                    }
                 } else {
                     for p in &panes {
                         reg.resize(p.id, (p.width - PANE_H_INSET).max(10.0), (p.height - PANE_TOP_INSET).max(10.0));
+                    }
+                    if tasku_in_top {
+                        let (term_w, term_h) = tasku_top_bar_size(overlay_w, overlay_h);
+                        reg.resize(SIDEBAR_TASKU_ID, term_w, term_h);
                     }
                 }
 
@@ -1364,17 +1705,20 @@ fn main() {
         let plugin_panel_h_model = Rc::clone(&plugin_panel_h_model);
         let pixel_plugins = Rc::clone(&pixel_plugins);
         move |new_width| {
-            let tasku_h = {
+            let (tasku_h, tasku_pos) = {
                 let mut s = sidebar.borrow_mut();
                 s.width = new_width;
-                s.tasku_panel_h
+                (s.tasku_panel_h, s.tasku_position.clone())
             };
             let sidebar_w = (new_width - 24.0).max(50.0);
             let mut reg = registry.borrow_mut();
-            reg.resize(SIDEBAR_TASKU_ID, sidebar_w, tasku_terminal_h(tasku_h));
-            // Resize any open external plugins
+            // Only resize tasku here if it lives in the left sidebar
+            if tasku_pos == "left" || tasku_pos.is_empty() {
+                reg.resize(SIDEBAR_TASKU_ID, sidebar_w, tasku_terminal_h(tasku_h));
+            }
+            // Resize any open left external plugins
             let mut pp = pixel_plugins.borrow_mut();
-            for i in 0..num_ext_plugins {
+            for i in 0..num_left_ext {
                 if plugin_expanded_model.row_data(i).unwrap_or(false) {
                     let h = plugin_panel_h_model.row_data(i).unwrap_or(DEFAULT_PLUGIN_PANEL_H);
                     if let Some(plugin) = pp.get_mut(&i) {
@@ -1394,23 +1738,21 @@ fn main() {
     ui.on_tasku_toggled({
         let registry = Rc::clone(&registry);
         let sidebar = Rc::clone(&sidebar);
-        let active_project = Rc::clone(&active_project);
-        let code_to_name = Rc::clone(&code_to_name);
-        let tasku_fields = Rc::clone(&tasku_fields);
         move |expanded| {
+            let tasku_pos = sidebar.borrow().tasku_position.clone();
+            if tasku_pos == "top" {
+                // PTY is always running (spawned in on_window_resized);
+                // the overlay is shown/hidden purely in Slint — nothing to do here.
+                return;
+            }
             let mut reg = registry.borrow_mut();
             if expanded {
-                let (sidebar_w, panel_h) = {
+                let (tasku_w, panel_h) = {
                     let s = sidebar.borrow();
                     ((s.width - 24.0).max(50.0), s.tasku_panel_h)
                 };
-                reg.spawn(SIDEBAR_TASKU_ID, sidebar_w, tasku_terminal_h(panel_h), None);
-                let fields = tasku_fields.as_ref();
-                let cmd = active_project.borrow().as_ref()
-                    .and_then(|code| code_to_name.get(code))
-                    .map(|name| format!("tasku list --project {name} --fields {fields}\n"))
-                    .unwrap_or_else(|| format!("tasku list --fields {fields}\n"));
-                reg.write_key(SIDEBAR_TASKU_ID, cmd.as_bytes());
+                reg.spawn(SIDEBAR_TASKU_ID, tasku_w, tasku_terminal_h(panel_h), None);
+                reg.write_key(SIDEBAR_TASKU_ID, b"tasku list\n");
             } else {
                 reg.remove(SIDEBAR_TASKU_ID);
             }
@@ -1433,7 +1775,7 @@ fn main() {
             let ff = format!(" --fields {}", tasku_fields.as_ref());
 
             let cmd = match label.as_str() {
-                "List"    => format!("tasku list{pf}{ff}\n"),
+                "List"    => format!("tasku list{pf}\n"),
                 "Stats"   => format!("tasku stats{pf}\n"),
                 "Today"   => format!("tasku list --due today{pf}{ff}\n"),
                 "Tmrw"    => format!("tasku list --due tomorrow{pf}{ff}\n"),
@@ -1474,6 +1816,7 @@ fn main() {
         let code_to_name = Rc::clone(&code_to_name);
         let project_paths = Rc::clone(&project_paths);
         let tasku_fields = Rc::clone(&tasku_fields);
+        let runner_tasks = Rc::clone(&runner_tasks);
         let ui_weak = ui.as_weak();
         move |code| {
             let code = code.to_string();
@@ -1503,7 +1846,10 @@ fn main() {
 
             // 2. Load saved layout or create a fresh single-pane workspace.
             let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-            let project_root = project_paths.get(&code).cloned().unwrap_or_else(|| home.clone());
+            let project_root = project_paths.get(&code)
+                .or_else(|| code_to_name.get(&code).and_then(|n| project_paths.get(n.as_str())))
+                .cloned()
+                .unwrap_or_else(|| home.clone());
 
             let (new_tree, mut pane_cwds) = match workspace::load_workspace(&code) {
                 Some(saved) => PaneTree::from_saved(&saved.tree),
@@ -1545,6 +1891,14 @@ fn main() {
                 *active_project.borrow_mut() = Some(code.clone());
                 ui.set_active_project(code.clone().into());
 
+                // 4b. Update runner command for the new workspace
+                let proj_name = code_to_name.get(&code).map(|s| s.as_str());
+                let cmd = runner_tasks.get(&code)
+                    .or_else(|| proj_name.and_then(|n| runner_tasks.get(n)))
+                    .cloned()
+                    .unwrap_or_default();
+                ui.set_runner_current_command(cmd.into());
+
                 // 5. If the Tasku panel is open, refresh with project filter
                 if registry.borrow().sessions.contains_key(&SIDEBAR_TASKU_ID) {
                     let name = code_to_name.get(&code).cloned().unwrap_or_else(|| code.clone());
@@ -1556,21 +1910,252 @@ fn main() {
         }
     });
 
-    // ── Tasku panel height (drag-to-resize) ──────────────────────────────────
+    // ── Runner: play ─────────────────────────────────────────────────────────
+    ui.on_runner_play({
+        let registry          = Rc::clone(&registry);
+        let active_project    = Rc::clone(&active_project);
+        let runner_tasks      = Rc::clone(&runner_tasks);
+        let project_paths     = Rc::clone(&project_paths);
+        let code_to_name      = Rc::clone(&code_to_name);
+        let runner_is_running = Rc::clone(&runner_is_running);
+        let ui_weak           = ui.as_weak();
+        move || {
+            let code = active_project.borrow().clone().unwrap_or_default();
+            // Look up by code, fall back to project name for entries that use `project =`
+            let name = code_to_name.get(&code).map(|s| s.as_str());
+            let cmd = runner_tasks.get(&code)
+                .or_else(|| name.and_then(|n| runner_tasks.get(n)))
+                .cloned()
+                .unwrap_or_default();
+            if cmd.is_empty() { return; }
+            let cwd = project_paths.get(&code)
+                .or_else(|| name.and_then(|n| project_paths.get(n)))
+                .map(|s| s.as_str());
+            let overlay_w = ui_weak.upgrade()
+                .map(|ui| ui.get_overlay_total_w())
+                .unwrap_or(1200.0);
+            let (term_w, term_h) = runner_size(overlay_w);
+            // Run via the user's login shell so version managers (rbenv, asdf,
+            // nvm) and homebrew shims all resolve correctly.
+            let shell = registry.borrow().shell.clone();
+            registry.borrow_mut().spawn_cmd(
+                RUNNER_ID, term_w, term_h,
+                &shell, &["-ilc", &cmd], cwd, &[],
+            );
+            runner_is_running.set(true);
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_runner_is_running(true);
+            }
+        }
+    });
+
+    // ── Runner: stop ─────────────────────────────────────────────────────────
+    ui.on_runner_stop({
+        let registry          = Rc::clone(&registry);
+        let runner_is_running = Rc::clone(&runner_is_running);
+        let ui_weak           = ui.as_weak();
+        move || {
+            registry.borrow_mut().write_key(RUNNER_ID, &[3]); // Ctrl+C
+            runner_is_running.set(false);
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_runner_is_running(false);
+            }
+        }
+    });
+
+    // ── Runner: restart ───────────────────────────────────────────────────────
+    ui.on_runner_restart({
+        let registry          = Rc::clone(&registry);
+        let active_project    = Rc::clone(&active_project);
+        let runner_tasks      = Rc::clone(&runner_tasks);
+        let project_paths     = Rc::clone(&project_paths);
+        let code_to_name      = Rc::clone(&code_to_name);
+        let runner_is_running = Rc::clone(&runner_is_running);
+        let ui_weak           = ui.as_weak();
+        move || {
+            // Kill existing session if running
+            registry.borrow_mut().write_key(RUNNER_ID, &[3]);
+            registry.borrow_mut().sessions.remove(&RUNNER_ID);
+
+            let code = active_project.borrow().clone().unwrap_or_default();
+            let name = code_to_name.get(&code).map(|s| s.as_str());
+            let cmd = runner_tasks.get(&code)
+                .or_else(|| name.and_then(|n| runner_tasks.get(n)))
+                .cloned()
+                .unwrap_or_default();
+            if cmd.is_empty() {
+                runner_is_running.set(false);
+                if let Some(ui) = ui_weak.upgrade() { ui.set_runner_is_running(false); }
+                return;
+            }
+            let cwd = project_paths.get(&code)
+                .or_else(|| name.and_then(|n| project_paths.get(n)))
+                .map(|s| s.as_str());
+            let overlay_w = ui_weak.upgrade()
+                .map(|ui| ui.get_overlay_total_w())
+                .unwrap_or(1200.0);
+            let (term_w, term_h) = runner_size(overlay_w);
+            let shell = registry.borrow().shell.clone();
+            registry.borrow_mut().spawn_cmd(
+                RUNNER_ID, term_w, term_h,
+                &shell, &["-ilc", &cmd], cwd, &[],
+            );
+            runner_is_running.set(true);
+            if let Some(ui) = ui_weak.upgrade() { ui.set_runner_is_running(true); }
+        }
+    });
+
+    // ── Runner: key input ────────────────────────────────────────────────────
+    ui.on_runner_key_input({
+        let registry  = Rc::clone(&registry);
+        let selection = Rc::clone(&selection);
+        move |text, ctrl, meta| {
+            let t = text.as_str();
+            // Cmd+C or Ctrl+C with a selection → copy, don't send ^C
+            if (meta && t == "c") || (ctrl && t == "c") {
+                let sel = selection.borrow();
+                if let Some(ref s) = *sel {
+                    if s.pane_id == RUNNER_ID && !s.is_empty() {
+                        let norm = s.normalized();
+                        drop(sel);
+                        let text = registry.borrow().get_selection_text(RUNNER_ID, norm);
+                        if !text.is_empty() {
+                            let _ = std::process::Command::new("/bin/sh")
+                                .args(["-c", &format!("printf '%s' {} | pbcopy",
+                                    shell_escape(&text))])
+                                .status();
+                        }
+                        *selection.borrow_mut() = None;
+                        registry.borrow().mark_dirty(RUNNER_ID);
+                        return;
+                    }
+                }
+            }
+            let zoom_mod = ctrl || meta;
+            if zoom_mod && (t == "=" || t == "+" || t == "-" || t == "0") { return; }
+            let bytes = key_text_to_bytes(&text);
+            registry.borrow_mut().write_key(RUNNER_ID, &bytes);
+        }
+    });
+
+    // ── Runner: scroll ────────────────────────────────────────────────────────
+    ui.on_runner_scroll({
+        let registry = Rc::clone(&registry);
+        move |delta_px| {
+            let cell_h_logical = {
+                let reg = registry.borrow();
+                reg.font.cell_h as f32 / reg.scale
+            };
+            if cell_h_logical > 0.0 {
+                let delta_rows = (-delta_px / cell_h_logical).round() as i32;
+                if delta_rows != 0 {
+                    registry.borrow_mut().scroll(RUNNER_ID, delta_rows);
+                }
+            }
+        }
+    });
+
+    // ── Runner: panel resize ──────────────────────────────────────────────────
+    ui.on_runner_panel_height_changed({
+        let registry = Rc::clone(&registry);
+        let ui_weak  = ui.as_weak();
+        move |new_h| {
+            let overlay_w = ui_weak.upgrade()
+                .map(|ui| ui.get_overlay_total_w())
+                .unwrap_or(1200.0);
+            let (term_w, term_h) = {
+                let btn_w  = RUNNER_BTN_W;
+                let pad_h  = RUNNER_PAD_H;
+                let term_w = (overlay_w - btn_w).max(50.0).round();
+                let term_h = (new_h      - pad_h).max(50.0).round();
+                (term_w, term_h)
+            };
+            if registry.borrow().sessions.contains_key(&RUNNER_ID) {
+                registry.borrow_mut().resize(RUNNER_ID, term_w, term_h);
+            }
+        }
+    });
+
+    // ── Runner mouse selection ────────────────────────────────────────────────
+    ui.on_runner_mouse_pressed({
+        let registry  = Rc::clone(&registry);
+        let selection = Rc::clone(&selection);
+        move |x, y| {
+            let cell = runner_px_to_cell(x, y, &registry.borrow());
+            *selection.borrow_mut() = Some(Selection { pane_id: RUNNER_ID, anchor: cell, head: cell });
+            registry.borrow().mark_dirty(RUNNER_ID);
+        }
+    });
+
+    ui.on_runner_mouse_moved({
+        let registry  = Rc::clone(&registry);
+        let selection = Rc::clone(&selection);
+        move |x, y| {
+            let mut sel = selection.borrow_mut();
+            if let Some(ref mut s) = *sel {
+                if s.pane_id == RUNNER_ID {
+                    s.head = runner_px_to_cell(x, y, &registry.borrow());
+                    drop(sel);
+                    registry.borrow().mark_dirty(RUNNER_ID);
+                }
+            }
+        }
+    });
+
+    ui.on_runner_mouse_released({
+        let registry  = Rc::clone(&registry);
+        let selection = Rc::clone(&selection);
+        move || {
+            let mut sel = selection.borrow_mut();
+            if let Some(ref s) = *sel {
+                if s.pane_id == RUNNER_ID && s.is_empty() {
+                    *sel = None;
+                    drop(sel);
+                    registry.borrow().mark_dirty(RUNNER_ID);
+                }
+            }
+        }
+    });
+
+    // ── Tasku panel height (drag-to-resize, left sidebar case) ───────────────
     ui.on_tasku_panel_height_changed({
         let registry = Rc::clone(&registry);
         let sidebar = Rc::clone(&sidebar);
         move |new_h| {
-            let sidebar_w = {
+            let (sidebar_w, tasku_pos) = {
                 let mut s = sidebar.borrow_mut();
                 s.tasku_panel_h = new_h;
-                (s.width - 24.0).max(50.0)
+                ((s.width - 24.0).max(50.0), s.tasku_position.clone())
             };
-            registry.borrow_mut().resize(
-                SIDEBAR_TASKU_ID,
-                sidebar_w,
-                tasku_terminal_h(new_h),
-            );
+            // Only applies when tasku is in left sidebar
+            if tasku_pos == "left" || tasku_pos.is_empty() {
+                registry.borrow_mut().resize(
+                    SIDEBAR_TASKU_ID,
+                    sidebar_w,
+                    tasku_terminal_h(new_h),
+                );
+            }
+        }
+    });
+
+    // ── Top bar height changed (tasku resize in top bar) ─────────────────────
+    ui.on_top_bar_height_changed({
+        let registry = Rc::clone(&registry);
+        let sidebar = Rc::clone(&sidebar);
+        let ui_weak = ui.as_weak();
+        move |new_bar_h| {
+            let tasku_w = {
+                let mut s = sidebar.borrow_mut();
+                s.top_bar_h = new_bar_h;
+                let avail_w = ui_weak.upgrade()
+                    .map(|ui| ui.get_window_w())
+                    .unwrap_or(1200.0);
+                let total_sidebars = s.width
+                    + if has_right_plugins { s.right_width } else { 0.0 };
+                (avail_w - total_sidebars - 24.0).max(50.0)
+            };
+            let (term_w, term_h) = tasku_top_bar_size(tasku_w, new_bar_h);
+            registry.borrow_mut().resize(SIDEBAR_TASKU_ID, term_w, term_h);
         }
     });
 
@@ -1594,7 +2179,7 @@ fn main() {
         }
     });
 
-    // ── External plugin panel expand/collapse ────────────────────────────────
+    // ── External plugin panel expand/collapse (left sidebar) ─────────────────
     ui.on_plugin_toggled({
         let registry = Rc::clone(&registry);
         let sidebar = Rc::clone(&sidebar);
@@ -1604,7 +2189,7 @@ fn main() {
         let ui_weak = ui.as_weak();
         move |idx| {
             let idx = idx as usize;
-            if idx >= num_ext_plugins { return; }
+            if idx >= num_left_ext { return; }
             let current = plugin_expanded_model.row_data(idx).unwrap_or(false);
             let now_expanded = !current;
             plugin_expanded_model.set_row_data(idx, now_expanded);
@@ -1613,7 +2198,7 @@ fn main() {
             let panel_h = plugin_panel_h_model.row_data(idx).unwrap_or(DEFAULT_PLUGIN_PANEL_H);
             let (command, kind, plugin_id) = {
                 let s = sidebar.borrow();
-                let p = s.ext_plugins.get(idx);
+                let p = s.left_ext_plugins.get(idx);
                 (
                     p.map(|p| p.command.clone()).unwrap_or_default(),
                     p.map(|p| p.kind.clone()).unwrap_or_default(),
@@ -1648,9 +2233,9 @@ fn main() {
             drop(reg);
 
             // Update any-expanded and total-h for the viewport
-            let any = (0..num_ext_plugins)
+            let any = (0..num_left_ext)
                 .any(|i| plugin_expanded_model.row_data(i).unwrap_or(false));
-            let total: f32 = (0..num_ext_plugins)
+            let total: f32 = (0..num_left_ext)
                 .map(|i| if plugin_expanded_model.row_data(i).unwrap_or(false) {
                     plugin_panel_h_model.row_data(i).unwrap_or(DEFAULT_PLUGIN_PANEL_H)
                 } else { 0.0 })
@@ -1662,7 +2247,7 @@ fn main() {
         }
     });
 
-    // ── External plugin panel height (drag-to-resize) ────────────────────────
+    // ── External plugin panel height (drag-to-resize, left sidebar) ──────────
     ui.on_plugin_panel_height_changed({
         let registry = Rc::clone(&registry);
         let sidebar = Rc::clone(&sidebar);
@@ -1672,7 +2257,7 @@ fn main() {
         let ui_weak = ui.as_weak();
         move |idx, new_h| {
             let idx = idx as usize;
-            if idx >= num_ext_plugins { return; }
+            if idx >= num_left_ext { return; }
             plugin_panel_h_model.set_row_data(idx, new_h);
             let sidebar_w = (sidebar.borrow().width - 24.0).max(50.0);
             if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
@@ -1681,7 +2266,7 @@ fn main() {
                 registry.borrow_mut().resize(plugin_node_id(idx), sidebar_w, plugin_terminal_h(new_h));
             }
             // Update viewport total height
-            let total: f32 = (0..num_ext_plugins)
+            let total: f32 = (0..num_left_ext)
                 .map(|i| if plugin_expanded_model.row_data(i).unwrap_or(false) {
                     plugin_panel_h_model.row_data(i).unwrap_or(DEFAULT_PLUGIN_PANEL_H)
                 } else { 0.0 })
@@ -1692,13 +2277,13 @@ fn main() {
         }
     });
 
-    // ── External plugin key input ─────────────────────────────────────────────
+    // ── External plugin key input (left sidebar) ──────────────────────────────
     ui.on_plugin_key_input({
         let registry = Rc::clone(&registry);
         let pixel_plugins = Rc::clone(&pixel_plugins);
         move |idx, text, ctrl, meta| {
             let idx = idx as usize;
-            if idx >= num_ext_plugins { return; }
+            if idx >= num_left_ext { return; }
             if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
                 plugin.send_key(text.as_str(), ctrl, meta);
             } else {
@@ -1711,13 +2296,13 @@ fn main() {
         }
     });
 
-    // ── External plugin scroll wheel ─────────────────────────────────────────
+    // ── External plugin scroll wheel (left sidebar) ───────────────────────────
     ui.on_plugin_scroll({
         let registry = Rc::clone(&registry);
         let pixel_plugins = Rc::clone(&pixel_plugins);
         move |idx, delta_px| {
             let idx = idx as usize;
-            if idx >= num_ext_plugins { return; }
+            if idx >= num_left_ext { return; }
             if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
                 plugin.send_scroll(delta_px);
             } else {
@@ -1738,8 +2323,6 @@ fn main() {
     // ── External plugin click ────────────────────────────────────────────────
     ui.on_plugin_click({
         let pixel_plugins = Rc::clone(&pixel_plugins);
-        let registry      = Rc::clone(&registry);
-        let focused_id    = Rc::clone(&focused_id);
         move |idx, x, y| {
             let idx = idx as usize;
             if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
@@ -1760,6 +2343,287 @@ fn main() {
         }
     });
 
+    // ── Right sidebar width persistence ──────────────────────────────────────
+    ui.on_right_sidebar_width_changed({
+        let sidebar = Rc::clone(&sidebar);
+        let registry = Rc::clone(&registry);
+        let right_plugin_expanded_model = Rc::clone(&right_plugin_expanded_model);
+        let right_plugin_panel_h_model = Rc::clone(&right_plugin_panel_h_model);
+        move |new_width| {
+            sidebar.borrow_mut().right_width = new_width;
+            let sidebar_w = (new_width - 24.0).max(50.0);
+            let mut reg = registry.borrow_mut();
+            for i in 0..num_right_ext {
+                if right_plugin_expanded_model.row_data(i).unwrap_or(false) {
+                    let h = right_plugin_panel_h_model.row_data(i).unwrap_or(DEFAULT_PLUGIN_PANEL_H);
+                    reg.resize(right_plugin_node_id(i), sidebar_w, plugin_terminal_h(h));
+                }
+            }
+        }
+    });
+
+    // ── Right sidebar plugin expand/collapse ──────────────────────────────────
+    ui.on_right_plugin_toggled({
+        let registry = Rc::clone(&registry);
+        let sidebar = Rc::clone(&sidebar);
+        let right_plugin_expanded_model = Rc::clone(&right_plugin_expanded_model);
+        let right_plugin_panel_h_model = Rc::clone(&right_plugin_panel_h_model);
+        let right_pixel_plugins = Rc::clone(&right_pixel_plugins);
+        let ui_weak = ui.as_weak();
+        move |idx| {
+            let idx = idx as usize;
+            if idx >= num_right_ext { return; }
+            let current = right_plugin_expanded_model.row_data(idx).unwrap_or(false);
+            let now_expanded = !current;
+            right_plugin_expanded_model.set_row_data(idx, now_expanded);
+
+            let sidebar_w = (sidebar.borrow().right_width - 24.0).max(50.0);
+            let panel_h = right_plugin_panel_h_model.row_data(idx).unwrap_or(DEFAULT_PLUGIN_PANEL_H);
+            let (command, kind, plugin_id) = {
+                let s = sidebar.borrow();
+                let p = s.right_ext_plugins.get(idx);
+                (
+                    p.map(|p| p.command.clone()).unwrap_or_default(),
+                    p.map(|p| p.kind.clone()).unwrap_or_default(),
+                    p.map(|p| p.id.clone()).unwrap_or_default(),
+                )
+            };
+            let mut parts = command.split_whitespace();
+            let program = parts.next().unwrap_or("").to_string();
+            let args: Vec<String> = parts.map(|s| s.to_string()).collect();
+            let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+            let mut reg = registry.borrow_mut();
+            if now_expanded {
+                if kind == "pixel" {
+                    let phys_w = (sidebar_w * scale) as u32;
+                    let phys_h = (panel_h * scale) as u32;
+                    if let Some(plugin) = PixelPlugin::spawn(&program, &args_ref, phys_w, phys_h) {
+                        right_pixel_plugins.borrow_mut().insert(idx, plugin);
+                    } else {
+                        eprintln!("mado: failed to spawn pixel plugin '{plugin_id}'");
+                    }
+                } else {
+                    reg.spawn_cmd(right_plugin_node_id(idx), sidebar_w, plugin_terminal_h(panel_h),
+                                  &program, &args_ref, None,
+                                  &[("MADO_PLUGIN_ID", &plugin_id)]);
+                }
+            } else if kind == "pixel" {
+                right_pixel_plugins.borrow_mut().remove(&idx);
+            } else {
+                reg.remove(right_plugin_node_id(idx));
+            }
+            drop(reg);
+
+            let any = (0..num_right_ext)
+                .any(|i| right_plugin_expanded_model.row_data(i).unwrap_or(false));
+            let total: f32 = (0..num_right_ext)
+                .map(|i| if right_plugin_expanded_model.row_data(i).unwrap_or(false) {
+                    right_plugin_panel_h_model.row_data(i).unwrap_or(DEFAULT_PLUGIN_PANEL_H)
+                } else { 0.0 })
+                .sum();
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_right_plugin_any_expanded(any);
+                ui.set_right_external_plugins_total_h(total);
+            }
+        }
+    });
+
+    // ── Right sidebar plugin height ───────────────────────────────────────────
+    ui.on_right_plugin_panel_height_changed({
+        let registry = Rc::clone(&registry);
+        let sidebar = Rc::clone(&sidebar);
+        let right_plugin_expanded_model = Rc::clone(&right_plugin_expanded_model);
+        let right_plugin_panel_h_model = Rc::clone(&right_plugin_panel_h_model);
+        let right_pixel_plugins = Rc::clone(&right_pixel_plugins);
+        let ui_weak = ui.as_weak();
+        move |idx, new_h| {
+            let idx = idx as usize;
+            if idx >= num_right_ext { return; }
+            right_plugin_panel_h_model.set_row_data(idx, new_h);
+            let sidebar_w = (sidebar.borrow().right_width - 24.0).max(50.0);
+            if let Some(plugin) = right_pixel_plugins.borrow_mut().get_mut(&idx) {
+                plugin.send_resize((sidebar_w * scale) as u32, (new_h * scale) as u32);
+            } else {
+                registry.borrow_mut().resize(right_plugin_node_id(idx), sidebar_w, plugin_terminal_h(new_h));
+            }
+            let total: f32 = (0..num_right_ext)
+                .map(|i| if right_plugin_expanded_model.row_data(i).unwrap_or(false) {
+                    right_plugin_panel_h_model.row_data(i).unwrap_or(DEFAULT_PLUGIN_PANEL_H)
+                } else { 0.0 })
+                .sum();
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_right_external_plugins_total_h(total);
+            }
+        }
+    });
+
+    // ── Right sidebar plugin key input ────────────────────────────────────────
+    ui.on_right_plugin_key_input({
+        let registry = Rc::clone(&registry);
+        move |idx, text, ctrl, meta| {
+            let idx = idx as usize;
+            if idx >= num_right_ext { return; }
+            let zoom_mod = ctrl || meta;
+            let t = text.as_str();
+            if zoom_mod && (t == "=" || t == "+" || t == "-" || t == "0") { return; }
+            let bytes = key_text_to_bytes(&text);
+            registry.borrow_mut().write_key(right_plugin_node_id(idx), &bytes);
+        }
+    });
+
+    // ── Right sidebar plugin scroll ───────────────────────────────────────────
+    ui.on_right_plugin_scroll({
+        let registry = Rc::clone(&registry);
+        move |idx, delta_px| {
+            let idx = idx as usize;
+            if idx >= num_right_ext { return; }
+            let cell_h_logical = {
+                let reg = registry.borrow();
+                reg.font.cell_h as f32 / reg.scale
+            };
+            if cell_h_logical > 0.0 {
+                let delta_rows = (-delta_px / cell_h_logical).round() as i32;
+                if delta_rows != 0 {
+                    registry.borrow_mut().scroll(right_plugin_node_id(idx), delta_rows);
+                }
+            }
+        }
+    });
+
+    // ── Right sidebar plugin click ────────────────────────────────────────────
+    ui.on_right_plugin_click({
+        move |_idx, _x, _y| {
+            // Right sidebar plugins don't support pixel protocol yet
+        }
+    });
+
+    // ── Right sidebar plugin focus ────────────────────────────────────────────
+    ui.on_right_plugin_focus_changed({
+        move |_idx, _focused| { }
+    });
+
+    // ── Plugin float overlay ──────────────────────────────────────────────────
+    ui.on_plugin_float({
+        let pixel_plugins  = Rc::clone(&pixel_plugins);
+        let float_plugin   = Rc::clone(&float_plugin);
+        let ui_weak        = ui.as_weak();
+        move |idx| {
+            let idx = idx as usize;
+            if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
+                let ui = ui_weak.upgrade().unwrap();
+                let max_logical = (ui.get_window_w() - 80.0).min(ui.get_window_h() - 80.0).min(800.0);
+                let size = (max_logical * scale).round() as u32;
+                plugin.send_resize(size, size);
+                *float_plugin.borrow_mut() = Some((idx, false));
+            }
+        }
+    });
+
+    ui.on_right_plugin_float({
+        let right_pixel_plugins = Rc::clone(&right_pixel_plugins);
+        let float_plugin        = Rc::clone(&float_plugin);
+        let ui_weak             = ui.as_weak();
+        move |idx| {
+            let idx = idx as usize;
+            if let Some(plugin) = right_pixel_plugins.borrow_mut().get_mut(&idx) {
+                let ui = ui_weak.upgrade().unwrap();
+                let max_logical = (ui.get_window_w() - 80.0).min(ui.get_window_h() - 80.0).min(800.0);
+                let size = (max_logical * scale).round() as u32;
+                plugin.send_resize(size, size);
+                *float_plugin.borrow_mut() = Some((idx, true));
+            }
+        }
+    });
+
+    ui.on_plugin_float_dismissed({
+        let pixel_plugins       = Rc::clone(&pixel_plugins);
+        let right_pixel_plugins = Rc::clone(&right_pixel_plugins);
+        let float_plugin        = Rc::clone(&float_plugin);
+        let plugin_panel_h_model       = Rc::clone(&plugin_panel_h_model);
+        let right_plugin_panel_h_model = Rc::clone(&right_plugin_panel_h_model);
+        let sidebar  = Rc::clone(&sidebar);
+        let ui_weak  = ui.as_weak();
+        move || {
+            let entry = float_plugin.borrow().clone();
+            if let Some((idx, is_right)) = entry {
+                if is_right {
+                    let sidebar_w = (sidebar.borrow().right_width - 24.0).max(50.0);
+                    let h = right_plugin_panel_h_model.row_data(idx).unwrap_or(DEFAULT_PLUGIN_PANEL_H);
+                    if let Some(plugin) = right_pixel_plugins.borrow_mut().get_mut(&idx) {
+                        let phys_w = (sidebar_w * scale) as u32;
+                        let phys_h = (h * scale) as u32;
+                        plugin.send_resize(phys_w, phys_h);
+                    }
+                } else {
+                    let sidebar_w = (sidebar.borrow().width - 24.0).max(50.0);
+                    let h = plugin_panel_h_model.row_data(idx).unwrap_or(DEFAULT_PLUGIN_PANEL_H);
+                    if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
+                        let phys_w = (sidebar_w * scale) as u32;
+                        let phys_h = (h * scale) as u32;
+                        plugin.send_resize(phys_w, phys_h);
+                    }
+                }
+                *float_plugin.borrow_mut() = None;
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_float_plugin_image(Default::default());
+                }
+            }
+        }
+    });
+
+    // ── Top bar plugin callbacks ──────────────────────────────────────────────
+    ui.on_top_plugin_key_input({
+        let registry = Rc::clone(&registry);
+        move |idx, text, ctrl, meta| {
+            let idx = idx as usize;
+            if idx >= num_top_ext { return; }
+            let zoom_mod = ctrl || meta;
+            let t = text.as_str();
+            if zoom_mod && (t == "=" || t == "+" || t == "-" || t == "0") { return; }
+            let bytes = key_text_to_bytes(&text);
+            registry.borrow_mut().write_key(top_plugin_node_id(idx), &bytes);
+        }
+    });
+
+    ui.on_top_plugin_scroll({
+        let registry = Rc::clone(&registry);
+        move |idx, delta_px| {
+            let idx = idx as usize;
+            if idx >= num_top_ext { return; }
+            let cell_h_logical = {
+                let reg = registry.borrow();
+                reg.font.cell_h as f32 / reg.scale
+            };
+            if cell_h_logical > 0.0 {
+                let delta_rows = (-delta_px / cell_h_logical).round() as i32;
+                if delta_rows != 0 {
+                    registry.borrow_mut().scroll(top_plugin_node_id(idx), delta_rows);
+                }
+            }
+        }
+    });
+
+    ui.on_top_plugin_click({
+        move |_idx, _x, _y| { }
+    });
+
+    ui.on_top_plugin_focus_changed({
+        move |_idx, _focused| { }
+    });
+
+    ui.on_sidebar_escaped({
+        let ui_weak = ui.as_weak();
+        let focused_id = Rc::clone(&focused_id);
+        move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            if let Some(fid) = *focused_id.borrow() {
+                ui.set_force_focus_id(fid as i32);
+                ui.set_force_focus_id(-1);
+            }
+        }
+    });
+
     // ── Initial render ───────────────────────────────────────────────────────
     full_push(&ui, &tree.borrow(), &dividers_cache, &pane_model, &div_model,
               &images.borrow(), *focused_id.borrow(), None);
@@ -1774,12 +2638,42 @@ fn main() {
         let startup_focus = Timer::default();
         startup_focus.start(
             TimerMode::SingleShot,
-            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(100),
             move || {
                 let Some(ui) = ui_weak.upgrade() else { return };
+
+                // Bring the window to the front and make it the key window so
+                // that macOS routes keyboard events here without needing a click.
+                // Mirrors gpui's activate_window(): setActivationPolicy → activate
+                // → makeKeyAndOrderFront.
+                #[cfg(target_os = "macos")]
+                ui.window().with_winit_window(|w| {
+                    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                    if let Ok(handle) = w.window_handle() {
+                        if let RawWindowHandle::AppKit(h) = handle.as_raw() {
+                            unsafe {
+                                use objc2::runtime::{AnyClass, AnyObject};
+                                let ns_view = h.ns_view.as_ptr() as *mut AnyObject;
+                                let ns_window: *mut AnyObject =
+                                    objc2::msg_send![ns_view, window];
+                                if let Some(app_cls) = AnyClass::get("NSApplication") {
+                                    let app: *mut AnyObject =
+                                        objc2::msg_send![app_cls, sharedApplication];
+                                    let _: () = objc2::msg_send![
+                                        app, activateIgnoringOtherApps: true
+                                    ];
+                                }
+                                let nil: *mut AnyObject = std::ptr::null_mut();
+                                let _: () = objc2::msg_send![
+                                    ns_window, makeKeyAndOrderFront: nil
+                                ];
+                            }
+                        }
+                    }
+                });
+
                 if let Some(fid) = *focused_id.borrow() {
                     ui.set_force_focus_id(fid as i32);
-                    // Reset so the property can fire again on future use.
                     ui.set_force_focus_id(-1);
                 }
             },

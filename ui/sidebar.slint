@@ -44,7 +44,7 @@ component CmdButton inherits Rectangle {
         font-size: 12px;
         horizontal-alignment: center;
         vertical-alignment: center;
-        overflow: elide;
+        overflow: clip;
         width: parent.width; height: parent.height;
     }
 }
@@ -55,15 +55,20 @@ component CmdButton inherits Rectangle {
 // fills whatever space remains after the button grid. The bottom 8px is a
 // drag handle that fires resize-start / resize-move / resize-end callbacks.
 
-component TaskuContent inherits Rectangle {
+export component TaskuContent inherits Rectangle {
     in property <image> terminal-image;
     in property <color> theme-terminal-area-bg: #020617;
+    /// When true: buttons on left, terminal on right (top-bar layout).
+    /// When false (default): buttons on top, terminal below (sidebar layout).
+    in property <bool> horizontal: false;
     callback command(string);
     callback key-input(string, bool, bool);  // text, ctrl, meta
     callback resize-start();
     callback resize-move(float);   // delta-y in logical px from press point
     callback resize-end();
     callback scroll(float);        // scroll-wheel delta-y in logical px
+    /// When false, the bottom resize drag handle is hidden (overlay mode).
+    in property <bool> show-resize-handle: true;
 
     // Stored in screen coordinates so the computation stays correct even if
     // the Flickable scrolls or the panel height changes mid-drag.
@@ -83,19 +88,17 @@ component TaskuContent inherits Rectangle {
         }
     }
 
-    // btn-w: each button is exactly 1/3 of the inner width.
-    // Inner width = panel width minus 8px left + 8px right padding = root.width - 16px.
-    // Two 4px gaps between 3 columns consume 8px → btn-w = (root.width - 24px) / 3.
+    // Vertical-mode button width (1/3 of inner width)
     private property <length> btn-w: (root.width - 24px) / 3;
     private property <length> btn-gap: 4px;
 
-    VerticalLayout {
+    // ── Vertical layout (sidebar) ─────────────────────────────────────────────
+    if !root.horizontal: VerticalLayout {
         width: parent.width;
         height: parent.height;
         padding: 8px;
         spacing: 6px;
 
-        // ── Button grid (4 rows × 3 buttons, explicit widths) ─────────────────
         VerticalLayout {
             width: parent.width;
             spacing: 4px;
@@ -122,7 +125,6 @@ component TaskuContent inherits Rectangle {
             }
         }
 
-        // ── Terminal (fills remaining height after button grid) ───────────────
         terminal-rect := Rectangle {
             width: parent.width;
             vertical-stretch: 1;
@@ -144,7 +146,83 @@ component TaskuContent inherits Rectangle {
                 width: parent.width; height: parent.height;
             }
 
-            // Click to focus; scroll-wheel forwarded to the PTY
+            TouchArea {
+                width: parent.width; height: parent.height;
+                mouse-cursor: MouseCursor.text;
+                clicked => { fs.focus(); }
+                scroll-event(e) => {
+                    root.scroll(e.delta-y / 1px);
+                    accept
+                }
+            }
+        }
+    }
+
+    // ── Horizontal layout (top bar): buttons left, terminal right ─────────────
+    //
+    // Buttons are 32 × 32 px (square). Column = 3 × 32 + 2 × 4gap = 104 px.
+    // HorizontalLayout padding 8 px + spacing 6 px → terminal gets the rest.
+    if root.horizontal: HorizontalLayout {
+        x: 0; y: 0;
+        width: parent.width;
+        height: parent.height;
+        padding: 8px;
+        spacing: 6px;
+
+        // Button column — 3 × 120 px buttons + 2 × 4 px gaps = 368 px wide
+        Rectangle {
+            width: 368px;
+            clip: true;
+
+            VerticalLayout {
+                width: parent.width;
+                height: parent.height;
+                spacing: 4px;
+
+                Rectangle { width: parent.width; height: 32px;
+                    CmdButton { x: 0;      width: 120px; label: "Add";     command(l) => { root.command(l); } }
+                    CmdButton { x: 124px;  width: 120px; label: "List";    command(l) => { root.command(l); } }
+                    CmdButton { x: 248px;  width: 120px; label: "Stats";   command(l) => { root.command(l); } }
+                }
+                Rectangle { width: parent.width; height: 32px;
+                    CmdButton { x: 0;      width: 120px; label: "Edit";    command(l) => { root.command(l); } }
+                    CmdButton { x: 124px;  width: 120px; label: "Delete";  command(l) => { root.command(l); } }
+                    CmdButton { x: 248px;  width: 120px; label: "SQL";     command(l) => { root.command(l); } }
+                }
+                Rectangle { width: parent.width; height: 32px;
+                    CmdButton { x: 0;      width: 120px; label: "Today";   command(l) => { root.command(l); } }
+                    CmdButton { x: 124px;  width: 120px; label: "Tmrw";    command(l) => { root.command(l); } }
+                    CmdButton { x: 248px;  width: 120px; label: "Overdue"; command(l) => { root.command(l); } }
+                }
+                Rectangle { width: parent.width; height: 32px;
+                    CmdButton { x: 0;      width: 120px; label: "Todo";    command(l) => { root.command(l); } }
+                    CmdButton { x: 124px;  width: 120px; label: "Started"; command(l) => { root.command(l); } }
+                    CmdButton { x: 248px;  width: 120px; label: "Done";    command(l) => { root.command(l); } }
+                }
+            }
+        }
+
+        // Terminal (fills remaining width)
+        h-terminal := Rectangle {
+            horizontal-stretch: 1;
+            background: root.theme-terminal-area-bg;
+            border-radius: 4px;
+            clip: true;
+
+            if root.terminal-image.width > 0: Image {
+                x: 0; y: 0;
+                width: parent.width; height: parent.height;
+                source: root.terminal-image;
+                image-fit: fill;
+            }
+            if root.terminal-image.width == 0: Text {
+                text: "starting…";
+                color: rgba(255, 255, 255, 0.12);
+                font-size: 11px;
+                horizontal-alignment: center; vertical-alignment: center;
+                width: parent.width; height: parent.height;
+            }
+
             TouchArea {
                 width: parent.width; height: parent.height;
                 mouse-cursor: MouseCursor.text;
@@ -158,7 +236,7 @@ component TaskuContent inherits Rectangle {
     }
 
     // ── Resize drag handle (absolutely positioned at the panel bottom) ─────────
-    resize-strip := Rectangle {
+    if root.show-resize-handle: Rectangle {
         x: 0;
         y: parent.height - 8px;
         width: parent.width;
@@ -211,6 +289,7 @@ component TaskuContent inherits Rectangle {
 component WorkspacesContent inherits Rectangle {
     in property <[WorkspaceProject]> projects;
     in property <string>            active-project;
+    in property <int>               kb-tile-index: -1;
     callback workspace-selected(string);
 
     background: transparent;
@@ -229,6 +308,8 @@ component WorkspacesContent inherits Rectangle {
         height: root.tile-w;   // square
         border-radius: 8px;
         background: proj.color;
+        border-width: i == root.kb-tile-index ? 2px : 0px;
+        border-color: #ffffffaa;
 
         // ── Content: indicator dot + code label ───────────────────────────────
         VerticalLayout {
@@ -473,7 +554,7 @@ component PrioritiesContent inherits Rectangle {
 // A plain resizable terminal for any external plugin binary.
 // Resize by dragging the pip at the bottom.
 
-component PluginContent inherits Rectangle {
+export component PluginContent inherits Rectangle {
     in property <image> terminal-image;
     in property <bool>  is-pixel: false;   // true = pixel plugin, renders full-bleed
     callback resize-start();
@@ -624,6 +705,7 @@ component PluginRowHeader inherits Rectangle {
     in property <color>  theme-focus-border: #7aa2f7;
 
     callback toggled();
+    callback float-plugin();          // expand plugin to fullscreen overlay
     callback drag-start(int, float);  // (row-index, initial-sidebar-y)
     callback drag-move(float);        // updated sidebar-y
     callback drag-end();
@@ -709,6 +791,17 @@ component PluginRowHeader inherits Rectangle {
                 mouse-cursor: MouseCursor.pointer;
                 clicked => { root.toggled(); }
 
+                // Focus/expanded dot — green when open, gray when collapsed
+                Text {
+                    text: "●";
+                    color: root.expanded ? #22c55e : #3a3a4a;
+                    font-family: "Hack Nerd Font";
+                    font-size: 14px;
+                    vertical-alignment: center;
+                    x: 4px;
+                    width: 18px; height: parent.height;
+                }
+
                 Text {
                     text: root.item.title;
                     color: rgba(255,255,255,0.80);
@@ -717,7 +810,27 @@ component PluginRowHeader inherits Rectangle {
                     letter-spacing: 0.4px;
                     overflow: elide;
                     vertical-alignment: center;
-                    padding-left: 18px; padding-right: 4px;
+                    x: 24px;
+                    width: parent.width - 28px; height: parent.height;
+                }
+            }
+
+            // ── Float button (pixel plugins only, when expanded) ─────────────
+            if root.item.plugin-index >= 0 && root.expanded: Rectangle {
+                width: 28px; height: parent.height;
+                float-ta := TouchArea {
+                    width: parent.width; height: parent.height;
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => { root.float-plugin(); }
+                }
+                Text {
+                    text: "↗";
+                    color: float-ta.has-hover
+                        ? rgba(255,255,255,0.70)
+                        : rgba(255,255,255,0.22);
+                    font-family: "SF Pro Text";
+                    font-size: 12px;
+                    horizontal-alignment: center; vertical-alignment: center;
                     width: parent.width; height: parent.height;
                 }
             }
@@ -766,6 +879,12 @@ export component Sidebar inherits Rectangle {
     // updated so total-content-h stays correct without a fold in Slint.
     in property <float> external-plugins-total-h: 0;
 
+    /// When true the sidebar shows only plugin icons (narrow mode).
+    in-out property <bool> icon-only: false;
+    /// Pass true for the right sidebar so the chevron points the other way.
+    in property <bool> right-align: false;
+    callback icon-only-toggled();
+
     callback plugin-reordered(int, int);            // from-index, to-index
     callback tasku-toggled(bool);                   // true = expanded
     callback tasku-command(string);                 // button label → CLI command
@@ -780,6 +899,19 @@ export component Sidebar inherits Rectangle {
     callback plugin-scroll(int, float);             // plugin-index, scroll delta-y
     callback plugin-click(int, float, float);       // plugin-index, x, y
     callback plugin-focus-changed(int, bool);       // plugin-index, focused
+    callback plugin-float(int);                     // plugin-index, float to fullscreen
+
+    // Increment to request keyboard focus (counter avoids the bool true→false
+    // batching problem in Slint callbacks; every increment fires changed).
+    in property <int> kb-focus-count: 0;
+    changed kb-focus-count => {
+        kb-scope.focus();
+        root.kb-index = 0;
+    }
+    private property <int> kb-index: -1;
+    private property <int> ws-tile-index: -1;  // -1 = panel mode, >=0 = tile nav mode
+    callback focus-escaped();
+    callback focus-collapsed();
 
     // ── Drag state ────────────────────────────────────────────────────────────
     private property <int>   drag-index: -1;
@@ -836,11 +968,97 @@ export component Sidebar inherits Rectangle {
         + 16px                                             // 8px top + 8px bottom padding
         + max(root.plugins.length - 1, 0) * 6px;          // 6px gap between cards
 
+    kb-scope := FocusScope {
+        x: 0; y: 0; width: parent.width; height: parent.height;
+        key-pressed(e) => {
+            // Cmd+[ or ] — collapse sidebar and return to pane from any mode
+            if ((e.modifiers.meta || e.modifiers.control) && (e.text == "[" || e.text == "]")) {
+                root.ws-tile-index = -1;
+                root.kb-index = -1;
+                root.focus-collapsed();
+                return accept;
+            }
+
+            // Escape — exit current mode
+            if (e.text == "\u{001B}") {
+                if (root.ws-tile-index >= 0) {
+                    // Exit tile nav → back to panel nav
+                    root.ws-tile-index = -1;
+                } else {
+                    root.kb-index = -1;
+                    root.focus-escaped();
+                }
+                return accept;
+            }
+
+            // ── Workspace tile navigation mode ────────────────────────────────
+            if (root.ws-tile-index >= 0) {
+                if (e.text == "\u{F702}") {  // Left
+                    root.ws-tile-index = max(0, root.ws-tile-index - 1);
+                    return accept;
+                }
+                if (e.text == "\u{F703}") {  // Right
+                    root.ws-tile-index = min(root.ws-projects.length - 1, root.ws-tile-index + 1);
+                    return accept;
+                }
+                if (e.text == "\u{F700}") {  // Up (one row = 3 tiles)
+                    root.ws-tile-index = max(0, root.ws-tile-index - 3);
+                    return accept;
+                }
+                if (e.text == "\u{F701}") {  // Down
+                    root.ws-tile-index = min(root.ws-projects.length - 1, root.ws-tile-index + 3);
+                    return accept;
+                }
+                if (e.text == "\u{000D}" || e.text == "\u{000A}") {  // Enter — switch project
+                    if (root.ws-tile-index < root.ws-projects.length) {
+                        root.workspace-selected(root.ws-projects[root.ws-tile-index].code);
+                    }
+                    root.ws-tile-index = -1;
+                    return accept;
+                }
+                return reject;
+            }
+
+            // ── Panel navigation mode ─────────────────────────────────────────
+            if (e.text == "\u{F700}") {  // Up
+                root.kb-index = root.kb-index <= 0
+                    ? root.plugins.length - 1
+                    : root.kb-index - 1;
+                return accept;
+            }
+            if (e.text == "\u{F701}") {  // Down
+                root.kb-index = root.kb-index >= root.plugins.length - 1
+                    ? 0
+                    : root.kb-index + 1;
+                return accept;
+            }
+            if (e.text == "\u{000D}" || e.text == "\u{000A}") {  // Enter — toggle or enter tile mode
+                if (root.kb-index >= 0 && root.kb-index < root.plugins.length) {
+                    if (root.plugins[root.kb-index].id == "workspaces") {
+                        // Always expand then enter tile navigation
+                        root.workspaces-expanded = true;
+                        root.ws-tile-index = 0;
+                    } else if (root.plugins[root.kb-index].id == "tasku") {
+                        root.tasku-expanded = !root.tasku-expanded;
+                        root.tasku-toggled(root.tasku-expanded);
+                    } else if (root.plugins[root.kb-index].id == "priorities") {
+                        root.priorities-expanded = !root.priorities-expanded;
+                    } else if (root.plugins[root.kb-index].plugin-index >= 0) {
+                        root.plugin-toggled(root.plugins[root.kb-index].plugin-index);
+                    }
+                }
+                return accept;
+            }
+            return reject;
+        }
+    }
+
     // ── Flickable plugin list ─────────────────────────────────────────────────
     flickable := Flickable {
         x: 0; y: 0;
         width: parent.width - 1px;
-        height: parent.height;
+        height: parent.height - 40px;
+        visible: !root.icon-only;
         viewport-height: root.total-content-h;
 
         VerticalLayout {
@@ -854,7 +1072,7 @@ export component Sidebar inherits Rectangle {
                 border-radius: 6px;
                 background: root.theme-card-bg;
                 border-width: 1px;
-                border-color: root.theme-card-border;
+                border-color: root.kb-index == i ? root.theme-focus-border : root.theme-card-border;
                 clip: true;
                 height: root.row-h * 1px
                     + (item.id == "tasku"      && root.tasku-expanded      ? root.tasku-panel-h : 0px)
@@ -905,6 +1123,11 @@ export component Sidebar inherits Rectangle {
                             root.plugin-toggled(item.plugin-index);
                         }
                     }
+                    float-plugin       => {
+                        if (item.plugin-index >= 0) {
+                            root.plugin-float(item.plugin-index);
+                        }
+                    }
                     drag-start(idx, y) => { root.drag-index = idx; root.drag-y = y; }
                     drag-move(y)       => { root.drag-y = y; }
                     drag-end           => {
@@ -947,6 +1170,7 @@ export component Sidebar inherits Rectangle {
                     height: root.ws-panel-h;
                     projects: root.ws-projects;
                     active-project: root.active-project;
+                    kb-tile-index: root.ws-tile-index;
                     workspace-selected(code) => { root.workspace-selected(code); }
                 }
 
@@ -990,6 +1214,75 @@ export component Sidebar inherits Rectangle {
             if root.drag-index >= 0 && root.drop-index == root.plugins.length: Rectangle {
                 height: 2px; background: root.theme-focus-border;
             }
+        }
+    }
+
+    // ── Icon-only strip ───────────────────────────────────────────────────────
+    if root.icon-only: VerticalLayout {
+        x: 0; y: 0;
+        width: parent.width;
+        height: parent.height - 40px;
+        alignment: start;
+        padding: 6px;
+        spacing: 4px;
+
+        for item[i] in root.plugins: Rectangle {
+            width: parent.width - 12px;
+            height: root.row-h * 1px;
+            border-radius: 6px;
+            background: root.theme-card-bg;
+            border-width: 1px;
+            border-color: root.theme-card-border;
+
+            icon-ta := TouchArea {
+                width: parent.width; height: parent.height;
+                mouse-cursor: MouseCursor.pointer;
+                clicked => { root.icon-only-toggled(); }
+            }
+
+            Text {
+                text: item.icon;
+                color: icon-ta.has-hover
+                    ? rgba(255, 255, 255, 0.75)
+                    : rgba(255, 255, 255, 0.45);
+                font-family: "Hack Nerd Font";
+                font-size: 22px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: parent.width; height: parent.height;
+            }
+        }
+    }
+
+    // ── Collapse / expand toggle ──────────────────────────────────────────────
+    Rectangle {
+        x: 0;
+        y: parent.height - 40px;
+        width: parent.width;
+        height: 40px;
+        background: root.theme-window-bg;
+
+        // Top separator line
+        Rectangle { x: 0; y: 0; width: parent.width; height: 1px; background: root.theme-card-border; }
+
+        toggle-ta := TouchArea {
+            width: parent.width; height: parent.height;
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.icon-only-toggled(); }
+        }
+
+        Text {
+            text: root.icon-only
+                ? (root.right-align ? "«" : "»")
+                : (root.right-align ? "»" : "«");
+            color: toggle-ta.has-hover
+                ? rgba(255, 255, 255, 0.60)
+                : rgba(255, 255, 255, 0.22);
+            font-family: "SF Pro Text";
+            font-size: 14px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            width: parent.width; height: parent.height;
         }
     }
 

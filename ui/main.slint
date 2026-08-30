@@ -1,6 +1,9 @@
 import { PaneView }     from "pane_view.slint";
 import { DividerHandle } from "divider_handle.slint";
-import { Sidebar, PluginItem, WorkspaceProject, PriorityProject } from "sidebar.slint";
+import { Sidebar, PluginItem, WorkspaceProject, PriorityProject, TaskuContent } from "sidebar.slint";
+import { TopBar } from "top_bar.slint";
+import { BottomBar, RunnerContent } from "bottom_bar.slint";
+import { HelpOverlay } from "help_overlay.slint";
 
 export struct FlatPane {
     id: int,
@@ -48,13 +51,57 @@ export component MainWindow inherits Window {
     in property <int> force-focus-id: -1;
     in property <[PriorityProject]> priority-projects;
 
-    // ── External plugin parallel arrays ───────────────────────────────────────
+    // ── External plugin parallel arrays (left sidebar) ────────────────────────
     in property <[image]>     plugin-images;
     in property <[bool]>      plugin-pixel;
     in-out property <[bool]>  plugin-expanded;
     in-out property <[float]> plugin-panel-h;
     in property <bool>        plugin-any-expanded: false;
     in property <float>       external-plugins-total-h: 0;
+
+    // ── Top bar ───────────────────────────────────────────────────────────────
+    in-out property <float> top-bar-height: 200;
+    in-out property <bool> show-top-bar: false;
+    in-out property <[PluginItem]> top-plugins;
+    in property <[image]> top-plugin-images;
+    in property <[bool]>  top-plugin-pixel;
+
+    // ── Right sidebar ─────────────────────────────────────────────────────────
+    in-out property <float> right-sidebar-width: 300;
+    in-out property <bool> show-right-sidebar: false;
+    in-out property <[PluginItem]> right-plugins;
+    in property <[image]> right-plugin-images;
+    in property <[bool]>  right-plugin-pixel;
+    in-out property <[bool]>  right-plugin-expanded;
+    in-out property <[float]> right-plugin-panel-h;
+    in property <bool>  right-plugin-any-expanded: false;
+    in property <float> right-external-plugins-total-h: 0;
+
+    // ── Top bar expanded state ────────────────────────────────────────────────
+    in-out property <bool> top-bar-expanded: false;
+
+    // ── Bottom bar (task runner) ──────────────────────────────────────────────
+    in-out property <bool>  show-bottom-bar: false;
+    in-out property <bool>   bottom-bar-expanded: false;
+    in-out property <length> runner-panel-h: 300px;
+    in property <image> runner-terminal-image;
+    in property <string> runner-current-command: "";
+    in property <bool>  runner-is-running: false;
+    callback runner-panel-height-changed(float);
+    callback runner-restart();
+    callback runner-mouse-pressed(float, float);
+    callback runner-mouse-moved(float, float);
+    callback runner-mouse-released();
+
+    // ── Plugin float overlay ──────────────────────────────────────────────────
+    in property <image> float-plugin-image;
+    callback plugin-float(int);        // left sidebar plugin-index
+    callback right-plugin-float(int);  // right sidebar plugin-index
+    callback plugin-float-dismissed();
+
+    // Runner drag state (private)
+    private property <float> runner-press-abs-y: 0.0;
+    private property <length> runner-press-h: 300px;
 
     // ── Theme colours (set by Rust at startup from the loaded theme) ──────────
     in property <color> theme-window-bg:        #0f172a;
@@ -71,7 +118,6 @@ export component MainWindow inherits Window {
     in property <color> theme-text-muted:       #64748b;
 
     // ── Terminal area dimensions exposed to Rust ──────────────────────────────
-    // Rust uses these (not the full window size) for pane layout math.
     out property <float> window-w: terminal-area.width  / 1px;
     out property <float> window-h: terminal-area.height / 1px;
 
@@ -83,8 +129,9 @@ export component MainWindow inherits Window {
     callback split-pane(int, bool);
     callback close-pane(int);
     callback window-resized(float, float);
-    callback pane-key-input(int, string, bool, bool);
+    callback pane-key-input(int, string, bool, bool, bool, bool); // id, text, ctrl, meta, alt, shift
     callback pane-focus-request(int);
+    callback pane-focus-neighbor(int, int);  // pane-id, direction (0=L 1=R 2=U 3=D)
     callback pane-scroll(int, float);
     callback pane-mouse-pressed(int, float, float);
     callback pane-mouse-moved(int, float, float);
@@ -108,149 +155,422 @@ export component MainWindow inherits Window {
     callback plugin-click(int, float, float);
     callback plugin-focus-changed(int, bool);
 
+    // Bottom bar / runner callbacks
+    callback runner-play();
+    callback runner-stop();
+    callback runner-key-input(string, bool, bool);
+    callback runner-scroll(float);
+
+    // Top bar callbacks
+    callback top-bar-height-changed(float);
+    callback top-plugin-key-input(int, string, bool, bool);
+    callback top-plugin-scroll(int, float);
+    callback top-plugin-click(int, float, float);
+    callback top-plugin-focus-changed(int, bool);
+
+    // Right sidebar callbacks
+    callback right-sidebar-width-changed(float);
+    callback right-plugin-toggled(int);
+    callback right-plugin-panel-height-changed(int, float);
+    callback right-plugin-key-input(int, string, bool, bool);
+    callback right-plugin-scroll(int, float);
+    callback right-plugin-click(int, float, float);
+    callback right-plugin-focus-changed(int, bool);
+
     changed window-w => { root.window-resized(root.window-w, root.window-h); }
     changed window-h => { root.window-resized(root.window-w, root.window-h); }
 
-    // ── Sidebar resize state (pure Slint, no Rust round-trip needed) ──────────
+    // Top bar is always 52px (header only). Content shown via overlay below.
+    private property <length> effective-top-bar-h: root.show-top-bar ? 52px : 0px;
+    // Bottom bar is always 52px (header only). Content shown via overlay above.
+    private property <length> effective-bottom-bar-h: root.show-bottom-bar ? 52px : 0px;
+
+    callback sidebar-escaped();
+
+    // ── Help overlay ──────────────────────────────────────────────────────────
+    private property <bool> show-help: false;
+
+    // ── Pane refocus counter — incremented when a sidebar/overlay yields focus ──
+    // Slint can batch the Rust set_force_focus_id(fid)/set_force_focus_id(-1)
+    // pair so changed force-focus never fires with true. This counter fires
+    // entirely inside Slint, guaranteeing scope.focus() is called.
+    private property <int> pane-refocus-counter: 0;
+
+    // ── Icon-only sidebar state ───────────────────────────────────────────────
+    private property <bool>  sidebar-icon-only: false;
+    private property <bool>  right-sidebar-icon-only: false;
+    private property <int>   left-sb-kb-counter: 0;
+    private property <int>   right-sb-kb-counter: 0;
+    private property <float> effective-sidebar-w:
+        root.sidebar-icon-only ? 52.0 : root.sidebar-width;
+    private property <float> effective-right-w:
+        root.right-sidebar-icon-only ? 52.0 : root.right-sidebar-width;
+
+    // Full window width — used by Rust for overlay PTY sizing.
+    out property <float> overlay-total-w: root.width / 1px;
+
+    // ── Sidebar resize state ──────────────────────────────────────────────────
     private property <bool>  sidebar-is-resizing: false;
     private property <float> resize-press-abs-x: 0;
     private property <float> resize-press-width: 0;
 
+    // ── Right sidebar resize state ────────────────────────────────────────────
+    private property <bool>  right-sidebar-is-resizing: false;
+    private property <float> right-resize-press-abs-x: 0;
+    private property <float> right-resize-press-width: 0;
+
     // ── Layout ────────────────────────────────────────────────────────────────
-    HorizontalLayout {
+    VerticalLayout {
         x: 0; y: 0;
         width: parent.width;
         height: parent.height;
         spacing: 0;
         padding: 0;
 
-        // ── Left sidebar ──────────────────────────────────────────────────────
-        Sidebar {
-            width: root.sidebar-width * 1px;
-            height: parent.height;
-            plugins: root.plugins;
-            tasku-terminal-image: root.tasku-terminal-image;
-            ws-projects: root.ws-projects;
-            active-project: root.active-project;
-            priority-projects: root.priority-projects;
-            plugin-images: root.plugin-images;
-            plugin-pixel: root.plugin-pixel;
-            plugin-expanded: root.plugin-expanded;
-            plugin-panel-h: root.plugin-panel-h;
-            plugin-any-expanded: root.plugin-any-expanded;
-            external-plugins-total-h: root.external-plugins-total-h;
-            theme-window-bg: root.theme-window-bg;
-            theme-terminal-area-bg: root.theme-terminal-area-bg;
+        // ── Top bar header (always 52px; content rendered in overlay below) ─────
+        if root.show-top-bar: TopBar {
+            width: parent.width;
+            height: 52px;
+            expanded: root.top-bar-expanded;
+            top-plugins: root.top-plugins;
             theme-card-bg: root.theme-card-bg;
             theme-card-border: root.theme-card-border;
-            theme-focus-border: root.theme-focus-border;
-            plugin-reordered(from, to) => { root.plugin-reordered(from, to); }
-            tasku-toggled(expanded) => { root.tasku-toggled(expanded); }
-            tasku-command(cmd) => { root.tasku-command(cmd); }
-            tasku-key-input(text, ctrl, meta) => { root.tasku-key-input(text, ctrl, meta); }
-            tasku-panel-height-changed(h) => { root.tasku-panel-height-changed(h); }
-            tasku-scroll(delta) => { root.tasku-scroll(delta); }
-            workspace-selected(code) => { root.workspace-selected(code); }
-            priority-reordered(from, to) => { root.priority-reordered(from, to); }
-            plugin-toggled(idx) => { root.plugin-toggled(idx); }
-            plugin-panel-height-changed(idx, h) => { root.plugin-panel-height-changed(idx, h); }
-            plugin-key-input(idx, text, ctrl, meta) => { root.plugin-key-input(idx, text, ctrl, meta); }
-            plugin-scroll(idx, delta) => { root.plugin-scroll(idx, delta); }
-            plugin-click(idx, x, y) => { root.plugin-click(idx, x, y); }
-            plugin-focus-changed(idx, focused) => { root.plugin-focus-changed(idx, focused); }
+            expanded-changed(exp) => { root.top-bar-expanded = exp; }
         }
 
-        // ── Terminal area ─────────────────────────────────────────────────────
-        // Pane x/y coordinates are relative to this rectangle's origin.
-        terminal-area := Rectangle {
-            // fills the remaining width automatically via HorizontalLayout
-            background: root.theme-terminal-area-bg;
+        // ── Main area: sidebars + terminal ────────────────────────────────────
+        HorizontalLayout {
+            spacing: 0;
+            padding: 0;
 
-            // ── Divider drag overlay ──────────────────────────────────────────
-            // Declared FIRST (lowest z-order). PaneView elements sit on top and
-            // intercept their own clicks; this overlay catches divider hit zones.
-            overlay := TouchArea {
-                x: 0; y: 0;
-                width: parent.width;
-                height: parent.height;
+            // ── Left sidebar ──────────────────────────────────────────────────
+            Sidebar {
+                width: root.effective-sidebar-w * 1px;
+                icon-only: root.sidebar-icon-only;
+                icon-only-toggled => { root.sidebar-icon-only = !root.sidebar-icon-only; }
+                kb-focus-count: root.left-sb-kb-counter;
+                focus-escaped => {
+                    root.pane-refocus-counter = root.pane-refocus-counter + 1;
+                    root.sidebar-escaped();
+                }
+                focus-collapsed => {
+                    root.sidebar-icon-only = true;
+                    root.pane-refocus-counter = root.pane-refocus-counter + 1;
+                    root.sidebar-escaped();
+                }
+                plugins: root.plugins;
+                tasku-terminal-image: root.tasku-terminal-image;
+                ws-projects: root.ws-projects;
+                active-project: root.active-project;
+                priority-projects: root.priority-projects;
+                plugin-images: root.plugin-images;
+                plugin-pixel: root.plugin-pixel;
+                plugin-expanded: root.plugin-expanded;
+                plugin-panel-h: root.plugin-panel-h;
+                plugin-any-expanded: root.plugin-any-expanded;
+                external-plugins-total-h: root.external-plugins-total-h;
+                theme-window-bg: root.theme-window-bg;
+                theme-terminal-area-bg: root.theme-terminal-area-bg;
+                theme-card-bg: root.theme-card-bg;
+                theme-card-border: root.theme-card-border;
+                theme-focus-border: root.theme-focus-border;
+                plugin-reordered(from, to) => { root.plugin-reordered(from, to); }
+                tasku-toggled(expanded) => { root.tasku-toggled(expanded); }
+                tasku-command(cmd) => { root.tasku-command(cmd); }
+                tasku-key-input(text, ctrl, meta) => { root.tasku-key-input(text, ctrl, meta); }
+                tasku-panel-height-changed(h) => { root.tasku-panel-height-changed(h); }
+                tasku-scroll(delta) => { root.tasku-scroll(delta); }
+                workspace-selected(code) => { root.workspace-selected(code); }
+                priority-reordered(from, to) => { root.priority-reordered(from, to); }
+                plugin-toggled(idx) => { root.plugin-toggled(idx); }
+                plugin-panel-height-changed(idx, h) => { root.plugin-panel-height-changed(idx, h); }
+                plugin-key-input(idx, text, ctrl, meta) => {
+                    root.plugin-key-input(idx, text, ctrl, meta);
+                }
+                plugin-scroll(idx, delta) => { root.plugin-scroll(idx, delta); }
+                plugin-click(idx, x, y) => { root.plugin-click(idx, x, y); }
+                plugin-focus-changed(idx, focused) => { root.plugin-focus-changed(idx, focused); }
+                plugin-float(idx) => { root.plugin-float(idx); }
+            }
 
-                mouse-cursor: root.is-dragging
-                    ? (root.near-v-div ? MouseCursor.ns-resize : MouseCursor.ew-resize)
-                    : (root.near-v-div ? MouseCursor.ns-resize
-                       : root.near-h-div ? MouseCursor.ew-resize
-                       : MouseCursor.default);
+            // ── Terminal area ─────────────────────────────────────────────────
+            terminal-area := Rectangle {
+                background: root.theme-terminal-area-bg;
+
+                overlay := TouchArea {
+                    x: 0; y: 0;
+                    width: parent.width;
+                    height: parent.height;
+
+                    mouse-cursor: root.is-dragging
+                        ? (root.near-v-div ? MouseCursor.ns-resize : MouseCursor.ew-resize)
+                        : (root.near-v-div ? MouseCursor.ns-resize
+                           : root.near-h-div ? MouseCursor.ew-resize
+                           : MouseCursor.default);
+
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.down) {
+                            root.overlay-press(self.mouse-x / 1px, self.mouse-y / 1px);
+                        } else if (e.kind == PointerEventKind.up
+                                || e.kind == PointerEventKind.cancel) {
+                            root.overlay-release();
+                        }
+                    }
+
+                    moved => {
+                        if (self.pressed) {
+                            root.overlay-move(self.mouse-x / 1px, self.mouse-y / 1px);
+                        } else {
+                            root.overlay-hover(self.mouse-x / 1px, self.mouse-y / 1px);
+                        }
+                    }
+                }
+
+                for pane in root.panes: PaneView {
+                    x: pane.x * 1px;
+                    y: pane.y * 1px;
+                    width: pane.width * 1px;
+                    height: pane.height * 1px;
+                    pane-color: pane.bg-color;
+                    pane-id: pane.id;
+                    is-closable: pane.is-closable;
+                    terminal-image: pane.terminal-image;
+                    is-focused: pane.is-focused;
+                    theme-pane-bg: root.theme-pane-bg;
+                    theme-pane-toolbar: root.theme-pane-toolbar;
+                    theme-focus-border: root.theme-focus-border;
+                    theme-active-dot: root.theme-active-dot;
+                    split-horizontal      => { root.split-pane(pane.id, true); }
+                    split-vertical        => { root.split-pane(pane.id, false); }
+                    close                 => { root.close-pane(pane.id); }
+                    toggle-left-sidebar   => {
+                        root.sidebar-icon-only = false;
+                        root.left-sb-kb-counter = root.left-sb-kb-counter + 1;
+                    }
+                    toggle-right-sidebar  => {
+                        root.right-sidebar-icon-only = false;
+                        root.right-sb-kb-counter = root.right-sb-kb-counter + 1;
+                    }
+                    toggle-top-bar        => {
+                        root.show-top-bar = !root.show-top-bar;
+                        if (root.show-top-bar) { root.top-bar-expanded = true; }
+                    }
+                    toggle-bottom-bar     => {
+                        root.show-bottom-bar = !root.show-bottom-bar;
+                        if (root.show-bottom-bar) { root.bottom-bar-expanded = true; }
+                    }
+                    toggle-help => { root.show-help = !root.show-help; }
+                    help-visible: root.show-help;
+                    // Only the currently-focused pane sees counter increments.
+                    refocus-counter: pane.is-focused ? root.pane-refocus-counter : 0;
+                    force-focus: pane.id == root.force-focus-id;
+                    key-input(text, ctrl, meta, alt, shift) => { root.pane-key-input(pane.id, text, ctrl, meta, alt, shift); }
+                    request-focus(id) => { root.pane-focus-request(id); }
+                    scroll(delta) => { root.pane-scroll(pane.id, delta); }
+                    mouse-pressed(x, y) => { root.pane-mouse-pressed(pane.id, x, y); }
+                    mouse-moved(x, y)   => { root.pane-mouse-moved(pane.id, x, y); }
+                    mouse-released()    => { root.pane-mouse-released(pane.id); }
+                    zoom-in    => { root.zoom-in(); }
+                    zoom-out   => { root.zoom-out(); }
+                    zoom-reset => { root.zoom-reset(); }
+                    focus-neighbor(dir) => { root.pane-focus-neighbor(pane.id, dir); }
+                }
+
+                for div in root.dividers: DividerHandle {
+                    x: div.x * 1px;
+                    y: div.y * 1px;
+                    width: div.width * 1px;
+                    height: div.height * 1px;
+                    is-vertical: div.is-vertical;
+                    active: div.active;
+                    theme-divider-active: root.theme-divider-active;
+                    theme-divider-inactive: root.theme-divider-inactive;
+                }
+            }
+
+            // ── Right sidebar left-edge separator ─────────────────────────────
+            if root.show-right-sidebar: Rectangle {
+                width: 1px;
+                background: root.theme-card-border;
+            }
+
+            // ── Right sidebar (optional) ─────────────────────────────────────
+            if root.show-right-sidebar: Sidebar {
+                width: root.effective-right-w * 1px;
+                icon-only: root.right-sidebar-icon-only;
+                right-align: true;
+                icon-only-toggled => { root.right-sidebar-icon-only = !root.right-sidebar-icon-only; }
+                kb-focus-count: root.right-sb-kb-counter;
+                focus-escaped => {
+                    root.pane-refocus-counter = root.pane-refocus-counter + 1;
+                    root.sidebar-escaped();
+                }
+                focus-collapsed => {
+                    root.right-sidebar-icon-only = true;
+                    root.pane-refocus-counter = root.pane-refocus-counter + 1;
+                    root.sidebar-escaped();
+                }
+                plugins: root.right-plugins;
+                tasku-terminal-image: root.tasku-terminal-image;
+                ws-projects: root.ws-projects;
+                active-project: root.active-project;
+                priority-projects: root.priority-projects;
+                plugin-images: root.right-plugin-images;
+                plugin-pixel: root.right-plugin-pixel;
+                plugin-expanded: root.right-plugin-expanded;
+                plugin-panel-h: root.right-plugin-panel-h;
+                plugin-any-expanded: root.right-plugin-any-expanded;
+                external-plugins-total-h: root.right-external-plugins-total-h;
+                theme-window-bg: root.theme-window-bg;
+                theme-terminal-area-bg: root.theme-terminal-area-bg;
+                theme-card-bg: root.theme-card-bg;
+                theme-card-border: root.theme-card-border;
+                theme-focus-border: root.theme-focus-border;
+                plugin-toggled(idx) => { root.right-plugin-toggled(idx); }
+                plugin-panel-height-changed(idx, h) => {
+                    root.right-plugin-panel-height-changed(idx, h);
+                }
+                plugin-key-input(idx, text, ctrl, meta) => {
+                    root.right-plugin-key-input(idx, text, ctrl, meta);
+                }
+                plugin-scroll(idx, delta) => { root.right-plugin-scroll(idx, delta); }
+                plugin-click(idx, x, y) => { root.right-plugin-click(idx, x, y); }
+                plugin-focus-changed(idx, focused) => {
+                    root.right-plugin-focus-changed(idx, focused);
+                }
+                plugin-float(idx) => { root.right-plugin-float(idx); }
+                // No built-ins in right sidebar
+                plugin-reordered(from, to) => { }
+                tasku-toggled(exp) => { }
+                tasku-command(cmd) => { }
+                tasku-key-input(text, ctrl, meta) => { }
+                tasku-panel-height-changed(h) => { }
+                tasku-scroll(d) => { }
+                workspace-selected(code) => { }
+                priority-reordered(from, to) => { }
+            }
+        }
+
+        // ── Bottom bar header (optional, always 52px) ─────────────────────────
+        if root.show-bottom-bar: BottomBar {
+            width: parent.width;
+            height: 52px;
+            expanded: root.bottom-bar-expanded;
+            theme-card-bg: root.theme-card-bg;
+            theme-card-border: root.theme-card-border;
+            expanded-changed(exp) => { root.bottom-bar-expanded = exp; }
+        }
+    }
+
+    // ── Tasku overlay (top-bar expanded; floats above everything below header) ──
+    if root.show-top-bar && root.top-bar-expanded: Rectangle {
+        x: 0;
+        y: 52px;
+        width: parent.width;
+        height: parent.height - 52px;
+        background: root.theme-window-bg;
+
+        TaskuContent {
+            x: 0; y: 0;
+            width: parent.width;
+            height: parent.height;
+            horizontal: true;
+            show-resize-handle: false;
+            terminal-image: root.tasku-terminal-image;
+            theme-terminal-area-bg: root.theme-terminal-area-bg;
+            command(cmd) => { root.tasku-command(cmd); }
+            key-input(text, ctrl, meta) => { root.tasku-key-input(text, ctrl, meta); }
+            scroll(delta) => { root.tasku-scroll(delta); }
+            resize-start => { }
+            resize-move(delta) => { }
+            resize-end => { }
+        }
+    }
+
+    // ── Runner overlay (bottom-bar expanded; floats above the bottom header) ──
+    if root.show-bottom-bar && root.bottom-bar-expanded: Rectangle {
+        x: 0;
+        y: parent.height - root.effective-bottom-bar-h - root.runner-panel-h;
+        width: parent.width;
+        height: root.runner-panel-h;
+        background: root.theme-window-bg;
+
+        // Top border
+        Rectangle {
+            x: 0; y: 0; width: parent.width; height: 1px;
+            background: root.theme-card-border;
+        }
+
+        RunnerContent {
+            x: 0; y: 0;
+            width: parent.width;
+            height: parent.height;
+            terminal-image: root.runner-terminal-image;
+            theme-terminal-area-bg: root.theme-terminal-area-bg;
+            current-command: root.runner-current-command;
+            is-running: root.runner-is-running;
+            play    => { root.runner-play(); }
+            stop    => { root.runner-stop(); }
+            restart => { root.runner-restart(); }
+            key-input(text, ctrl, meta) => { root.runner-key-input(text, ctrl, meta); }
+            scroll(delta) => { root.runner-scroll(delta); }
+            mouse-pressed(x, y) => { root.runner-mouse-pressed(x, y); }
+            mouse-moved(x, y)   => { root.runner-mouse-moved(x, y); }
+            mouse-released()    => { root.runner-mouse-released(); }
+        }
+
+        // ── Resize handle (top 8px — drag upward to grow) ────────────────────
+        Rectangle {
+            x: 0; y: 0;
+            width: parent.width; height: 8px;
+            background: transparent;
+
+            runner-resize-ta := TouchArea {
+                width: parent.width; height: parent.height;
+                mouse-cursor: MouseCursor.ns-resize;
 
                 pointer-event(e) => {
                     if (e.kind == PointerEventKind.down) {
-                        root.overlay-press(self.mouse-x / 1px, self.mouse-y / 1px);
-                    } else if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
-                        root.overlay-release();
+                        root.runner-press-abs-y =
+                            self.absolute-position.y / 1px + self.mouse-y / 1px;
+                        root.runner-press-h = root.runner-panel-h;
                     }
                 }
-
                 moved => {
                     if (self.pressed) {
-                        root.overlay-move(self.mouse-x / 1px, self.mouse-y / 1px);
-                    } else {
-                        root.overlay-hover(self.mouse-x / 1px, self.mouse-y / 1px);
+                        // dragging up increases height (overlay grows upward)
+                        let delta = self.absolute-position.y / 1px
+                                    + self.mouse-y / 1px
+                                    - root.runner-press-abs-y;
+                        let new-h = (root.runner-press-h / 1px - delta) * 1px;
+                        root.runner-panel-h = max(100px, min(new-h, root.height - root.effective-bottom-bar-h - 100px));
+                        root.runner-panel-height-changed(root.runner-panel-h / 1px);
                     }
                 }
             }
 
-            // ── Panes ─────────────────────────────────────────────────────────
-            for pane in root.panes: PaneView {
-                x: pane.x * 1px;
-                y: pane.y * 1px;
-                width: pane.width * 1px;
-                height: pane.height * 1px;
-                pane-color: pane.bg-color;
-                pane-id: pane.id;
-                is-closable: pane.is-closable;
-                terminal-image: pane.terminal-image;
-                is-focused: pane.is-focused;
-                theme-pane-bg: root.theme-pane-bg;
-                theme-pane-toolbar: root.theme-pane-toolbar;
-                theme-focus-border: root.theme-focus-border;
-                theme-active-dot: root.theme-active-dot;
-                split-horizontal => { root.split-pane(pane.id, true); }
-                split-vertical   => { root.split-pane(pane.id, false); }
-                close            => { root.close-pane(pane.id); }
-                force-focus: pane.id == root.force-focus-id;
-                key-input(text, ctrl, meta) => { root.pane-key-input(pane.id, text, ctrl, meta); }
-                request-focus(id) => { root.pane-focus-request(id); }
-                scroll(delta) => { root.pane-scroll(pane.id, delta); }
-                mouse-pressed(x, y) => { root.pane-mouse-pressed(pane.id, x, y); }
-                mouse-moved(x, y)   => { root.pane-mouse-moved(pane.id, x, y); }
-                mouse-released()    => { root.pane-mouse-released(pane.id); }
-                zoom-in   => { root.zoom-in(); }
-                zoom-out  => { root.zoom-out(); }
-                zoom-reset => { root.zoom-reset(); }
-            }
-
-            // ── Divider visuals ───────────────────────────────────────────────
-            for div in root.dividers: DividerHandle {
-                x: div.x * 1px;
-                y: div.y * 1px;
-                width: div.width * 1px;
-                height: div.height * 1px;
-                is-vertical: div.is-vertical;
-                active: div.active;
-                theme-divider-active: root.theme-divider-active;
-                theme-divider-inactive: root.theme-divider-inactive;
+            // Drag pill indicator
+            Rectangle {
+                x: parent.width / 2 - 20px;
+                y: 3px;
+                width: 40px; height: 2px;
+                border-radius: 1px;
+                background: runner-resize-ta.has-hover
+                    ? rgba(255, 255, 255, 0.35)
+                    : rgba(255, 255, 255, 0.09);
             }
         }
     }
 
-    // ── Sidebar resize handle ─────────────────────────────────────────────────
-    // Absolutely positioned on top of everything; 8px wide, centred on the
-    // sidebar's right edge. Frozen position during drag prevents feedback loop.
+    // ── Left sidebar resize handle ────────────────────────────────────────────
     sidebar-resize := TouchArea {
         x: (root.sidebar-is-resizing
             ? root.resize-press-width
-            : root.sidebar-width) * 1px - 4px;
-        y: 0;
+            : root.effective-sidebar-w) * 1px - 4px;
+        y: root.effective-top-bar-h;
         width: 8px;
-        height: root.height;
+        height: root.height - root.effective-top-bar-h - root.effective-bottom-bar-h;
+        visible: !root.sidebar-icon-only;
         mouse-cursor: MouseCursor.ew-resize;
 
         pointer-event(e) => {
@@ -274,6 +594,88 @@ export component MainWindow inherits Window {
                     root.width / 1px - 200
                 );
             }
+        }
+    }
+
+    // ── Right sidebar resize handle ───────────────────────────────────────────
+    right-sidebar-resize := TouchArea {
+        x: root.width - (root.right-sidebar-is-resizing
+            ? root.right-resize-press-width
+            : root.effective-right-w) * 1px - 4px;
+        y: root.effective-top-bar-h;
+        width: 8px;
+        height: root.height - root.effective-top-bar-h - root.effective-bottom-bar-h;
+        visible: root.show-right-sidebar && !root.right-sidebar-icon-only;
+        mouse-cursor: MouseCursor.ew-resize;
+
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.right-resize-press-abs-x =
+                    self.absolute-position.x / 1px + self.mouse-x / 1px;
+                root.right-resize-press-width = root.right-sidebar-width;
+                root.right-sidebar-is-resizing = true;
+            } else if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
+                root.right-sidebar-is-resizing = false;
+                root.right-sidebar-width-changed(root.right-sidebar-width);
+            }
+        }
+
+        moved => {
+            if (root.right-sidebar-is-resizing) {
+                // Moving left increases right sidebar width
+                root.right-sidebar-width = clamp(
+                    root.right-resize-press-width
+                        - (self.absolute-position.x / 1px + self.mouse-x / 1px
+                           - root.right-resize-press-abs-x),
+                    80,
+                    root.width / 1px - 200
+                );
+            }
+        }
+    }
+
+    // ── Help / keybindings overlay ────────────────────────────────────────────
+    if root.show-help: HelpOverlay {
+        x: 0; y: 0;
+        width: parent.width; height: parent.height;
+        dismissed => { root.show-help = false; }
+    }
+
+    // ── Plugin float overlay ──────────────────────────────────────────────────
+    // Shown when the user clicks ↗ on a pixel plugin panel header.
+    // Covers the full window with a dim backdrop; the plugin image fills a
+    // centered card. Click the backdrop to dismiss.
+    if root.float-plugin-image.width > 0: Rectangle {
+        x: 0; y: 0;
+        width: parent.width; height: parent.height;
+        background: rgba(0, 0, 0, 0.72);
+
+        // Dismiss on backdrop click
+        TouchArea {
+            width: parent.width; height: parent.height;
+            clicked => { root.plugin-float-dismissed(); }
+        }
+
+        // Centered square card
+        card := Rectangle {
+            private property <length> card-size: min(800px, min(parent.width - 80px, parent.height - 80px));
+            x: (parent.width  - self.card-size) / 2;
+            y: (parent.height - self.card-size) / 2;
+            width:  self.card-size;
+            height: self.card-size;
+            background: #0f172a;
+            border-radius: 8px;
+            clip: true;
+
+            Image {
+                x: 0; y: 0;
+                width: parent.width; height: parent.height;
+                source: root.float-plugin-image;
+                image-fit: fill;
+            }
+
+            // Eat clicks so they don't propagate to the backdrop dismiss
+            TouchArea { width: parent.width; height: parent.height; }
         }
     }
 }

@@ -75,6 +75,50 @@ bright_white   = "#..."
 
 ---
 
+## Projects
+
+### Project paths
+
+`~/.config/mado/projects.toml` maps project codes to root directories. Mado uses this to set the working directory when opening a terminal in a workspace.
+
+```toml
+[MDO]
+path = "/Users/tom/Sites/mado"
+
+[APP]
+path = "/Users/tom/Sites/app"
+```
+
+### Task runner
+
+Add a `task` key to any project section to configure a command for the bottom bar runner:
+
+```toml
+[MDO]
+path = "/Users/tom/Sites/mado"
+task = "cargo run"
+
+[APP]
+path = "/Users/tom/Sites/app"
+task = "npm run dev"
+
+[API]
+path = "/Users/tom/Sites/api"
+task = "python manage.py runserver"
+```
+
+Enable the bottom bar in `~/.config/mado/config.toml`:
+
+```toml
+show_bottom_bar = true
+```
+
+Click the **RUNNER** strip at the bottom of the window to expand the runner panel. Use the ▶ button to start the task for the current workspace, and ■ to send Ctrl+C. The panel is resizable — drag the top edge to adjust its height.
+
+Projects without a `task` entry show "no task configured for this workspace" in the runner terminal.
+
+---
+
 ## Plugins
 
 ### What is a plugin?

@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
 use vte::{Params, Perform};
 
 const SCROLLBACK_LIMIT: usize = 2000;
@@ -243,16 +242,20 @@ fn ansi_color(idx: u16, bright: bool) -> [u8; 4] {
 }
 
 // ── VTE Perform implementation ───────────────────────────────────────────────
+// VteHandler holds a direct mutable reference to TerminalState.
+// Callers must lock the Mutex once per read buffer and pass &mut *guard —
+// this eliminates per-byte lock/unlock overhead (one lock per ~4 KB instead
+// of one lock per character/sequence).
 
-pub struct VteHandler(pub Arc<Mutex<TerminalState>>);
+pub struct VteHandler<'a>(pub &'a mut TerminalState);
 
-impl Perform for VteHandler {
+impl<'a> Perform for VteHandler<'a> {
     fn print(&mut self, ch: char) {
-        self.0.lock().unwrap().put_char(ch);
+        self.0.put_char(ch);
     }
 
     fn execute(&mut self, byte: u8) {
-        let mut st = self.0.lock().unwrap();
+        let st = &mut *self.0;
         match byte {
             b'\r' => { st.cursor_col = 0; }
             b'\n' | 0x0B | 0x0C => { st.newline(); }
@@ -265,7 +268,7 @@ impl Perform for VteHandler {
     }
 
     fn csi_dispatch(&mut self, params: &Params, _intermediates: &[u8], _ignore: bool, action: char) {
-        let mut st = self.0.lock().unwrap();
+        let st = &mut *self.0;
         let p: Vec<u16> = params.iter()
             .map(|sub| sub.first().copied().unwrap_or(0))
             .collect();
@@ -373,7 +376,7 @@ impl Perform for VteHandler {
     }
 
     fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
-        let mut st = self.0.lock().unwrap();
+        let st = &mut *self.0;
         match byte {
             b'M' => { // reverse index
                 if st.cursor_row == st.scroll_top {
@@ -414,7 +417,7 @@ impl Perform for VteHandler {
                     uri
                 };
                 if !path.is_empty() {
-                    self.0.lock().unwrap().cwd = Some(path.to_string());
+                    self.0.cwd = Some(path.to_string());
                 }
             }
         }

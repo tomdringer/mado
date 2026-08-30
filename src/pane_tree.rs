@@ -23,6 +23,9 @@ pub enum SplitDir {
     Vertical,   // top / bottom
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NavDir { Left, Right, Up, Down }
+
 pub enum PaneNode {
     Leaf { color: u32 },
     Split { id: NodeId, dir: SplitDir, ratio: f32, first: NodeId, second: NodeId },
@@ -115,37 +118,46 @@ impl PaneTree {
             .collect()
     }
 
-    pub fn close(&mut self, target_id: NodeId) {
+    /// Close a leaf pane.
+    ///
+    /// When the sibling is also a leaf, it gets promoted into the parent's slot
+    /// and its node ID changes from `sibling_id` → `parent_id`.  The caller
+    /// must remap any external maps (images, registry) accordingly.
+    ///
+    /// Returns `Some((old_id, new_id))` when a leaf was remapped, `None` otherwise.
+    pub fn close(&mut self, target_id: NodeId) -> Option<(NodeId, NodeId)> {
         if target_id == self.root {
-            return;
+            return None;
         }
 
         let parent_id = match self.find_parent(target_id) {
             Some(id) => id,
-            None => return,
+            None => return None,
         };
 
         let sibling_id = match self.nodes.get(&parent_id) {
             Some(PaneNode::Split { first, second, .. }) => {
                 if *first == target_id { *second } else { *first }
             }
-            _ => return,
+            _ => return None,
         };
 
         self.nodes.remove(&target_id);
 
         let sibling = match self.nodes.remove(&sibling_id) {
             Some(n) => n,
-            None => return,
+            None => return None,
         };
 
         // Promote sibling into parent's slot (keeps parent_id stable for grandparent)
         match sibling {
             PaneNode::Leaf { color, .. } => {
                 self.nodes.insert(parent_id, PaneNode::Leaf { color });
+                Some((sibling_id, parent_id))
             }
             PaneNode::Split { dir, ratio, first, second, .. } => {
                 self.nodes.insert(parent_id, PaneNode::Split { id: parent_id, dir, ratio, first, second });
+                None
             }
         }
     }
@@ -184,6 +196,41 @@ impl PaneTree {
             }
             None => {}
         }
+    }
+
+    /// Return the id of the nearest pane in `dir` relative to `id`,
+    /// using flattened geometry. Returns `None` if no pane lies in that direction.
+    pub fn neighbor(&self, id: NodeId, dir: NavDir, w: f32, h: f32) -> Option<NodeId> {
+        let panes = self.flatten(w, h);
+        let cur = panes.iter().find(|p| p.id == id)?;
+
+        let candidates: Vec<&FlatPaneData> = panes.iter()
+            .filter(|p| p.id != id)
+            .filter(|p| match dir {
+                NavDir::Left  => p.x + p.width  <= cur.x + 2.0,
+                NavDir::Right => p.x             >= cur.x + cur.width - 2.0,
+                NavDir::Up    => p.y + p.height  <= cur.y + 2.0,
+                NavDir::Down  => p.y             >= cur.y + cur.height - 2.0,
+            })
+            .collect();
+
+        // Among candidates, pick the closest by primary axis then secondary axis.
+        candidates.into_iter().min_by(|a, b| {
+            let primary = |p: &FlatPaneData| match dir {
+                NavDir::Left  => cur.x - (p.x + p.width),
+                NavDir::Right => p.x - (cur.x + cur.width),
+                NavDir::Up    => cur.y - (p.y + p.height),
+                NavDir::Down  => p.y - (cur.y + cur.height),
+            };
+            let secondary = |p: &FlatPaneData| match dir {
+                NavDir::Left | NavDir::Right =>
+                    ((p.y + p.height / 2.0) - (cur.y + cur.height / 2.0)).abs(),
+                NavDir::Up | NavDir::Down =>
+                    ((p.x + p.width / 2.0) - (cur.x + cur.width / 2.0)).abs(),
+            };
+            primary(a).partial_cmp(&primary(b)).unwrap_or(std::cmp::Ordering::Equal)
+                .then(secondary(a).partial_cmp(&secondary(b)).unwrap_or(std::cmp::Ordering::Equal))
+        }).map(|p| p.id)
     }
 
     pub fn flatten_dividers(&self, w: f32, h: f32) -> Vec<FlatDividerData> {
