@@ -221,6 +221,151 @@ impl Config {
             .or_else(|| std::env::var("SHELL").ok())
             .unwrap_or_else(|| "/bin/sh".into())
     }
+
+    /// Whether the top bar should be visible at launch.
+    /// True when tasku is positioned in the top bar, or top-bar plugins exist.
+    pub fn should_show_top_bar(&self, has_top_plugins: bool) -> bool {
+        self.tasku_position == "top" || has_top_plugins
+    }
+
+    /// Whether the bottom bar should be visible at launch.
+    pub fn should_show_bottom_bar(&self) -> bool {
+        self.show_bottom_bar
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_shortcut() ──────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_cmd_d() {
+        let sc = parse_shortcut("cmd+d");
+        assert!(sc.meta);
+        assert!(!sc.ctrl);
+        assert!(!sc.alt);
+        assert_eq!(sc.key, "d");
+    }
+
+    #[test]
+    fn parse_cmd_shift_d_uppercases_key() {
+        let sc = parse_shortcut("cmd+shift+d");
+        assert!(sc.meta);
+        assert_eq!(sc.key, "d"); // shift changes the char, not the shortcut key
+    }
+
+    #[test]
+    fn parse_cmd_opt_left_arrow() {
+        let sc = parse_shortcut("cmd+opt+left");
+        assert!(sc.meta);
+        assert!(sc.alt);
+        assert_eq!(sc.key, "\u{F702}");
+    }
+
+    #[test]
+    fn parse_ctrl_modifier() {
+        let sc = parse_shortcut("ctrl+c");
+        assert!(sc.ctrl);
+        assert!(!sc.meta);
+        assert_eq!(sc.key, "c");
+    }
+
+    #[test]
+    fn parse_meta_alias_super() {
+        let sc = parse_shortcut("super+w");
+        assert!(sc.meta);
+    }
+
+    #[test]
+    fn parse_arrow_keys_map_to_unicode() {
+        assert_eq!(parse_shortcut("cmd+up").key,    "\u{F700}");
+        assert_eq!(parse_shortcut("cmd+down").key,  "\u{F701}");
+        assert_eq!(parse_shortcut("cmd+right").key, "\u{F703}");
+    }
+
+    // ── Shortcut::matches() ───────────────────────────────────────────────────
+
+    #[test]
+    fn matches_correct_combination() {
+        let sc = parse_shortcut("cmd+d");
+        assert!(sc.matches("d", false, true, false));
+    }
+
+    #[test]
+    fn does_not_match_wrong_modifier() {
+        let sc = parse_shortcut("cmd+d");
+        assert!(!sc.matches("d", true, false, false)); // ctrl instead of meta
+    }
+
+    #[test]
+    fn does_not_match_wrong_key() {
+        let sc = parse_shortcut("cmd+d");
+        assert!(!sc.matches("w", false, true, false));
+    }
+
+    #[test]
+    fn matches_case_insensitive() {
+        let sc = parse_shortcut("cmd+d");
+        assert!(sc.matches("D", false, true, false));
+    }
+
+    // ── should_show_top_bar() ─────────────────────────────────────────────────
+
+    fn cfg_top(pos: &str) -> Config {
+        Config { tasku_position: pos.into(), ..Config::default() }
+    }
+
+    #[test]
+    fn top_bar_shown_when_tasku_in_top() {
+        assert!(cfg_top("top").should_show_top_bar(false));
+    }
+
+    #[test]
+    fn top_bar_shown_when_top_plugins_exist() {
+        assert!(cfg_top("left").should_show_top_bar(true));
+    }
+
+    #[test]
+    fn top_bar_shown_when_both_true() {
+        assert!(cfg_top("top").should_show_top_bar(true));
+    }
+
+    #[test]
+    fn top_bar_hidden_when_tasku_left_and_no_top_plugins() {
+        assert!(!cfg_top("left").should_show_top_bar(false));
+    }
+
+    #[test]
+    fn top_bar_hidden_when_tasku_right_and_no_top_plugins() {
+        assert!(!cfg_top("right").should_show_top_bar(false));
+    }
+
+    #[test]
+    fn top_bar_default_position_is_top_so_shows() {
+        // Default tasku_position is "top" → top bar visible with no plugins
+        assert!(Config::default().should_show_top_bar(false));
+    }
+
+    // ── should_show_bottom_bar() ──────────────────────────────────────────────
+
+    #[test]
+    fn bottom_bar_hidden_by_default() {
+        assert!(!Config::default().should_show_bottom_bar());
+    }
+
+    #[test]
+    fn bottom_bar_shown_when_config_true() {
+        let cfg = Config { show_bottom_bar: true, ..Config::default() };
+        assert!(cfg.should_show_bottom_bar());
+    }
+
+    #[test]
+    fn bottom_bar_hidden_when_config_false() {
+        let cfg = Config { show_bottom_bar: false, ..Config::default() };
+        assert!(!cfg.should_show_bottom_bar());
+    }
 }
 
 fn config_path() -> PathBuf {
