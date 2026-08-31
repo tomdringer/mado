@@ -1,4 +1,5 @@
 mod config;
+mod keys;
 mod pane_tree;
 mod pixel_plugin;
 mod sidebar;
@@ -162,6 +163,19 @@ struct DragState {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Returns `true` when macOS natural scrolling is ON (swipescrolldirection = 1).
+/// With natural scrolling OFF (traditional/inverted), Slint still receives the
+/// raw CGEvent delta which uses the natural direction, so we must flip the sign.
+fn macos_natural_scroll() -> bool {
+    std::process::Command::new("defaults")
+        .args(["read", "-g", "com.apple.swipescrolldirection"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim() == "1")
+        .unwrap_or(true) // default: treat as natural if unreadable
+}
 
 fn rgb([r, g, b]: [u8; 3]) -> slint::Color {
     slint::Color::from_rgb_u8(r, g, b)
@@ -683,6 +697,16 @@ fn main() {
     let scale = ui.window().scale_factor();
     eprintln!("mado: display scale factor = {scale}");
 
+    // Scroll direction: macOS passes raw CGEvent deltas regardless of the
+    // "natural scrolling" system preference, so we must apply the flip ourselves.
+    let natural_scroll = macos_natural_scroll();
+    let scroll_dir: f32 = if natural_scroll { 1.0 } else { -1.0 };
+    eprintln!("mado: natural scrolling = {natural_scroll}, scroll_dir = {scroll_dir}");
+
+    // Per-pane scroll accumulator for smooth sub-row scrolling.
+    let scroll_acc: Rc<RefCell<HashMap<NodeId, f32>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+
     let tree = Rc::new(RefCell::new(PaneTree::new()));
     let registry = Rc::new(RefCell::new(TerminalRegistry::new(default_font_size, scale, shell, config.font_family.clone())));
     registry.borrow().font.prewarm();
@@ -833,11 +857,9 @@ fn main() {
         let s = sidebar.borrow();
         !s.right_items().is_empty()
     };
-    // Top bar: always start hidden; Cmd+T to show.
-    let _ = has_top_plugins;
     ui.set_show_right_sidebar(has_right_plugins);
-    // Bottom bar: always start hidden; Cmd+B to show.
-    // (config.show_bottom_bar is kept for future session-restore use.)
+    ui.set_show_top_bar(config.should_show_top_bar(has_top_plugins));
+    ui.set_show_bottom_bar(config.should_show_bottom_bar());
 
     // Push top bar plugin list
     {
@@ -1315,19 +1337,23 @@ fn main() {
         move |id, text, ctrl, meta, alt, shift| {
             if *focused_id.borrow() != Some(id as NodeId) { return; }
 
-            let zoom_mod = ctrl || meta;
             let t = text.as_str();
+            let has_sel = {
+                let sel = selection.borrow();
+                sel.as_ref().map_or(false, |s| !s.is_empty() && s.pane_id == id as NodeId)
+            };
 
+            // Clear active selection on regular keystrokes (before acting on the key).
+            if keys::should_clear_selection(t, ctrl, meta, shift) {
+                let prev_id = selection.borrow().as_ref().map(|s| s.pane_id);
+                *selection.borrow_mut() = None;
+                if let Some(sid) = prev_id {
+                    registry.borrow().mark_dirty(sid);
+                }
+            }
 
-            // Cmd+C: copy selection to clipboard (primary shortcut on macOS).
-            // Ctrl+C: smart copy — copies if selection exists, otherwise sends ^C to terminal.
-            let is_copy = (meta && t == "c") || (ctrl && t == "c");
-            if is_copy {
-                let has_sel = {
-                    let sel = selection.borrow();
-                    sel.as_ref().map_or(false, |s| !s.is_empty() && s.pane_id == id as NodeId)
-                };
-                if has_sel {
+            match keys::classify_key(t, ctrl, meta, alt, shift, has_sel) {
+                keys::KeyAction::CopySelection => {
                     let norm = {
                         let sel = selection.borrow();
                         sel.as_ref().unwrap().normalized()
@@ -1339,102 +1365,52 @@ fn main() {
                                 shell_escape(&copied))])
                             .status();
                     }
-                    // Clear selection; do NOT forward the keystroke.
                     let prev_id = selection.borrow().as_ref().map(|s| s.pane_id);
                     *selection.borrow_mut() = None;
                     if let Some(sid) = prev_id {
                         registry.borrow().mark_dirty(sid);
                     }
-                    return;
                 }
-                // No selection + Cmd+C → do nothing. No selection + Ctrl+C → fall through (^C).
-                if meta { return; }
-            }
-
-            // Clear active selection on regular keystrokes, but NOT when:
-            // - a bare modifier key is pressed (ctrl/shift/meta/alt alone)
-            // - ctrl or meta is held (user may be mid-chord, e.g. about to press C)
-            let is_modifier_only = matches!(t,
-                "\u{0010}" | "\u{0015}" | // Shift L/R
-                "\u{0011}" | "\u{0016}" | // Control L/R
-                "\u{0012}" | "\u{0013}" | // Alt / AltGr
-                "\u{0014}" |              // CapsLock
-                "\u{0017}" | "\u{0018}" | // Meta L/R
-                "\u{0019}"               // Backtab
-            );
-            if !is_modifier_only && !ctrl && !meta && !shift {
-                let prev_id = selection.borrow().as_ref().map(|s| s.pane_id);
-                *selection.borrow_mut() = None;
-                if let Some(sid) = prev_id {
-                    registry.borrow().mark_dirty(sid);
+                keys::KeyAction::Nothing => {}
+                keys::KeyAction::Paste => {
+                    let result: Arc<std::sync::Mutex<Option<Vec<u8>>>> =
+                        Arc::new(std::sync::Mutex::new(None));
+                    let result2 = Arc::clone(&result);
+                    std::thread::spawn(move || {
+                        if let Ok(out) = std::process::Command::new("pbpaste").output() {
+                            *result2.lock().unwrap() = Some(out.stdout);
+                        }
+                    });
+                    *pending_paste.borrow_mut() = Some((id as NodeId, result));
                 }
-            }
-
-            // Ctrl+V / Cmd+V: paste clipboard contents (async — avoids blocking UI thread).
-            if (ctrl && t == "v") || (meta && t == "v") {
-                let result: Arc<std::sync::Mutex<Option<Vec<u8>>>> =
-                    Arc::new(std::sync::Mutex::new(None));
-                let result2 = Arc::clone(&result);
-                std::thread::spawn(move || {
-                    if let Ok(out) = std::process::Command::new("pbpaste").output() {
-                        *result2.lock().unwrap() = Some(out.stdout);
+                keys::KeyAction::ZoomIn => {
+                    let new_size = (*font_size.borrow() + 1.0).min(40.0);
+                    if let Some(ui) = ui_weak.upgrade() {
+                        do_zoom(&ui, new_size, &font_size, &registry, &tree,
+                                &pane_model, &images, &focused_id);
                     }
-                });
-                *pending_paste.borrow_mut() = Some((id as NodeId, result));
-                return;
-            }
-
-            // Zoom: Ctrl+= / Ctrl++ zoom in, Ctrl+- out, Ctrl+0 reset.
-            if zoom_mod && (t == "=" || t == "+") {
-                let new_size = (*font_size.borrow() + 1.0).min(40.0);
-                if let Some(ui) = ui_weak.upgrade() {
-                    do_zoom(&ui, new_size, &font_size, &registry, &tree,
-                            &pane_model, &images, &focused_id);
                 }
-                return;
-            }
-            if zoom_mod && t == "-" {
-                let new_size = (*font_size.borrow() - 1.0).max(7.0);
-                if let Some(ui) = ui_weak.upgrade() {
-                    do_zoom(&ui, new_size, &font_size, &registry, &tree,
-                            &pane_model, &images, &focused_id);
+                keys::KeyAction::ZoomOut => {
+                    let new_size = (*font_size.borrow() - 1.0).max(7.0);
+                    if let Some(ui) = ui_weak.upgrade() {
+                        do_zoom(&ui, new_size, &font_size, &registry, &tree,
+                                &pane_model, &images, &focused_id);
+                    }
                 }
-                return;
-            }
-            if zoom_mod && t == "0" {
-                if let Some(ui) = ui_weak.upgrade() {
-                    do_zoom(&ui, default_font_size, &font_size, &registry, &tree, &pane_model, &images, &focused_id);
+                keys::KeyAction::ZoomReset => {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        do_zoom(&ui, default_font_size, &font_size, &registry, &tree,
+                                &pane_model, &images, &focused_id);
+                    }
                 }
-                return;
-            }
-
-            // Modified arrow / navigation keys → xterm modifier sequences.
-            // Format: ESC [ 1 ; <N> <dir>  where N = 1 + shift(1) + alt(2) + ctrl(4).
-            // Using Opt+Arrow (alt=true) for word movement — avoids conflict with
-            // BetterStage which intercepts Cmd+Arrow at the OS level.
-            //   Opt+Left/Right       → N=3 → word movement (macOS terminal standard)
-            //   Shift+Opt+Left/Right → N=4 → word selection
-            //   Shift+Arrow          → N=2 → character selection
-            let arrow_dir: Option<u8> = match t {
-                "\u{F700}" => Some(b'A'), // Up
-                "\u{F701}" => Some(b'B'), // Down
-                "\u{F702}" => Some(b'D'), // Left
-                "\u{F703}" => Some(b'C'), // Right
-                _ => None,
-            };
-            if let Some(dir) = arrow_dir {
-                if alt || shift {
-                    let n: u32 = 1
-                        + if shift { 1 } else { 0 }
-                        + if alt   { 2 } else { 0 };
-                    let seq = format!("\x1b[1;{}{}", n, char::from(dir));
-                    registry.borrow_mut().write_key(id as NodeId, seq.as_bytes());
-                    return;
+                keys::KeyAction::ArrowSeq(seq) => {
+                    registry.borrow_mut().write_key(id as NodeId, &seq);
+                }
+                keys::KeyAction::ModifierOnly => {}
+                keys::KeyAction::Forward(bytes) => {
+                    registry.borrow_mut().write_key(id as NodeId, &bytes);
                 }
             }
-
-            let bytes = key_text_to_bytes(&text);
-            registry.borrow_mut().write_key(id as NodeId, &bytes);
         }
     });
 
@@ -1476,10 +1452,23 @@ fn main() {
 
     // ── Pane scroll ──────────────────────────────────────────────────────────
     ui.on_pane_scroll({
-        let registry = Rc::clone(&registry);
+        let registry  = Rc::clone(&registry);
+        let scroll_acc = Rc::clone(&scroll_acc);
         move |id, delta| {
-            let rows = (delta / 20.0).round() as i32;
-            registry.borrow_mut().scroll(id as NodeId, -rows);
+            let id = id as NodeId;
+            let cell_h = {
+                let reg = registry.borrow();
+                reg.font.cell_h as f32 / reg.scale
+            };
+            if cell_h <= 0.0 { return; }
+            let mut acc = scroll_acc.borrow_mut();
+            let entry = acc.entry(id).or_insert(0.0);
+            *entry += delta * scroll_dir;
+            let rows = (*entry / cell_h) as i32;
+            if rows != 0 {
+                *entry -= rows as f32 * cell_h;
+                registry.borrow_mut().scroll(id, rows);
+            }
         }
     });
 
@@ -1798,7 +1787,7 @@ fn main() {
     ui.on_tasku_key_input({
         let registry = Rc::clone(&registry);
         move |text, _ctrl, _meta| {
-            let bytes = key_text_to_bytes(&text);
+            let bytes = keys::key_text_to_bytes(&text);
             registry.borrow_mut().write_key(SIDEBAR_TASKU_ID, &bytes);
         }
     });
@@ -2033,24 +2022,28 @@ fn main() {
             }
             let zoom_mod = ctrl || meta;
             if zoom_mod && (t == "=" || t == "+" || t == "-" || t == "0") { return; }
-            let bytes = key_text_to_bytes(&text);
+            let bytes = keys::key_text_to_bytes(&text);
             registry.borrow_mut().write_key(RUNNER_ID, &bytes);
         }
     });
 
     // ── Runner: scroll ────────────────────────────────────────────────────────
     ui.on_runner_scroll({
-        let registry = Rc::clone(&registry);
+        let registry   = Rc::clone(&registry);
+        let scroll_acc = Rc::clone(&scroll_acc);
         move |delta_px| {
-            let cell_h_logical = {
+            let cell_h = {
                 let reg = registry.borrow();
                 reg.font.cell_h as f32 / reg.scale
             };
-            if cell_h_logical > 0.0 {
-                let delta_rows = (-delta_px / cell_h_logical).round() as i32;
-                if delta_rows != 0 {
-                    registry.borrow_mut().scroll(RUNNER_ID, delta_rows);
-                }
+            if cell_h <= 0.0 { return; }
+            let mut acc = scroll_acc.borrow_mut();
+            let entry = acc.entry(RUNNER_ID).or_insert(0.0);
+            *entry += -delta_px * scroll_dir;
+            let rows = (*entry / cell_h) as i32;
+            if rows != 0 {
+                *entry -= rows as f32 * cell_h;
+                registry.borrow_mut().scroll(RUNNER_ID, rows);
             }
         }
     });
@@ -2161,20 +2154,21 @@ fn main() {
 
     // ── Tasku terminal scroll wheel ──────────────────────────────────────────
     ui.on_tasku_scroll({
-        let registry = Rc::clone(&registry);
+        let registry   = Rc::clone(&registry);
+        let scroll_acc = Rc::clone(&scroll_acc);
         move |delta_px| {
-            // delta_px is logical-pixel delta-y from Slint (negative = scroll up).
-            // Convert to rows: scrolling up (negative delta) → positive row delta
-            // (move toward older content).
-            let cell_h_logical = {
+            let cell_h = {
                 let reg = registry.borrow();
                 reg.font.cell_h as f32 / reg.scale
             };
-            if cell_h_logical > 0.0 {
-                let delta_rows = (-delta_px / cell_h_logical).round() as i32;
-                if delta_rows != 0 {
-                    registry.borrow_mut().scroll(SIDEBAR_TASKU_ID, delta_rows);
-                }
+            if cell_h <= 0.0 { return; }
+            let mut acc = scroll_acc.borrow_mut();
+            let entry = acc.entry(SIDEBAR_TASKU_ID).or_insert(0.0);
+            *entry += -delta_px * scroll_dir;
+            let rows = (*entry / cell_h) as i32;
+            if rows != 0 {
+                *entry -= rows as f32 * cell_h;
+                registry.borrow_mut().scroll(SIDEBAR_TASKU_ID, rows);
             }
         }
     });
@@ -2290,7 +2284,7 @@ fn main() {
                 let zoom_mod = ctrl || meta;
                 let t = text.as_str();
                 if zoom_mod && (t == "=" || t == "+" || t == "-" || t == "0") { return; }
-                let bytes = key_text_to_bytes(&text);
+                let bytes = keys::key_text_to_bytes(&text);
                 registry.borrow_mut().write_key(plugin_node_id(idx), &bytes);
             }
         }
@@ -2298,23 +2292,28 @@ fn main() {
 
     // ── External plugin scroll wheel (left sidebar) ───────────────────────────
     ui.on_plugin_scroll({
-        let registry = Rc::clone(&registry);
+        let registry      = Rc::clone(&registry);
         let pixel_plugins = Rc::clone(&pixel_plugins);
+        let scroll_acc    = Rc::clone(&scroll_acc);
         move |idx, delta_px| {
             let idx = idx as usize;
             if idx >= num_left_ext { return; }
             if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
-                plugin.send_scroll(delta_px);
+                plugin.send_scroll(delta_px * scroll_dir);
             } else {
-                let cell_h_logical = {
+                let cell_h = {
                     let reg = registry.borrow();
                     reg.font.cell_h as f32 / reg.scale
                 };
-                if cell_h_logical > 0.0 {
-                    let delta_rows = (-delta_px / cell_h_logical).round() as i32;
-                    if delta_rows != 0 {
-                        registry.borrow_mut().scroll(plugin_node_id(idx), delta_rows);
-                    }
+                if cell_h <= 0.0 { return; }
+                let node = plugin_node_id(idx);
+                let mut acc = scroll_acc.borrow_mut();
+                let entry = acc.entry(node).or_insert(0.0);
+                *entry += -delta_px * scroll_dir;
+                let rows = (*entry / cell_h) as i32;
+                if rows != 0 {
+                    *entry -= rows as f32 * cell_h;
+                    registry.borrow_mut().scroll(node, rows);
                 }
             }
         }
@@ -2461,46 +2460,66 @@ fn main() {
     // ── Right sidebar plugin key input ────────────────────────────────────────
     ui.on_right_plugin_key_input({
         let registry = Rc::clone(&registry);
+        let right_pixel_plugins = Rc::clone(&right_pixel_plugins);
         move |idx, text, ctrl, meta| {
             let idx = idx as usize;
             if idx >= num_right_ext { return; }
-            let zoom_mod = ctrl || meta;
-            let t = text.as_str();
-            if zoom_mod && (t == "=" || t == "+" || t == "-" || t == "0") { return; }
-            let bytes = key_text_to_bytes(&text);
-            registry.borrow_mut().write_key(right_plugin_node_id(idx), &bytes);
+            if let Some(plugin) = right_pixel_plugins.borrow_mut().get_mut(&idx) {
+                plugin.send_key(text.as_str(), ctrl, meta);
+            } else {
+                let zoom_mod = ctrl || meta;
+                let t = text.as_str();
+                if zoom_mod && (t == "=" || t == "+" || t == "-" || t == "0") { return; }
+                let bytes = keys::key_text_to_bytes(&text);
+                registry.borrow_mut().write_key(right_plugin_node_id(idx), &bytes);
+            }
         }
     });
 
     // ── Right sidebar plugin scroll ───────────────────────────────────────────
     ui.on_right_plugin_scroll({
-        let registry = Rc::clone(&registry);
+        let registry   = Rc::clone(&registry);
+        let scroll_acc = Rc::clone(&scroll_acc);
         move |idx, delta_px| {
             let idx = idx as usize;
             if idx >= num_right_ext { return; }
-            let cell_h_logical = {
+            let cell_h = {
                 let reg = registry.borrow();
                 reg.font.cell_h as f32 / reg.scale
             };
-            if cell_h_logical > 0.0 {
-                let delta_rows = (-delta_px / cell_h_logical).round() as i32;
-                if delta_rows != 0 {
-                    registry.borrow_mut().scroll(right_plugin_node_id(idx), delta_rows);
-                }
+            if cell_h <= 0.0 { return; }
+            let node = right_plugin_node_id(idx);
+            let mut acc = scroll_acc.borrow_mut();
+            let entry = acc.entry(node).or_insert(0.0);
+            *entry += -delta_px * scroll_dir;
+            let rows = (*entry / cell_h) as i32;
+            if rows != 0 {
+                *entry -= rows as f32 * cell_h;
+                registry.borrow_mut().scroll(node, rows);
             }
         }
     });
 
     // ── Right sidebar plugin click ────────────────────────────────────────────
     ui.on_right_plugin_click({
-        move |_idx, _x, _y| {
-            // Right sidebar plugins don't support pixel protocol yet
+        let right_pixel_plugins = Rc::clone(&right_pixel_plugins);
+        move |idx, x, y| {
+            let idx = idx as usize;
+            if let Some(plugin) = right_pixel_plugins.borrow_mut().get_mut(&idx) {
+                plugin.send_click(x, y);
+            }
         }
     });
 
     // ── Right sidebar plugin focus ────────────────────────────────────────────
     ui.on_right_plugin_focus_changed({
-        move |_idx, _focused| { }
+        let right_pixel_plugins = Rc::clone(&right_pixel_plugins);
+        move |idx, focused| {
+            let idx = idx as usize;
+            if let Some(plugin) = right_pixel_plugins.borrow_mut().get_mut(&idx) {
+                plugin.send_focus(focused);
+            }
+        }
     });
 
     // ── Plugin float overlay ──────────────────────────────────────────────────
@@ -2581,25 +2600,30 @@ fn main() {
             let zoom_mod = ctrl || meta;
             let t = text.as_str();
             if zoom_mod && (t == "=" || t == "+" || t == "-" || t == "0") { return; }
-            let bytes = key_text_to_bytes(&text);
+            let bytes = keys::key_text_to_bytes(&text);
             registry.borrow_mut().write_key(top_plugin_node_id(idx), &bytes);
         }
     });
 
     ui.on_top_plugin_scroll({
-        let registry = Rc::clone(&registry);
+        let registry   = Rc::clone(&registry);
+        let scroll_acc = Rc::clone(&scroll_acc);
         move |idx, delta_px| {
             let idx = idx as usize;
             if idx >= num_top_ext { return; }
-            let cell_h_logical = {
+            let cell_h = {
                 let reg = registry.borrow();
                 reg.font.cell_h as f32 / reg.scale
             };
-            if cell_h_logical > 0.0 {
-                let delta_rows = (-delta_px / cell_h_logical).round() as i32;
-                if delta_rows != 0 {
-                    registry.borrow_mut().scroll(top_plugin_node_id(idx), delta_rows);
-                }
+            if cell_h <= 0.0 { return; }
+            let node = top_plugin_node_id(idx);
+            let mut acc = scroll_acc.borrow_mut();
+            let entry = acc.entry(node).or_insert(0.0);
+            *entry += -delta_px * scroll_dir;
+            let rows = (*entry / cell_h) as i32;
+            if rows != 0 {
+                *entry -= rows as f32 * cell_h;
+                registry.borrow_mut().scroll(node, rows);
             }
         }
     });
@@ -3099,55 +3123,4 @@ fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn key_text_to_bytes(text: &str) -> Vec<u8> {
-    match text {
-        // ── Modifier keys — never forward to terminal ────────────────────────
-        "\u{0010}" | // Shift (L)   — would send Ctrl+P
-        "\u{0015}" | // Shift (R)   — would send Ctrl+U (kill line!)
-        "\u{0011}" | // Control (L) — would send Ctrl+Q
-        "\u{0016}" | // Control (R) — would send Ctrl+V
-        "\u{0012}" | // Alt         — would send Ctrl+R
-        "\u{0013}" | // AltGr       — would send Ctrl+S
-        "\u{0014}" | // CapsLock    — would send Ctrl+T
-        "\u{0017}" | // Meta (L)    — would send Ctrl+W
-        "\u{0018}" | // Meta (R)    — would send Ctrl+X
-        "\u{0019}"   // Backtab
-        => vec![],
-
-        // ── Standard keys ───────────────────────────────────────────────────
-        "\u{0008}" => vec![0x7F],       // Backspace → DEL (terminal convention)
-        "\u{007F}" => vec![0x1B, b'[', b'3', b'~'], // Delete → ESC [ 3 ~
-
-        // ── Arrow keys ──────────────────────────────────────────────────────
-        "\u{F700}" => vec![0x1B, b'[', b'A'], // Up
-        "\u{F701}" => vec![0x1B, b'[', b'B'], // Down
-        "\u{F702}" => vec![0x1B, b'[', b'D'], // Left
-        "\u{F703}" => vec![0x1B, b'[', b'C'], // Right
-
-        // ── Navigation ──────────────────────────────────────────────────────
-        "\u{F729}" => vec![0x1B, b'[', b'H'],             // Home
-        "\u{F72B}" => vec![0x1B, b'[', b'F'],             // End
-        "\u{F72C}" => vec![0x1B, b'[', b'5', b'~'],       // PageUp
-        "\u{F72D}" => vec![0x1B, b'[', b'6', b'~'],       // PageDown
-
-        // ── Function keys ────────────────────────────────────────────────────
-        "\u{F704}" => vec![0x1B, b'O', b'P'],                    // F1
-        "\u{F705}" => vec![0x1B, b'O', b'Q'],                    // F2
-        "\u{F706}" => vec![0x1B, b'O', b'R'],                    // F3
-        "\u{F707}" => vec![0x1B, b'O', b'S'],                    // F4
-        "\u{F708}" => vec![0x1B, b'[', b'1', b'5', b'~'],       // F5
-        "\u{F709}" => vec![0x1B, b'[', b'1', b'7', b'~'],       // F6
-        "\u{F70A}" => vec![0x1B, b'[', b'1', b'8', b'~'],       // F7
-        "\u{F70B}" => vec![0x1B, b'[', b'1', b'9', b'~'],       // F8
-        "\u{F70C}" => vec![0x1B, b'[', b'2', b'0', b'~'],       // F9
-        "\u{F70D}" => vec![0x1B, b'[', b'2', b'1', b'~'],       // F10
-        "\u{F70E}" => vec![0x1B, b'[', b'2', b'3', b'~'],       // F11
-        "\u{F70F}" => vec![0x1B, b'[', b'2', b'4', b'~'],       // F12
-
-        // ── Everything else: printable chars, Ctrl+letter combos ────────────
-        // Return (\r), Tab (\t), Escape (\u{1B}), and Ctrl+X (\u{0001}–\u{001A})
-        // all pass through as their raw bytes — correct terminal values.
-        _ => text.as_bytes().to_vec(),
-    }
-}
 
