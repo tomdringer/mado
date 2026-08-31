@@ -343,3 +343,207 @@ impl PaneTree {
         id
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── new() ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn new_has_single_leaf_at_root() {
+        let t = PaneTree::new();
+        assert_eq!(t.root, 0);
+        assert!(matches!(t.nodes.get(&0), Some(PaneNode::Leaf { .. })));
+        assert_eq!(t.leaf_ids().len(), 1);
+    }
+
+    // ── split() ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn split_horizontal_returns_ids_and_promotes_target() {
+        let mut t = PaneTree::new();
+        let (relocated, new_id) = t.split(0, SplitDir::Horizontal).unwrap();
+        // Root slot is now a Split
+        assert!(matches!(t.nodes.get(&0), Some(PaneNode::Split { dir: SplitDir::Horizontal, .. })));
+        // Both children are leaves
+        assert!(matches!(t.nodes.get(&relocated), Some(PaneNode::Leaf { .. })));
+        assert!(matches!(t.nodes.get(&new_id),    Some(PaneNode::Leaf { .. })));
+        assert_eq!(t.leaf_ids().len(), 2);
+    }
+
+    #[test]
+    fn split_vertical_works() {
+        let mut t = PaneTree::new();
+        t.split(0, SplitDir::Vertical).unwrap();
+        assert!(matches!(t.nodes.get(&0), Some(PaneNode::Split { dir: SplitDir::Vertical, .. })));
+    }
+
+    #[test]
+    fn split_non_leaf_returns_none() {
+        let mut t = PaneTree::new();
+        t.split(0, SplitDir::Horizontal).unwrap(); // 0 is now a Split
+        assert!(t.split(0, SplitDir::Horizontal).is_none());
+    }
+
+    #[test]
+    fn split_default_ratio_is_half() {
+        let mut t = PaneTree::new();
+        t.split(0, SplitDir::Horizontal).unwrap();
+        if let Some(PaneNode::Split { ratio, .. }) = t.nodes.get(&0) {
+            assert!((*ratio - 0.5).abs() < f32::EPSILON);
+        } else {
+            panic!("expected Split at root");
+        }
+    }
+
+    // ── close() ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn close_root_returns_none() {
+        let mut t = PaneTree::new();
+        assert!(t.close(0).is_none());
+    }
+
+    #[test]
+    fn close_leaf_promotes_sibling_leaf() {
+        let mut t = PaneTree::new();
+        let (relocated, new_id) = t.split(0, SplitDir::Horizontal).unwrap();
+        // Close the new pane; sibling (relocated) should be promoted into slot 0
+        let remap = t.close(new_id);
+        assert!(matches!(remap, Some((old, new_slot)) if old == relocated && new_slot == 0));
+        // Tree is back to a single leaf
+        assert!(matches!(t.nodes.get(&0), Some(PaneNode::Leaf { .. })));
+        assert_eq!(t.leaf_ids().len(), 1);
+    }
+
+    #[test]
+    fn close_leaf_when_sibling_is_split_returns_none_remap() {
+        let mut t = PaneTree::new();
+        let (relocated, _new_id) = t.split(0, SplitDir::Horizontal).unwrap();
+        // Split the relocated pane again
+        let (_, _) = t.split(relocated, SplitDir::Vertical).unwrap();
+        // Now close _new_id — sibling is a Split, so no leaf remap expected
+        let remap = t.close(_new_id);
+        assert!(remap.is_none());
+    }
+
+    // ── flatten() ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn flatten_single_pane_fills_viewport() {
+        let t = PaneTree::new();
+        let panes = t.flatten(1000.0, 600.0);
+        assert_eq!(panes.len(), 1);
+        let p = &panes[0];
+        assert_eq!(p.id, 0);
+        assert_eq!((p.x, p.y), (0.0, 0.0));
+        assert_eq!((p.width, p.height), (1000.0, 600.0));
+        assert!(!p.is_closable); // only pane is not closable
+    }
+
+    #[test]
+    fn flatten_horizontal_split_halves_width() {
+        let mut t = PaneTree::new();
+        let (left_id, right_id) = t.split(0, SplitDir::Horizontal).unwrap();
+        let panes = t.flatten(1000.0, 600.0);
+        assert_eq!(panes.len(), 2);
+
+        let left  = panes.iter().find(|p| p.id == left_id).unwrap();
+        let right = panes.iter().find(|p| p.id == right_id).unwrap();
+
+        assert!((left.width  - 500.0).abs() < 1.0);
+        assert!((right.width - 500.0).abs() < 1.0);
+        assert!((right.x     - 500.0).abs() < 1.0);
+        assert!(left.is_closable && right.is_closable);
+    }
+
+    #[test]
+    fn flatten_vertical_split_halves_height() {
+        let mut t = PaneTree::new();
+        let (top_id, bot_id) = t.split(0, SplitDir::Vertical).unwrap();
+        let panes = t.flatten(1000.0, 600.0);
+        let top = panes.iter().find(|p| p.id == top_id).unwrap();
+        let bot = panes.iter().find(|p| p.id == bot_id).unwrap();
+        assert!((top.height - 300.0).abs() < 1.0);
+        assert!((bot.height - 300.0).abs() < 1.0);
+        assert!((bot.y      - 300.0).abs() < 1.0);
+    }
+
+    // ── set_ratio() ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn set_ratio_clamps_to_valid_range() {
+        let mut t = PaneTree::new();
+        t.split(0, SplitDir::Horizontal).unwrap();
+        t.set_ratio(0, 0.0);
+        if let Some(PaneNode::Split { ratio, .. }) = t.nodes.get(&0) {
+            assert!((*ratio - 0.05).abs() < f32::EPSILON);
+        }
+        t.set_ratio(0, 1.0);
+        if let Some(PaneNode::Split { ratio, .. }) = t.nodes.get(&0) {
+            assert!((*ratio - 0.95).abs() < f32::EPSILON);
+        }
+    }
+
+    // ── neighbor() ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn neighbor_left_right_in_horizontal_split() {
+        let mut t = PaneTree::new();
+        let (left_id, right_id) = t.split(0, SplitDir::Horizontal).unwrap();
+        assert_eq!(t.neighbor(left_id,  NavDir::Right, 1000.0, 600.0), Some(right_id));
+        assert_eq!(t.neighbor(right_id, NavDir::Left,  1000.0, 600.0), Some(left_id));
+        assert_eq!(t.neighbor(left_id,  NavDir::Left,  1000.0, 600.0), None);
+        assert_eq!(t.neighbor(right_id, NavDir::Right, 1000.0, 600.0), None);
+    }
+
+    #[test]
+    fn neighbor_up_down_in_vertical_split() {
+        let mut t = PaneTree::new();
+        let (top_id, bot_id) = t.split(0, SplitDir::Vertical).unwrap();
+        assert_eq!(t.neighbor(top_id, NavDir::Down, 1000.0, 600.0), Some(bot_id));
+        assert_eq!(t.neighbor(bot_id, NavDir::Up,   1000.0, 600.0), Some(top_id));
+        assert_eq!(t.neighbor(top_id, NavDir::Up,   1000.0, 600.0), None);
+    }
+
+    // ── to_saved / from_saved roundtrip ──────────────────────────────────────
+
+    #[test]
+    fn save_restore_roundtrip_single_pane() {
+        let t = PaneTree::new();
+        let cwds = HashMap::from([(0u32, "/home/user".to_string())]);
+        let saved = t.to_saved(&cwds);
+        let (t2, cwds2) = PaneTree::from_saved(&saved);
+        assert_eq!(t2.leaf_ids().len(), 1);
+        assert_eq!(cwds2.values().next().unwrap(), "/home/user");
+    }
+
+    #[test]
+    fn save_restore_roundtrip_split() {
+        let mut t = PaneTree::new();
+        let (left_id, right_id) = t.split(0, SplitDir::Horizontal).unwrap();
+        let cwds = HashMap::from([
+            (left_id,  "/left".to_string()),
+            (right_id, "/right".to_string()),
+        ]);
+        let saved = t.to_saved(&cwds);
+        let (t2, cwds2) = PaneTree::from_saved(&saved);
+        assert_eq!(t2.leaf_ids().len(), 2);
+        let mut paths: Vec<&String> = cwds2.values().collect();
+        paths.sort();
+        assert_eq!(paths, vec!["/left", "/right"]);
+    }
+
+    #[test]
+    fn to_saved_uses_home_for_missing_cwd() {
+        let t = PaneTree::new();
+        let saved = t.to_saved(&HashMap::new()); // no cwd for root leaf
+        if let SavedNode::Leaf { cwd } = saved {
+            // Falls back to $HOME or "/"
+            assert!(!cwd.is_empty());
+        } else {
+            panic!("expected Leaf");
+        }
+    }
+}

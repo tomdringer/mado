@@ -112,7 +112,28 @@ fn load_user(name: &str) -> Option<Theme> {
 
 fn load_bundled(name: &str) -> Option<Theme> {
     let s: &str = match name {
-        "gray" => include_str!("../themes/gray.toml"),
+        "amber"   => include_str!("../themes/amber.toml"),
+        "blue"    => include_str!("../themes/blue.toml"),
+        "cyan"    => include_str!("../themes/cyan.toml"),
+        "emerald" => include_str!("../themes/emerald.toml"),
+        "fuchsia" => include_str!("../themes/fuchsia.toml"),
+        "gray"    => include_str!("../themes/gray.toml"),
+        "green"   => include_str!("../themes/green.toml"),
+        "indigo"  => include_str!("../themes/indigo.toml"),
+        "lime"    => include_str!("../themes/lime.toml"),
+        "neutral" => include_str!("../themes/neutral.toml"),
+        "orange"  => include_str!("../themes/orange.toml"),
+        "pink"    => include_str!("../themes/pink.toml"),
+        "purple"  => include_str!("../themes/purple.toml"),
+        "red"     => include_str!("../themes/red.toml"),
+        "rose"    => include_str!("../themes/rose.toml"),
+        "sky"     => include_str!("../themes/sky.toml"),
+        "slate"   => include_str!("../themes/slate.toml"),
+        "stone"   => include_str!("../themes/stone.toml"),
+        "teal"    => include_str!("../themes/teal.toml"),
+        "violet"  => include_str!("../themes/violet.toml"),
+        "yellow"  => include_str!("../themes/yellow.toml"),
+        "zinc"    => include_str!("../themes/zinc.toml"),
         _ => return None,
     };
     parse(s)
@@ -176,6 +197,115 @@ fn hex3(s: &str) -> Option<[u8; 3]> {
     let g = u8::from_str_radix(&s[2..4], 16).ok()?;
     let b = u8::from_str_radix(&s[4..6], 16).ok()?;
     Some([r, g, b])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── hex3() ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn hex3_parses_with_hash() {
+        assert_eq!(hex3("#1a2b3c"), Some([0x1a, 0x2b, 0x3c]));
+    }
+
+    #[test]
+    fn hex3_parses_without_hash() {
+        assert_eq!(hex3("ffffff"), Some([0xff, 0xff, 0xff]));
+    }
+
+    #[test]
+    fn hex3_parses_all_zeros() {
+        assert_eq!(hex3("#000000"), Some([0, 0, 0]));
+    }
+
+    #[test]
+    fn hex3_rejects_wrong_length() {
+        assert_eq!(hex3("#abc"), None);
+        assert_eq!(hex3("#abcdefg"), None);
+        assert_eq!(hex3(""), None);
+    }
+
+    #[test]
+    fn hex3_rejects_invalid_hex() {
+        assert_eq!(hex3("#gggggg"), None);
+        assert_eq!(hex3("#ZZZZZZ"), None);
+    }
+
+    #[test]
+    fn hex3_case_insensitive() {
+        assert_eq!(hex3("#AABBCC"), Some([0xAA, 0xBB, 0xCC]));
+        assert_eq!(hex3("#aabbcc"), Some([0xAA, 0xBB, 0xCC]));
+    }
+
+    // ── load_bundled() ────────────────────────────────────────────────────────
+
+    #[test]
+    fn bundled_slate_loads() {
+        let t = load_bundled("slate");
+        assert!(t.is_some());
+    }
+
+    #[test]
+    fn bundled_indigo_loads() {
+        let t = load_bundled("indigo");
+        assert!(t.is_some());
+    }
+
+    #[test]
+    fn bundled_unknown_returns_none() {
+        assert!(load_bundled("notatheme").is_none());
+    }
+
+    #[test]
+    fn all_bundled_themes_parse() {
+        let names = ["amber","blue","cyan","emerald","fuchsia","gray","green",
+                     "indigo","lime","neutral","orange","pink","purple","red",
+                     "rose","sky","slate","stone","teal","violet","yellow","zinc"];
+        for name in names {
+            assert!(load_bundled(name).is_some(), "theme '{name}' failed to parse");
+        }
+    }
+
+    // ── parse() ───────────────────────────────────────────────────────────────
+
+    fn valid_toml(focus_border: &str) -> String {
+        format!(
+            "[ui]\n\
+             window_bg        = \"#0f172a\"\n\
+             terminal_area_bg = \"#020617\"\n\
+             pane_bg          = \"#0f172a\"\n\
+             pane_toolbar     = \"#1e293b\"\n\
+             focus_border     = \"{focus_border}\"\n\
+             active_dot       = \"#22c55e\"\n\
+             card_bg          = \"#1e293b\"\n\
+             card_border      = \"#334155\"\n\
+             divider_active   = \"#8888cc\"\n\
+             divider_inactive = \"#3a3a55\"\n\
+             text_primary     = \"#f1f5f9\"\n\
+             text_muted       = \"#64748b\"\n"
+        )
+    }
+
+    #[test]
+    fn parse_valid_toml_returns_theme() {
+        assert!(parse(&valid_toml("#7aa2f7")).is_some());
+    }
+
+    #[test]
+    fn parse_invalid_hex_returns_none() {
+        let bad = valid_toml("#7aa2f7").replace("#0f172a", "not-a-color");
+        assert!(parse(&bad).is_none());
+    }
+
+    #[test]
+    fn starship_fields_default_to_ui_colours() {
+        let toml = valid_toml("#aaaaaa");
+        let t = parse(&toml).unwrap();
+        // color_orange defaults to focus_border (#aaaaaa)
+        assert_eq!(t.starship.color_orange, [0xaa, 0xaa, 0xaa]);
+    }
 }
 
 /// Hard-coded slate values — used only if the bundled TOML itself fails to parse.

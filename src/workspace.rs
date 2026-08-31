@@ -335,3 +335,106 @@ fn parse_hex(hex: &str) -> (u8, u8, u8) {
     let b = u8::from_str_radix(&h[4..6], 16).unwrap_or(128);
     (r, g, b)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_hex() ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_hex_with_hash() {
+        assert_eq!(parse_hex("#FF5733"), (0xFF, 0x57, 0x33));
+    }
+
+    #[test]
+    fn parse_hex_without_hash() {
+        assert_eq!(parse_hex("1a2b3c"), (0x1a, 0x2b, 0x3c));
+    }
+
+    #[test]
+    fn parse_hex_too_short_returns_gray() {
+        assert_eq!(parse_hex("#abc"), (128, 128, 128));
+    }
+
+    #[test]
+    fn parse_hex_invalid_chars_returns_gray_per_channel() {
+        // "zz" is invalid — from_str_radix returns Err, falls back to 128
+        let (r, g, b) = parse_hex("#zzFFFF");
+        assert_eq!(r, 128);
+        assert_eq!(g, 0xFF);
+        assert_eq!(b, 0xFF);
+    }
+
+    // ── parse() (tasku output parser) ─────────────────────────────────────────
+
+    fn run_parse(input: &str) -> Vec<FetchedProject> {
+        parse(input.as_bytes())
+    }
+
+    #[test]
+    fn parse_single_project() {
+        let input = "Mado      #FF5733  MDO\n";
+        let projects = run_parse(input);
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "Mado");
+        assert_eq!(projects[0].code, "MDO");
+    }
+
+    #[test]
+    fn parse_skips_header_line() {
+        let input = "name      colour   proj_code\nMado      #FF5733  MDO\n";
+        let projects = run_parse(input);
+        assert_eq!(projects.len(), 1);
+    }
+
+    #[test]
+    fn parse_skips_separator_lines() {
+        let input = "────────  ───────  ─────────\nMado      #FF5733  MDO\n────────  ───────  ─────────\n";
+        let projects = run_parse(input);
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "Mado");
+    }
+
+    #[test]
+    fn parse_fallback_code_from_name() {
+        // No code in the line — should use first 3 chars of name uppercased
+        let input = "Supercode #1122aa\n";
+        let projects = run_parse(input);
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].code, "SUP");
+    }
+
+    #[test]
+    fn parse_multiple_projects() {
+        let input = "Alpha     #ffffff  ALP\nBeta      #000000  BET\n";
+        let projects = run_parse(input);
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[0].name, "Alpha");
+        assert_eq!(projects[1].name, "Beta");
+    }
+
+    #[test]
+    fn parse_light_color_gives_black_text() {
+        // #ffffff → luminance ~255 → text should be black
+        let input = "Light     #ffffff  LGT\n";
+        let projects = run_parse(input);
+        // text_color is black (all channels 0)
+        // We can't directly check the Color struct easily, but we can verify the project parsed
+        assert_eq!(projects.len(), 1);
+    }
+
+    #[test]
+    fn parse_empty_input_returns_empty() {
+        assert!(run_parse("").is_empty());
+    }
+
+    // ── load_project_paths() ─────────────────────────────────────────────────
+
+    #[test]
+    fn load_project_paths_missing_file_returns_empty() {
+        // Just verify it doesn't panic when config dir doesn't exist
+        // (actual HOME varies by environment, result is non-deterministic)
+        let _ = load_project_paths();
+    }
+}

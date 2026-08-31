@@ -225,6 +225,298 @@ impl TerminalState {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make(cols: usize, rows: usize) -> TerminalState {
+        TerminalState::new(cols, rows)
+    }
+
+    // ── new() ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn new_initializes_correctly() {
+        let st = make(80, 24);
+        assert_eq!(st.cols, 80);
+        assert_eq!(st.rows, 24);
+        assert_eq!(st.cursor_col, 0);
+        assert_eq!(st.cursor_row, 0);
+        assert_eq!(st.scroll_top, 0);
+        assert_eq!(st.scroll_bot, 23);
+        assert_eq!(st.cells.len(), 80 * 24);
+        assert_eq!(st.cells[0].ch, ' ');
+        assert!(st.scrollback.is_empty());
+        assert_eq!(st.scroll_offset, 0);
+    }
+
+    // ── put_char ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn put_char_places_char_at_cursor() {
+        let mut st = make(80, 24);
+        st.put_char('X');
+        assert_eq!(st.cells[0].ch, 'X');
+        assert_eq!(st.cursor_col, 1);
+    }
+
+    #[test]
+    fn put_char_wraps_at_column_boundary() {
+        let mut st = make(5, 5);
+        st.cursor_col = 4;
+        st.put_char('A');
+        // After placing at col 4, cursor_col == 5 >= cols, so next char wraps
+        st.put_char('B');
+        assert_eq!(st.cursor_col, 1);
+        assert_eq!(st.cursor_row, 1);
+        assert_eq!(st.cells[5].ch, 'B'); // row 1, col 0
+    }
+
+    #[test]
+    fn put_char_uses_current_colors() {
+        let mut st = make(80, 24);
+        st.cur_fg = [0xFF, 0x00, 0x00, 0xFF];
+        st.cur_bg = [0x00, 0xFF, 0x00, 0xFF];
+        st.put_char('Z');
+        assert_eq!(st.cells[0].fg, [0xFF, 0x00, 0x00, 0xFF]);
+        assert_eq!(st.cells[0].bg, [0x00, 0xFF, 0x00, 0xFF]);
+    }
+
+    // ── scroll_up / scrollback ────────────────────────────────────────────────
+
+    #[test]
+    fn scroll_up_captures_row_to_scrollback() {
+        let mut st = make(4, 3);
+        st.put_char('A'); st.put_char('B'); st.put_char('C'); st.put_char('D');
+        st.scroll_up(1);
+        assert_eq!(st.scrollback.len(), 1);
+        assert_eq!(st.scrollback[0][0].ch, 'A');
+        assert_eq!(st.scrollback[0][3].ch, 'D');
+    }
+
+    #[test]
+    fn scroll_up_clears_vacated_row() {
+        let mut st = make(4, 3);
+        st.put_char('A');
+        st.scroll_up(1);
+        // Row 2 (the vacated bottom row) should be blank
+        let row2_start = 2 * 4;
+        assert_eq!(st.cells[row2_start].ch, ' ');
+    }
+
+    #[test]
+    fn scrollback_capped_at_limit() {
+        let mut st = make(1, 2);
+        for _ in 0..2100 {
+            st.put_char('X');
+            st.scroll_up(1);
+        }
+        assert!(st.scrollback.len() <= 2000);
+    }
+
+    #[test]
+    fn scroll_up_does_not_capture_partial_region() {
+        let mut st = make(4, 4);
+        st.scroll_top = 1;
+        st.scroll_bot = 3;
+        st.put_char('A');
+        st.scroll_up(1);
+        // Region doesn't start at row 0, so no scrollback capture
+        assert!(st.scrollback.is_empty());
+    }
+
+    // ── adjust_scroll_offset ──────────────────────────────────────────────────
+
+    #[test]
+    fn adjust_scroll_offset_positive_scrolls_up() {
+        let mut st = make(4, 3);
+        st.put_char('X'); st.scroll_up(1); // 1 row in scrollback
+        st.adjust_scroll_offset(1);
+        assert_eq!(st.scroll_offset, 1);
+    }
+
+    #[test]
+    fn adjust_scroll_offset_clamped_to_max() {
+        let mut st = make(4, 3);
+        st.put_char('X'); st.scroll_up(1);
+        st.adjust_scroll_offset(999);
+        assert_eq!(st.scroll_offset, st.scrollback.len());
+    }
+
+    #[test]
+    fn adjust_scroll_offset_negative_clamped_at_zero() {
+        let mut st = make(4, 3);
+        st.adjust_scroll_offset(-10);
+        assert_eq!(st.scroll_offset, 0);
+    }
+
+    // ── resize() ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn resize_preserves_existing_content() {
+        let mut st = make(5, 5);
+        st.put_char('H');
+        st.resize(10, 10);
+        assert_eq!(st.cells[0].ch, 'H');
+        assert_eq!(st.cols, 10);
+        assert_eq!(st.rows, 10);
+    }
+
+    #[test]
+    fn resize_clamps_cursor_to_new_bounds() {
+        let mut st = make(10, 10);
+        st.cursor_col = 9;
+        st.cursor_row = 9;
+        st.resize(5, 5);
+        assert!(st.cursor_col < 5);
+        assert!(st.cursor_row < 5);
+    }
+
+    #[test]
+    fn resize_noop_when_same_size() {
+        let mut st = make(80, 24);
+        st.put_char('Q');
+        st.dirty = false;
+        st.resize(80, 24);
+        assert!(!st.dirty); // no change, dirty not set
+    }
+
+    // ── erase_in_display ─────────────────────────────────────────────────────
+
+    #[test]
+    fn erase_in_display_mode0_from_cursor_to_end() {
+        let mut st = make(4, 2);
+        for ch in ['A','B','C','D','E','F','G','H'] { st.put_char(ch); }
+        st.cursor_col = 2; st.cursor_row = 0;
+        st.erase_in_display(0);
+        assert_eq!(st.cells[0].ch, 'A');
+        assert_eq!(st.cells[1].ch, 'B');
+        assert_eq!(st.cells[2].ch, ' '); // erased from here
+        assert_eq!(st.cells[7].ch, ' ');
+    }
+
+    #[test]
+    fn erase_in_display_mode1_from_start_to_cursor() {
+        let mut st = make(4, 2);
+        for ch in ['A','B','C','D','E','F','G','H'] { st.put_char(ch); }
+        st.cursor_col = 1; st.cursor_row = 0;
+        st.erase_in_display(1);
+        assert_eq!(st.cells[0].ch, ' ');
+        assert_eq!(st.cells[1].ch, ' ');
+        assert_eq!(st.cells[2].ch, 'C'); // after cursor, untouched
+    }
+
+    #[test]
+    fn erase_in_display_mode2_clears_all() {
+        let mut st = make(4, 2);
+        for ch in ['A','B','C','D','E','F','G','H'] { st.put_char(ch); }
+        st.erase_in_display(2);
+        assert!(st.cells.iter().all(|c| c.ch == ' '));
+    }
+
+    #[test]
+    fn erase_in_display_mode2_captures_theme_bg() {
+        let mut st = make(4, 2);
+        st.cur_bg = [0x12, 0x34, 0x56, 0xFF];
+        st.erase_in_display(2);
+        assert_eq!(st.theme_bg, Some([0x12, 0x34, 0x56, 0xFF]));
+    }
+
+    // ── erase_in_line ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn erase_in_line_mode0_from_cursor() {
+        let mut st = make(5, 1);
+        for ch in ['A','B','C','D','E'] { st.put_char(ch); }
+        st.cursor_col = 2;
+        st.erase_in_line(0);
+        assert_eq!(st.cells[0].ch, 'A');
+        assert_eq!(st.cells[1].ch, 'B');
+        assert_eq!(st.cells[2].ch, ' ');
+        assert_eq!(st.cells[4].ch, ' ');
+    }
+
+    #[test]
+    fn erase_in_line_mode1_up_to_cursor() {
+        let mut st = make(5, 1);
+        for ch in ['A','B','C','D','E'] { st.put_char(ch); }
+        st.cursor_col = 2;
+        st.erase_in_line(1);
+        assert_eq!(st.cells[0].ch, ' ');
+        assert_eq!(st.cells[2].ch, ' ');
+        assert_eq!(st.cells[3].ch, 'D');
+    }
+
+    #[test]
+    fn erase_in_line_mode2_whole_line() {
+        let mut st = make(5, 1);
+        for ch in ['A','B','C','D','E'] { st.put_char(ch); }
+        st.erase_in_line(2);
+        assert!(st.cells.iter().all(|c| c.ch == ' '));
+    }
+
+    // ── set_color_from_params ─────────────────────────────────────────────────
+
+    #[test]
+    fn sgr_0_resets_colors() {
+        let mut st = make(1, 1);
+        st.cur_fg = [0, 0, 0, 0xFF];
+        st.cur_bg = [0, 0, 0, 0xFF];
+        st.set_color_from_params(&[0]);
+        assert_eq!(st.cur_fg, DEFAULT_FG);
+        assert_eq!(st.cur_bg, DEFAULT_BG);
+    }
+
+    #[test]
+    fn sgr_30_37_set_fg_colors() {
+        let mut st = make(1, 1);
+        st.set_color_from_params(&[31]); // red
+        assert_ne!(st.cur_fg, DEFAULT_FG);
+        assert_eq!(st.cur_fg[3], 0xFF);
+    }
+
+    #[test]
+    fn sgr_38_2_sets_rgb_fg() {
+        let mut st = make(1, 1);
+        st.set_color_from_params(&[38, 2, 100, 150, 200]);
+        assert_eq!(st.cur_fg, [100, 150, 200, 0xFF]);
+    }
+
+    #[test]
+    fn sgr_48_2_sets_rgb_bg() {
+        let mut st = make(1, 1);
+        st.set_color_from_params(&[48, 2, 10, 20, 30]);
+        assert_eq!(st.cur_bg, [10, 20, 30, 0xFF]);
+    }
+
+    #[test]
+    fn sgr_39_resets_fg() {
+        let mut st = make(1, 1);
+        st.cur_fg = [1, 2, 3, 0xFF];
+        st.set_color_from_params(&[39]);
+        assert_eq!(st.cur_fg, DEFAULT_FG);
+    }
+
+    #[test]
+    fn sgr_49_resets_bg() {
+        let mut st = make(1, 1);
+        st.cur_bg = [1, 2, 3, 0xFF];
+        st.set_color_from_params(&[49]);
+        assert_eq!(st.cur_bg, DEFAULT_BG);
+    }
+
+    #[test]
+    fn sgr_bright_colors_brighter_than_normal() {
+        let mut st = make(1, 1);
+        st.set_color_from_params(&[31]); // normal red
+        let normal = st.cur_fg;
+        st.set_color_from_params(&[91]); // bright red
+        let bright = st.cur_fg;
+        // At least one channel should be >= the normal value
+        assert!(bright[0] >= normal[0] || bright[1] >= normal[1] || bright[2] >= normal[2]);
+    }
+}
+
 fn ansi_color(idx: u16, bright: bool) -> [u8; 4] {
     let colors: [[u8; 3]; 8] = [
         [0x1e, 0x20, 0x30], // black
