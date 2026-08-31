@@ -1049,6 +1049,16 @@ export component Sidebar inherits Rectangle {
                 }
                 return accept;
             }
+            // Forward to expanded pixel plugin (e.g. space → pomodoro toggle)
+            if (root.kb-index >= 0
+                    && root.kb-index < root.plugins.length
+                    && root.plugins[root.kb-index].plugin-index >= 0
+                    && root.plugin-expanded[root.plugins[root.kb-index].plugin-index]
+                    && root.plugin-pixel[root.plugins[root.kb-index].plugin-index]) {
+                root.plugin-key-input(root.plugins[root.kb-index].plugin-index,
+                    e.text, e.modifiers.control, e.modifiers.meta);
+                return accept;
+            }
             return reject;
         }
     }
