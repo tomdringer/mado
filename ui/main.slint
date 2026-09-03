@@ -31,7 +31,7 @@ export component MainWindow inherits Window {
     title: "Mado";
     preferred-width: 1200px;
     preferred-height: 800px;
-    background: root.theme-window-bg;
+    background: transparent;
 
     // ── Terminal pane data ────────────────────────────────────────────────────
     in property <[FlatPane]>    panes;
@@ -79,6 +79,26 @@ export component MainWindow inherits Window {
 
     // ── Top bar expanded state ────────────────────────────────────────────────
     in-out property <bool> top-bar-expanded: false;
+
+    // ── Top-right panel plugin ────────────────────────────────────────────────
+    in property <image>  top-right-plugin-image;
+    in property <string> top-right-plugin-icon: "";
+    in property <string> top-right-plugin-title: "";
+    in-out property <float> top-right-panel-width: 0;
+    callback top-right-plugin-key-input(string, bool, bool);
+    callback top-right-plugin-scroll(float);
+    callback top-right-panel-width-changed(float);
+    private property <float> top-right-press-abs-x: 0;
+    private property <float> top-right-press-width: 0;
+    private property <bool>  top-right-is-resizing: false;
+
+    // ── Bottom-right panel plugin ─────────────────────────────────────────────
+    in property <image>  bottom-right-plugin-image;
+    in property <string> bottom-right-plugin-icon: "";
+    in property <string> bottom-right-plugin-title: "";
+    in-out property <float> bottom-right-panel-width: 0;
+    callback bottom-right-plugin-key-input(string, bool, bool);
+    callback bottom-right-plugin-scroll(float);
 
     // ── Bottom bar (task runner) ──────────────────────────────────────────────
     in-out property <bool>  show-bottom-bar: false;
@@ -295,7 +315,7 @@ export component MainWindow inherits Window {
 
             // ── Terminal area ─────────────────────────────────────────────────
             terminal-area := Rectangle {
-                background: root.theme-terminal-area-bg;
+                background: transparent;
 
                 overlay := TouchArea {
                     x: 0; y: 0;
@@ -388,6 +408,99 @@ export component MainWindow inherits Window {
                 }
             }
 
+            // ── Persistent AI panel (always visible alongside panes) ──────────
+            if root.top-right-panel-width > 0: Rectangle {
+                width: 1px;
+                background: root.theme-card-border;
+            }
+            if root.top-right-panel-width > 0: Rectangle {
+                width: root.top-right-panel-width * 1px;
+                background: root.theme-terminal-area-bg;
+                clip: true;
+
+                // Header strip — 52px, matching TopBar style
+                Rectangle {
+                    x: 0; y: 0;
+                    width: parent.width; height: 52px;
+                    background: root.theme-card-bg;
+
+                    HorizontalLayout {
+                        x: 0; width: parent.width; height: parent.height;
+                        padding: 0; spacing: 0;
+
+                        Rectangle {
+                            width: 38px; height: parent.height;
+                            Text {
+                                text: root.top-right-plugin-icon;
+                                color: rgba(255, 255, 255, 0.45);
+                                font-family: "Hack Nerd Font";
+                                font-size: 22px;
+                                horizontal-alignment: center; vertical-alignment: center;
+                                width: parent.width; height: parent.height;
+                            }
+                        }
+
+                        Rectangle {
+                            horizontal-stretch: 1; height: parent.height;
+                            Text {
+                                text: root.top-right-plugin-title;
+                                color: rgba(255, 255, 255, 0.80);
+                                font-family: "SF Pro Text";
+                                font-size: 18px; font-weight: 700;
+                                letter-spacing: 0.4px;
+                                overflow: elide;
+                                vertical-alignment: center;
+                                x: 18px;
+                                width: parent.width - 22px; height: parent.height;
+                            }
+                        }
+                    }
+
+                    // Bottom border
+                    Rectangle {
+                        x: 0; y: parent.height - 1px;
+                        width: parent.width; height: 1px;
+                        background: root.theme-card-border;
+                    }
+                }
+
+                // FocusScope covers only the content area (below header)
+                ai-fs := FocusScope {
+                    x: 20px; y: 52px;
+                    width: parent.width - 40px; height: parent.height - 52px;
+                    key-pressed(e) => {
+                        root.top-right-plugin-key-input(e.text, e.modifiers.control, e.modifiers.meta);
+                        accept
+                    }
+                }
+
+                if root.top-right-plugin-image.width > 0: Image {
+                    x: 20px; y: 52px;
+                    width: parent.width - 40px; height: parent.height - 52px;
+                    source: root.top-right-plugin-image;
+                    image-fit: fill;
+                }
+                if root.top-right-plugin-image.width == 0: Text {
+                    text: "starting…";
+                    color: rgba(255, 255, 255, 0.12);
+                    font-size: 11px;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    x: 20px; y: 52px;
+                    width: parent.width - 40px; height: parent.height - 52px;
+                }
+
+                TouchArea {
+                    x: 20px; y: 52px;
+                    width: parent.width - 40px; height: parent.height - 52px;
+                    mouse-cursor: MouseCursor.text;
+                    clicked => { ai-fs.focus(); }
+                    scroll-event(e) => {
+                        root.top-right-plugin-scroll(e.delta-y / 1px);
+                        accept
+                    }
+                }
+            }
+
             // ── Right sidebar left-edge separator ─────────────────────────────
             if root.show-right-sidebar: Rectangle {
                 width: 1px;
@@ -458,6 +571,9 @@ export component MainWindow inherits Window {
             expanded: root.bottom-bar-expanded;
             theme-card-bg: root.theme-card-bg;
             theme-card-border: root.theme-card-border;
+            bottom-right-icon: root.bottom-right-plugin-icon;
+            bottom-right-title: root.bottom-right-plugin-title;
+            bottom-right-panel-width: root.bottom-right-panel-width;
             expanded-changed(exp) => { root.bottom-bar-expanded = exp; }
         }
     }
@@ -501,22 +617,80 @@ export component MainWindow inherits Window {
             background: root.theme-card-border;
         }
 
-        RunnerContent {
+        HorizontalLayout {
             x: 0; y: 0;
             width: parent.width;
             height: parent.height;
-            terminal-image: root.runner-terminal-image;
-            theme-terminal-area-bg: root.theme-terminal-area-bg;
-            current-command: root.runner-current-command;
-            is-running: root.runner-is-running;
-            play    => { root.runner-play(); }
-            stop    => { root.runner-stop(); }
-            restart => { root.runner-restart(); }
-            key-input(text, ctrl, meta) => { root.runner-key-input(text, ctrl, meta); }
-            scroll(delta) => { root.runner-scroll(delta); }
-            mouse-pressed(x, y) => { root.runner-mouse-pressed(x, y); }
-            mouse-moved(x, y)   => { root.runner-mouse-moved(x, y); }
-            mouse-released()    => { root.runner-mouse-released(); }
+            spacing: 0; padding: 0;
+
+            RunnerContent {
+                horizontal-stretch: 1;
+                terminal-image: root.runner-terminal-image;
+                theme-terminal-area-bg: root.theme-terminal-area-bg;
+                current-command: root.runner-current-command;
+                is-running: root.runner-is-running;
+                play    => { root.runner-play(); }
+                stop    => { root.runner-stop(); }
+                restart => { root.runner-restart(); }
+                key-input(text, ctrl, meta) => { root.runner-key-input(text, ctrl, meta); }
+                scroll(delta) => { root.runner-scroll(delta); }
+                mouse-pressed(x, y) => { root.runner-mouse-pressed(x, y); }
+                mouse-moved(x, y)   => { root.runner-mouse-moved(x, y); }
+                mouse-released()    => { root.runner-mouse-released(); }
+            }
+
+            if root.bottom-right-panel-width > 0: Rectangle {
+                width: root.bottom-right-panel-width * 1px;
+                background: root.theme-window-bg;
+
+                // Left border
+                Rectangle {
+                    x: 0; y: 0; width: 1px; height: parent.height;
+                    background: root.theme-card-border;
+                }
+
+                // Terminal area
+                br-term := Rectangle {
+                    x: 1px; y: 0;
+                    width: parent.width - 1px;
+                    height: parent.height;
+                    background: root.theme-terminal-area-bg;
+                    clip: true;
+
+                    br-fs := FocusScope {
+                        x: 0; y: 0;
+                        width: parent.width; height: parent.height;
+                        key-pressed(e) => {
+                            root.bottom-right-plugin-key-input(e.text, e.modifiers.control, e.modifiers.meta);
+                            accept
+                        }
+                    }
+
+                    if root.bottom-right-plugin-image.width > 0: Image {
+                        x: 0; y: 0;
+                        width: parent.width; height: parent.height;
+                        source: root.bottom-right-plugin-image;
+                        image-fit: fill;
+                    }
+                    if root.bottom-right-plugin-image.width == 0: Text {
+                        text: "starting…";
+                        color: rgba(255, 255, 255, 0.12);
+                        font-size: 11px;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        width: parent.width; height: parent.height;
+                    }
+
+                    TouchArea {
+                        width: parent.width; height: parent.height;
+                        mouse-cursor: MouseCursor.text;
+                        clicked => { br-fs.focus(); }
+                        scroll-event(e) => {
+                            root.bottom-right-plugin-scroll(e.delta-y / 1px);
+                            accept
+                        }
+                    }
+                }
+            }
         }
 
         // ── Resize handle (top 8px — drag upward to grow) ────────────────────
@@ -629,6 +803,42 @@ export component MainWindow inherits Window {
                            - root.right-resize-press-abs-x),
                     80,
                     root.width / 1px - 200
+                );
+            }
+        }
+    }
+
+    // ── Top-right panel resize handle ────────────────────────────────────────
+    if root.top-right-panel-width > 0: TouchArea {
+        x: root.width
+           - root.effective-right-w * 1px
+           - (root.top-right-is-resizing ? root.top-right-press-width : root.top-right-panel-width) * 1px
+           - 4px;
+        y: root.effective-top-bar-h;
+        width: 8px;
+        height: root.height - root.effective-top-bar-h - root.effective-bottom-bar-h;
+        mouse-cursor: MouseCursor.ew-resize;
+
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.top-right-press-abs-x = self.absolute-position.x / 1px + self.mouse-x / 1px;
+                root.top-right-press-width = root.top-right-panel-width;
+                root.top-right-is-resizing = true;
+            } else if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
+                root.top-right-is-resizing = false;
+                root.top-right-panel-width-changed(root.top-right-panel-width);
+            }
+        }
+
+        moved => {
+            if (root.top-right-is-resizing) {
+                // Moving left increases panel width
+                root.top-right-panel-width = clamp(
+                    root.top-right-press-width
+                        - (self.absolute-position.x / 1px + self.mouse-x / 1px
+                           - root.top-right-press-abs-x),
+                    200,
+                    root.width / 1px - 400
                 );
             }
         }

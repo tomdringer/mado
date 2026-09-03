@@ -119,6 +119,48 @@ Projects without a `task` entry show "no task configured for this workspace" in 
 
 ---
 
+## Editor integration
+
+### Neovim — transparent background
+
+Mado uses a semi-transparent terminal background so the window blur shows through. Full-screen TUI apps like Neovim set explicit background colours on most cells, which can clash with the transparent default-background areas (whitespace, empty lines).
+
+To make Neovim's background consistent with Mado's transparency, add this to your Neovim config:
+
+```lua
+-- init.lua
+vim.api.nvim_set_hl(0, "Normal",   { bg = "none" })
+vim.api.nvim_set_hl(0, "NormalNC", { bg = "none" })
+```
+
+Or in Vimscript:
+
+```vim
+" init.vim
+highlight Normal   guibg=NONE ctermbg=NONE
+highlight NormalNC guibg=NONE ctermbg=NONE
+```
+
+This makes Neovim defer to the terminal's background everywhere, giving a consistent look across the whole pane.
+
+### Helix
+
+Helix respects the terminal background automatically when no theme background is explicitly set. If you use a built-in Helix theme that sets a background, add a theme override in `~/.config/helix/themes/`:
+
+```toml
+# ~/.config/helix/themes/my-theme.toml
+inherits = "catppuccin_mocha"
+
+[palette]
+
+[ui.background]
+bg = "none"
+```
+
+Then set `theme = "my-theme"` in `~/.config/helix/config.toml`.
+
+---
+
 ## Plugins
 
 ### What is a plugin?
@@ -312,7 +354,7 @@ done
 ### mado-clock config (`~/.config/mado/plugins/clock.toml`)
 
 ```toml
-# "C" or "F" — leave unset to auto-detect from macOS system preferences
+# "C" or "F" — defaults to Celsius if unset
 temperature_unit = "F"
 ```
 

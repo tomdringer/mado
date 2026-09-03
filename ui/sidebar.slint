@@ -104,24 +104,24 @@ export component TaskuContent inherits Rectangle {
             spacing: 4px;
 
             Rectangle { width: parent.width; height: 32px;
-                CmdButton { x: 0;                              width: root.btn-w; label: "Add";     command(l) => { root.command(l); } }
-                CmdButton { x: root.btn-w + root.btn-gap;      width: root.btn-w; label: "List";    command(l) => { root.command(l); } }
-                CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "Stats";   command(l) => { root.command(l); } }
+                CmdButton { x: 0;                              width: root.btn-w; label: "Add";     command(l) => { root.command(l); fs.focus(); } }
+                CmdButton { x: root.btn-w + root.btn-gap;      width: root.btn-w; label: "List";    command(l) => { root.command(l); fs.focus(); } }
+                CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "Stats";   command(l) => { root.command(l); fs.focus(); } }
             }
             Rectangle { width: parent.width; height: 32px;
-                CmdButton { x: 0;                              width: root.btn-w; label: "Edit";    command(l) => { root.command(l); } }
-                CmdButton { x: root.btn-w + root.btn-gap;      width: root.btn-w; label: "Delete";  command(l) => { root.command(l); } }
-                CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "SQL";     command(l) => { root.command(l); } }
+                CmdButton { x: 0;                              width: root.btn-w; label: "Edit";    command(l) => { root.command(l); fs.focus(); } }
+                CmdButton { x: root.btn-w + root.btn-gap;      width: root.btn-w; label: "Delete";  command(l) => { root.command(l); fs.focus(); } }
+                CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "SQL";     command(l) => { root.command(l); fs.focus(); } }
             }
             Rectangle { width: parent.width; height: 32px;
-                CmdButton { x: 0;                              width: root.btn-w; label: "Today";   command(l) => { root.command(l); } }
-                CmdButton { x: root.btn-w + root.btn-gap;      width: root.btn-w; label: "Tmrw";    command(l) => { root.command(l); } }
-                CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "Overdue"; command(l) => { root.command(l); } }
+                CmdButton { x: 0;                              width: root.btn-w; label: "Today";   command(l) => { root.command(l); fs.focus(); } }
+                CmdButton { x: root.btn-w + root.btn-gap;      width: root.btn-w; label: "Tmrw";    command(l) => { root.command(l); fs.focus(); } }
+                CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "Overdue"; command(l) => { root.command(l); fs.focus(); } }
             }
             Rectangle { width: parent.width; height: 32px;
-                CmdButton { x: 0;                              width: root.btn-w; label: "Todo";    command(l) => { root.command(l); } }
-                CmdButton { x: root.btn-w + root.btn-gap;      width: root.btn-w; label: "Started"; command(l) => { root.command(l); } }
-                CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "Done";    command(l) => { root.command(l); } }
+                CmdButton { x: 0;                              width: root.btn-w; label: "Todo";    command(l) => { root.command(l); fs.focus(); } }
+                CmdButton { x: root.btn-w + root.btn-gap;      width: root.btn-w; label: "Started"; command(l) => { root.command(l); fs.focus(); } }
+                CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "Done";    command(l) => { root.command(l); fs.focus(); } }
             }
         }
 
@@ -180,24 +180,24 @@ export component TaskuContent inherits Rectangle {
                 spacing: 4px;
 
                 Rectangle { width: parent.width; height: 32px;
-                    CmdButton { x: 0;      width: 120px; label: "Add";     command(l) => { root.command(l); } }
-                    CmdButton { x: 124px;  width: 120px; label: "List";    command(l) => { root.command(l); } }
-                    CmdButton { x: 248px;  width: 120px; label: "Stats";   command(l) => { root.command(l); } }
+                    CmdButton { x: 0;      width: 120px; label: "Add";     command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 124px;  width: 120px; label: "List";    command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 248px;  width: 120px; label: "Stats";   command(l) => { root.command(l); fs.focus(); } }
                 }
                 Rectangle { width: parent.width; height: 32px;
-                    CmdButton { x: 0;      width: 120px; label: "Edit";    command(l) => { root.command(l); } }
-                    CmdButton { x: 124px;  width: 120px; label: "Delete";  command(l) => { root.command(l); } }
-                    CmdButton { x: 248px;  width: 120px; label: "SQL";     command(l) => { root.command(l); } }
+                    CmdButton { x: 0;      width: 120px; label: "Edit";    command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 124px;  width: 120px; label: "Delete";  command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 248px;  width: 120px; label: "SQL";     command(l) => { root.command(l); fs.focus(); } }
                 }
                 Rectangle { width: parent.width; height: 32px;
-                    CmdButton { x: 0;      width: 120px; label: "Today";   command(l) => { root.command(l); } }
-                    CmdButton { x: 124px;  width: 120px; label: "Tmrw";    command(l) => { root.command(l); } }
-                    CmdButton { x: 248px;  width: 120px; label: "Overdue"; command(l) => { root.command(l); } }
+                    CmdButton { x: 0;      width: 120px; label: "Today";   command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 124px;  width: 120px; label: "Tmrw";    command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 248px;  width: 120px; label: "Overdue"; command(l) => { root.command(l); fs.focus(); } }
                 }
                 Rectangle { width: parent.width; height: 32px;
-                    CmdButton { x: 0;      width: 120px; label: "Todo";    command(l) => { root.command(l); } }
-                    CmdButton { x: 124px;  width: 120px; label: "Started"; command(l) => { root.command(l); } }
-                    CmdButton { x: 248px;  width: 120px; label: "Done";    command(l) => { root.command(l); } }
+                    CmdButton { x: 0;      width: 120px; label: "Todo";    command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 124px;  width: 120px; label: "Started"; command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 248px;  width: 120px; label: "Done";    command(l) => { root.command(l); fs.focus(); } }
                 }
             }
         }

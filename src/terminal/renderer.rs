@@ -67,8 +67,9 @@ pub fn render_terminal(
                     .unwrap_or_default()
             };
 
-            // Only show cursor at live view (scroll_offset == 0)
+            // Only show cursor at live view (scroll_offset == 0) and when visible
             let is_cursor = scroll_offset == 0
+                && st.cursor_visible
                 && row == st.cursor_row
                 && col == st.cursor_col;
 

@@ -49,6 +49,7 @@ impl PtySession {
     /// Apply standard environment variables to a CommandBuilder.
     fn set_env(cmd: &mut CommandBuilder, cwd: Option<&str>) {
         cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
         // Explicitly propagate STARSHIP_CONFIG so shells pick up Mado's theme palette
         // even if the PTY system doesn't inherit the full parent environment.
         if let Ok(sc) = std::env::var("STARSHIP_CONFIG") {

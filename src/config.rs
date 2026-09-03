@@ -169,6 +169,10 @@ pub struct Config {
     pub top_bar_height: f32,
     /// Show the bottom task-runner bar. Default: false.
     pub show_bottom_bar: bool,
+    /// Width of the top-right panel (for plugins with position = "top-right"). Default: 600.0
+    pub top_right_panel_width: f32,
+    /// Width of the bottom-right panel (for plugins with position = "bottom-right"). Default: 600.0
+    pub bottom_right_panel_width: f32,
     /// Keyboard shortcuts.
     pub keybindings: Keybindings,
 }
@@ -191,6 +195,8 @@ impl Default for Config {
             right_sidebar_width: 300.0,
             top_bar_height: 200.0,
             show_bottom_bar: false,
+            top_right_panel_width: 600.0,
+            bottom_right_panel_width: 600.0,
             keybindings: Keybindings::default(),
         }
     }

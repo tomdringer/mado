@@ -168,6 +168,40 @@ pub fn load_plugin_order() -> Vec<String> {
     serde_json::from_str::<Vec<String>>(&json).unwrap_or_default()
 }
 
+// ── Plugin panel height persistence ───────────────────────────────────────────
+//
+// Saved as ~/.config/mado/panel_heights.json — a JSON object with
+// "left" and "right" arrays of f32 panel heights in plugin-index order.
+
+#[derive(Serialize, Deserialize, Default)]
+struct PanelHeights {
+    left:  Vec<f32>,
+    right: Vec<f32>,
+}
+
+pub fn save_panel_heights(left: &[f32], right: &[f32]) {
+    let dir = config_dir();
+    if let Err(e) = fs::create_dir_all(&dir) {
+        eprintln!("mado: could not create config dir: {e}");
+        return;
+    }
+    let data = PanelHeights { left: left.to_vec(), right: right.to_vec() };
+    match serde_json::to_string_pretty(&data) {
+        Ok(json) => { let _ = fs::write(dir.join("panel_heights.json"), json); }
+        Err(e)   => eprintln!("mado: could not serialise panel heights: {e}"),
+    }
+}
+
+pub fn load_panel_heights() -> (Vec<f32>, Vec<f32>) {
+    let path = config_dir().join("panel_heights.json");
+    let json = match fs::read_to_string(path) {
+        Ok(s)  => s,
+        Err(_) => return (vec![], vec![]),
+    };
+    let data: PanelHeights = serde_json::from_str(&json).unwrap_or_default();
+    (data.left, data.right)
+}
+
 // ── Priority order persistence ─────────────────────────────────────────────────
 //
 // Saved as ~/.config/mado/priorities.json — a JSON array of project codes
@@ -239,15 +273,17 @@ pub fn fetch_projects(tasku_path: &str) -> Vec<FetchedProject> {
                 AND t.code IS NOT NULL AND t.code != '' LIMIT 1) AS proj_code \
                FROM projects p ORDER BY p.name";
 
-    // Run via login shell so asdf/homebrew shims resolve correctly when Mado
-    // launches as a .app bundle without the user's shell PATH.
+    // Run via zsh interactive shell so ~/.zshrc is sourced and asdf/homebrew
+    // shims resolve correctly when Mado launches as a .app bundle.
+    // Falls back to /bin/sh login shell for systems without zsh.
     let shell_cmd = format!("{} sql '{}'",
         tasku_path.replace('\'', "'\\''"),
         sql.replace('\'', "'\\''"),
     );
-    let out = Command::new("/bin/sh")
-        .args(["-lc", &shell_cmd])
-        .output();
+    let out = Command::new("/bin/zsh")
+        .args(["-ic", &shell_cmd])
+        .output()
+        .or_else(|_| Command::new("/bin/sh").args(["-lc", &shell_cmd]).output());
 
     match out {
         Ok(o) if o.status.success() => parse(&o.stdout),
