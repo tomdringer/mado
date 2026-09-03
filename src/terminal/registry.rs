@@ -171,6 +171,15 @@ impl TerminalRegistry {
         }
     }
 
+    /// Returns (cursor_col, cursor_row, cols, rows, in_alt_screen) for a pane.
+    pub fn cursor_info(&self, id: NodeId) -> Option<(usize, usize, usize, usize, bool)> {
+        self.sessions.get(&id).and_then(|sess| {
+            sess.state.lock().ok().map(|st| {
+                (st.cursor_col, st.cursor_row, st.cols, st.rows, st.in_alt_screen)
+            })
+        })
+    }
+
     pub fn write_key(&mut self, id: NodeId, data: &[u8]) {
         if let Some(sess) = self.sessions.get_mut(&id) {
             // Jump back to live view when sending input so output is visible.
@@ -186,13 +195,28 @@ impl TerminalRegistry {
 
     /// Scroll a terminal's view by `delta_rows` rows.
     /// Positive = toward older output; negative = toward live output.
+    /// In alternate-screen mode (nvim, helix, etc.) scroll is forwarded as
+    /// cursor-up/down key sequences so the app can handle it natively.
     pub fn scroll(&mut self, id: NodeId, delta_rows: i32) {
-        if let Some(sess) = self.sessions.get(&id) {
-            if let Ok(mut st) = sess.state.lock() {
-                st.adjust_scroll_offset(delta_rows);
+        if delta_rows == 0 { return; }
+        if let Some(sess) = self.sessions.get_mut(&id) {
+            let in_alt = sess.state.lock()
+                .map(|st| st.in_alt_screen)
+                .unwrap_or(false);
+
+            if in_alt {
+                // Forward to the running app as cursor up/down sequences.
+                let seq: &[u8] = if delta_rows > 0 { b"\x1b[A" } else { b"\x1b[B" };
+                let n = delta_rows.unsigned_abs() as usize;
+                for _ in 0..n.min(10) {
+                    sess.write_input(seq);
+                }
+            } else {
+                if let Ok(mut st) = sess.state.lock() {
+                    st.adjust_scroll_offset(delta_rows);
+                }
+                sess.dirty.store(true, Ordering::Relaxed);
             }
-            // Mark the session dirty so the render timer picks it up.
-            sess.dirty.store(true, Ordering::Relaxed);
         }
     }
 
@@ -301,6 +325,11 @@ impl TerminalRegistry {
     pub fn logical_to_cols(&self, logical_w: f32) -> usize {
         let phys_w = (logical_w * self.scale) as usize;
         (phys_w / self.font.cell_w.max(1)).max(1)
+    }
+
+    /// Maximum logical pixel width that yields at most `max_cols` columns.
+    pub fn max_logical_w(&self, max_cols: usize) -> f32 {
+        (max_cols * self.font.cell_w.max(1)) as f32 / self.scale.max(0.001)
     }
 
     /// Convert logical pixel dimensions to terminal cols/rows using physical cell size.

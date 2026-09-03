@@ -22,8 +22,13 @@ pub enum KeyAction {
     ZoomOut,
     /// Cmd/Ctrl + 0: reset font size to default.
     ZoomReset,
-    /// Arrow key held with Alt and/or Shift: pre-built xterm modifier sequence.
+    /// Arrow key held with Alt and/or Ctrl+Shift: pre-built xterm modifier sequence.
     ArrowSeq(Vec<u8>),
+    /// Shift-only arrow: drive Mado's own selection. `seq` is forwarded to the
+    /// PTY instead when the pane is in alt-screen mode (nvim/helix handle it).
+    ShiftArrow { dcol: i8, drow: i8, seq: Vec<u8> },
+    /// Cmd+Shift+Left/Right: extend Mado selection to the start/end of the line.
+    SelectToLineEdge { to_end: bool },
     /// Bare modifier key (Shift, Ctrl, Alt, Meta, CapsLock): swallow silently.
     /// These alias C0 control bytes and must never reach the terminal.
     ModifierOnly,
@@ -71,11 +76,14 @@ pub fn classify_key(
         }
     }
 
-    // ── Modified arrow keys → xterm modifier sequences ────────────────────────
-    // Format: ESC [ 1 ; <N> <dir>   where N = 1 + shift(1) + alt(2) + ctrl(4).
-    //   Opt+Arrow            → N=3  word movement
-    //   Shift+Opt+Arrow      → N=4  word selection
-    //   Shift+Arrow          → N=2  character selection
+    // ── Modified arrow / navigation keys ──────────────────────────────────────
+    //
+    //  Shift-only      → ShiftArrow: Mado drives its own selection (forwarded
+    //                    as ESC[1;2X to the PTY only in alt-screen mode).
+    //  Ctrl-only       → line navigation: Ctrl+A (left/Home) or Ctrl+E (right/End).
+    //                    Up/Down keep their xterm modifier sequence (N=5).
+    //  Alt-only        → N=3  word movement (Option+Arrow macOS convention)
+    //  Shift+Ctrl/Alt  → N=6/4 xterm modifier (forwarded to PTY / apps)
     let arrow_byte: Option<u8> = match text {
         "\u{F700}" => Some(b'A'), // Up
         "\u{F701}" => Some(b'B'), // Down
@@ -84,11 +92,65 @@ pub fn classify_key(
         _ => None,
     };
     if let Some(dir) = arrow_byte {
-        if alt || shift {
+        // Shift-only: Mado-level selection (not PTY, unless alt screen).
+        if shift && !ctrl && !alt {
+            let (dcol, drow): (i8, i8) = match dir {
+                b'A' => (0, -1),
+                b'B' => (0,  1),
+                b'C' => (1,  0),
+                b'D' => (-1, 0),
+                _    => (0,  0),
+            };
+            let seq = format!("\x1b[1;2{}", char::from(dir)).into_bytes();
+            return KeyAction::ShiftArrow { dcol, drow, seq };
+        }
+
+        // Ctrl-only (no shift/alt): line navigation via universal Ctrl+A/E bytes.
+        if ctrl && !alt && !shift {
+            return match dir {
+                b'D' => KeyAction::Forward(vec![0x01]), // Ctrl+A — beginning of line
+                b'C' => KeyAction::Forward(vec![0x05]), // Ctrl+E — end of line
+                _ => {
+                    // Up/Down: forward as xterm N=5 sequence
+                    let seq = format!("\x1b[1;5{}", char::from(dir)).into_bytes();
+                    KeyAction::ArrowSeq(seq)
+                }
+            };
+        }
+
+        // Cmd+Shift+Left/Right (ctrl+shift, no alt): select to line edge.
+        if ctrl && shift && !alt {
+            match dir {
+                b'D' => return KeyAction::SelectToLineEdge { to_end: false },
+                b'C' => return KeyAction::SelectToLineEdge { to_end: true },
+                _ => {}
+            }
+        }
+
+        // All other modifier combos → xterm N = 1 + shift(1) + alt(2) + ctrl(4)
+        if ctrl || alt || shift {
             let n: u32 = 1
                 + if shift { 1 } else { 0 }
-                + if alt   { 2 } else { 0 };
+                + if alt   { 2 } else { 0 }
+                + if ctrl  { 4 } else { 0 };
             let seq = format!("\x1b[1;{}{}", n, char::from(dir)).into_bytes();
+            return KeyAction::ArrowSeq(seq);
+        }
+    }
+
+    // Modified Home / End / PageUp / PageDown
+    if ctrl || shift {
+        let n: u32 = 1
+            + if shift { 1 } else { 0 }
+            + if ctrl  { 4 } else { 0 };
+        let nav_seq: Option<Vec<u8>> = match text {
+            "\u{F729}" => Some(format!("\x1b[1;{}H", n).into_bytes()), // Home
+            "\u{F72B}" => Some(format!("\x1b[1;{}F", n).into_bytes()), // End
+            "\u{F72C}" => Some(format!("\x1b[5;{}~", n).into_bytes()), // PageUp
+            "\u{F72D}" => Some(format!("\x1b[6;{}~", n).into_bytes()), // PageDown
+            _ => None,
+        };
+        if let Some(seq) = nav_seq {
             return KeyAction::ArrowSeq(seq);
         }
     }
@@ -111,6 +173,7 @@ pub fn classify_key(
 ///
 /// Returns the number of rows to pass to `registry.scroll()`:
 /// positive = toward older content (scroll up), negative = toward newer (scroll down).
+#[allow(dead_code)]
 pub fn accumulate_scroll(acc: &mut f32, delta_px: f32, scroll_dir: f32, cell_h: f32) -> i32 {
     if cell_h <= 0.0 { return 0; }
     *acc += -delta_px * scroll_dir;
@@ -195,8 +258,13 @@ pub fn key_text_to_bytes(text: &str) -> Vec<u8> {
         "\u{F70E}" => vec![0x1B, b'[', b'2', b'3', b'~'],    // F11
         "\u{F70F}" => vec![0x1B, b'[', b'2', b'4', b'~'],    // F12
 
+        // ── Enter / Return ────────────────────────────────────────────────────
+        // Always send CR (0x0D) regardless of whether Slint delivers \r or \n.
+        // TUI apps (Claude CLI, etc.) use CR as "submit" and LF as "new line".
+        "\r" | "\n" => vec![0x0D],
+
         // ── Everything else ───────────────────────────────────────────────────
-        // Return (\r), Tab (\t), Escape (\u{1B}), Ctrl+letter (\u{0001}–\u{001A})
+        // Tab (\t), Escape (\u{1B}), Ctrl+letter (\u{0001}–\u{001A})
         // all pass through as raw bytes — correct terminal values.
         _ => text.as_bytes().to_vec(),
     }

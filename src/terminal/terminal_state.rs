@@ -25,6 +25,7 @@ pub struct TerminalState {
     pub cells: Vec<Cell>,
     pub cursor_col: usize,
     pub cursor_row: usize,
+    pub cursor_visible: bool,
     pub scroll_top: usize,
     pub scroll_bot: usize,
     pub cur_fg: [u8; 4],
@@ -41,6 +42,8 @@ pub struct TerminalState {
     /// on the first full-screen erase (ED 2/3), which every shell theme
     /// triggers at startup after setting its background colour.
     pub theme_bg: Option<[u8; 4]>,
+    /// True when the alternate screen buffer (?1049h) is active.
+    pub in_alt_screen: bool,
 }
 
 impl TerminalState {
@@ -52,6 +55,7 @@ impl TerminalState {
             cells,
             cursor_col: 0,
             cursor_row: 0,
+            cursor_visible: true,
             scroll_top: 0,
             scroll_bot: rows.saturating_sub(1),
             cur_fg: DEFAULT_FG,
@@ -61,12 +65,14 @@ impl TerminalState {
             scrollback: VecDeque::new(),
             scroll_offset: 0,
             theme_bg: None,
+            in_alt_screen: false,
         }
     }
 
     /// Adjust the scroll offset by `delta` rows (positive = older, negative = newer).
-    /// Clamped to [0, scrollback.len()].
+    /// Clamped to [0, scrollback.len()]. No-op in alternate screen mode.
     pub fn adjust_scroll_offset(&mut self, delta: i32) {
+        if self.in_alt_screen { return; }
         let max = self.scrollback.len();
         if delta > 0 {
             self.scroll_offset = (self.scroll_offset + delta as usize).min(max);
@@ -127,8 +133,9 @@ impl TerminalState {
         let shift = n.min(region_h);
 
         // Capture rows that scroll off the top into the scrollback buffer,
-        // but only when the scroll region starts at row 0 (normal output scroll).
-        if top == 0 {
+        // but only when the scroll region starts at row 0 and we're not in
+        // the alternate screen (where scrollback is meaningless).
+        if top == 0 && !self.in_alt_screen {
             for r in 0..shift {
                 let row: Vec<Cell> = self.cells[r * self.cols..(r + 1) * self.cols].to_vec();
                 self.scrollback.push_back(row);
@@ -158,7 +165,8 @@ impl TerminalState {
         // On a full-screen erase (mode 2/3), capture the current background
         // colour as the theme background — this runs right after the shell
         // theme sets its bg colour, so we get the real value automatically.
-        if (mode == 2 || mode == 3) && self.theme_bg.is_none() {
+        // Skip in alt screen: nvim's bg colour must not overwrite the shell's.
+        if (mode == 2 || mode == 3) && self.theme_bg.is_none() && !self.in_alt_screen {
             self.theme_bg = Some(self.cur_bg);
         }
 
@@ -175,8 +183,9 @@ impl TerminalState {
             }
             _ => (0, self.cols * self.rows), // erase all
         };
+        let blank = Cell { ch: ' ', fg: self.cur_fg, bg: self.cur_bg };
         for i in start..end.min(self.cells.len()) {
-            self.cells[i] = Cell::default();
+            self.cells[i] = blank.clone();
         }
         self.dirty = true;
     }
@@ -188,11 +197,38 @@ impl TerminalState {
             1 => (0, self.cursor_col + 1),
             _ => (0, self.cols),
         };
+        let blank = Cell { ch: ' ', fg: self.cur_fg, bg: self.cur_bg };
         for c in start_col..end_col.min(self.cols) {
             let idx = self.cell_idx(c, row);
-            self.cells[idx] = Cell::default();
+            self.cells[idx] = blank.clone();
         }
         self.dirty = true;
+    }
+
+    fn enter_alt_screen(&mut self) {
+        if self.in_alt_screen { return; }
+        self.cells         = vec![Cell::default(); self.cols * self.rows];
+        self.cursor_col    = 0;
+        self.cursor_row    = 0;
+        self.scroll_top    = 0;
+        self.scroll_bot    = self.rows.saturating_sub(1);
+        self.scroll_offset = 0; // always show live view in alt screen
+        self.in_alt_screen = true;
+        self.dirty         = true;
+    }
+
+    fn exit_alt_screen(&mut self) {
+        if !self.in_alt_screen { return; }
+        self.cells         = vec![Cell::default(); self.cols * self.rows];
+        self.cursor_col    = 0;
+        self.cursor_row    = 0;
+        self.scroll_top    = 0;
+        self.scroll_bot    = self.rows.saturating_sub(1);
+        self.scroll_offset = 0;
+        self.cur_fg        = DEFAULT_FG;
+        self.cur_bg        = DEFAULT_BG;
+        self.in_alt_screen = false;
+        self.dirty         = true;
     }
 
     fn set_color_from_params(&mut self, params: &[u16]) {
@@ -206,6 +242,10 @@ impl TerminalState {
                 }
                 30..=37 => { self.cur_fg = ansi_color(params[i] - 30, false); }
                 90..=97 => { self.cur_fg = ansi_color(params[i] - 90, true); }
+                38 if i + 2 < params.len() && params[i + 1] == 5 => {
+                    self.cur_fg = color_256(params[i + 2] as u8);
+                    i += 2;
+                }
                 38 if i + 4 < params.len() && params[i + 1] == 2 => {
                     self.cur_fg = [params[i+2] as u8, params[i+3] as u8, params[i+4] as u8, 0xFF];
                     i += 4;
@@ -213,6 +253,10 @@ impl TerminalState {
                 39 => { self.cur_fg = DEFAULT_FG; }
                 40..=47 => { self.cur_bg = ansi_color(params[i] - 40, false); }
                 100..=107 => { self.cur_bg = ansi_color(params[i] - 100, true); }
+                48 if i + 2 < params.len() && params[i + 1] == 5 => {
+                    self.cur_bg = color_256(params[i + 2] as u8);
+                    i += 2;
+                }
                 48 if i + 4 < params.len() && params[i + 1] == 2 => {
                     self.cur_bg = [params[i+2] as u8, params[i+3] as u8, params[i+4] as u8, 0xFF];
                     i += 4;
@@ -517,6 +561,22 @@ mod tests {
     }
 }
 
+fn color_256(n: u8) -> [u8; 4] {
+    match n {
+        0..=7   => ansi_color(n as u16, false),
+        8..=15  => ansi_color((n - 8) as u16, true),
+        16..=231 => {
+            let i = n - 16;
+            let cube = |v: u8| if v == 0 { 0u8 } else { 55 + v * 40 };
+            [cube(i / 36), cube((i / 6) % 6), cube(i % 6), 0xFF]
+        }
+        232..=255 => {
+            let gray = 8 + (n - 232) * 10;
+            [gray, gray, gray, 0xFF]
+        }
+    }
+}
+
 fn ansi_color(idx: u16, bright: bool) -> [u8; 4] {
     let colors: [[u8; 3]; 8] = [
         [0x1e, 0x20, 0x30], // black
@@ -662,6 +722,53 @@ impl<'a> Perform for VteHandler<'a> {
                     }
                 }
                 st.dirty = true;
+            }
+            'G' => { // cursor column absolute (CHA) — used by interactive prompts
+                let col = p0.saturating_sub(1) as usize;
+                st.cursor_col = col.min(st.cols.saturating_sub(1));
+            }
+            'E' => { // cursor next line
+                let n = p0.max(1) as usize;
+                st.cursor_row = (st.cursor_row + n).min(st.rows.saturating_sub(1));
+                st.cursor_col = 0;
+            }
+            'F' => { // cursor preceding line
+                let n = p0.max(1) as usize;
+                st.cursor_row = st.cursor_row.saturating_sub(n);
+                st.cursor_col = 0;
+            }
+            'd' => { // line position absolute (VPA)
+                let row = p0.saturating_sub(1) as usize;
+                st.cursor_row = row.min(st.rows.saturating_sub(1));
+            }
+            'X' => { // erase characters (ECH)
+                let n = p0.max(1) as usize;
+                let row = st.cursor_row;
+                let col = st.cursor_col;
+                let cols = st.cols;
+                let end = (col + n).min(cols);
+                for c in col..end {
+                    st.cells[row * cols + c] = Cell { ch: ' ', fg: st.cur_fg, bg: st.cur_bg };
+                }
+                st.dirty = true;
+            }
+            'h' if _intermediates == [b'?'] => { // DEC private mode set
+                for &param in &p {
+                    match param {
+                        25         => { st.cursor_visible = true; st.dirty = true; }
+                        47 | 1047 | 1049 => { st.enter_alt_screen(); }
+                        _          => {}
+                    }
+                }
+            }
+            'l' if _intermediates == [b'?'] => { // DEC private mode reset
+                for &param in &p {
+                    match param {
+                        25         => { st.cursor_visible = false; st.dirty = true; }
+                        47 | 1047 | 1049 => { st.exit_alt_screen(); }
+                        _          => {}
+                    }
+                }
             }
             _ => {}
         }

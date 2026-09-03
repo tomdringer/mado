@@ -38,6 +38,12 @@ fn right_plugin_node_id(i: usize) -> NodeId { u32::MAX / 2 - i as u32 }
 /// NodeId for TOP external plugin at index `i`.
 fn top_plugin_node_id(i: usize) -> NodeId { u32::MAX / 4 - i as u32 }
 
+/// NodeId for TOP-RIGHT panel plugin at index `i`.
+fn top_right_plugin_node_id(i: usize) -> NodeId { u32::MAX / 16 - i as u32 }
+
+/// NodeId for BOTTOM-RIGHT panel plugin at index `i`.
+fn bottom_right_plugin_node_id(i: usize) -> NodeId { u32::MAX / 32 - i as u32 }
+
 // Default panel heights (match sidebar.slint initial values).
 pub const DEFAULT_TASKU_PANEL_H:  f32 = 400.0;
 pub const DEFAULT_PLUGIN_PANEL_H: f32 = 300.0;
@@ -63,10 +69,11 @@ const TASKU_PANEL_FIXED_H: f32 = 162.0;
 const PLUGIN_PANEL_FIXED_H: f32 = 16.0;
 
 // Horizontal (top-bar) Tasku layout constants.
-// Button column: 8px pad-L + 176px (3×56+2×4) + 6px spacing + 8px pad-R = 198px
+// Button column: 8px pad-L + 368px (3×120+2×4) + 6px spacing + 8px pad-R = 390px
 // Terminal height: panel_h minus 8px top pad + 8px bot pad = panel_h - 16px
-const TASKU_HORIZ_BTN_W: f32 = 198.0;
+const TASKU_HORIZ_BTN_W: f32 = 390.0;
 const TASKU_HORIZ_PAD_H: f32 = 16.0;
+const TASKU_MAX_COLS: usize  = 500;
 
 // Runner (bottom bar) PTY node ID and layout constants.
 // Button column: 8px pad + 60px btns + 6px spacing + 8px pad = 82px.
@@ -181,10 +188,15 @@ fn rgb([r, g, b]: [u8; 3]) -> slint::Color {
     slint::Color::from_rgb_u8(r, g, b)
 }
 
+fn rgba([r, g, b]: [u8; 3], a: u8) -> slint::Color {
+    slint::Color::from_argb_u8(a, r, g, b)
+}
+
 fn apply_theme(ui: &MainWindow, t: &theme::Theme) {
+    // Sidebar and chrome are solid; only terminal panes are glassy (~47% opacity).
     ui.set_theme_window_bg(rgb(t.window_bg));
     ui.set_theme_terminal_area_bg(rgb(t.terminal_area_bg));
-    ui.set_theme_pane_bg(rgb(t.pane_bg));
+    ui.set_theme_pane_bg(rgba(t.pane_bg, 120));
     ui.set_theme_pane_toolbar(rgb(t.pane_toolbar));
     ui.set_theme_focus_border(rgb(t.focus_border));
     ui.set_theme_active_dot(rgb(t.active_dot));
@@ -657,6 +669,17 @@ fn main() {
         return;
     }
 
+    // Configure the winit backend so blur is set at window-creation time.
+    // This is the only point where winit actually calls CGSSetWindowBackgroundBlurRadius;
+    // calling set_blur() post-creation is too late on some macOS versions.
+    {
+        let backend = i_slint_backend_winit::Backend::builder()
+            .with_window_attributes_hook(|attrs| attrs.with_blur(true))
+            .build()
+            .unwrap();
+        slint::platform::set_platform(Box::new(backend)).unwrap();
+    }
+
     let ui = MainWindow::new().unwrap();
 
     // Make the window resizable and enable the macOS full-screen green button.
@@ -732,6 +755,12 @@ fn main() {
     let num_left_ext = left_ext_plugins.len();
     let num_right_ext = right_ext_plugins.len();
     let num_top_ext = top_ext_plugins.len();
+    let top_right_plugin: Option<config::PluginConfig> = all_plugins.iter()
+        .find(|p| p.position == "top-right")
+        .cloned();
+    let bottom_right_plugin: Option<config::PluginConfig> = all_plugins.iter()
+        .find(|p| p.position == "bottom-right")
+        .cloned();
 
     let sidebar = Rc::new(RefCell::new(SidebarState::new(
         config.sidebar_width,
@@ -878,8 +907,12 @@ fn main() {
     // ── External plugin state models (left sidebar) ──────────────────────────
     let plugin_expanded_model: Rc<VecModel<bool>> =
         Rc::new(VecModel::from(vec![false; num_left_ext]));
-    let plugin_panel_h_model: Rc<VecModel<f32>> =
-        Rc::new(VecModel::from(vec![DEFAULT_PLUGIN_PANEL_H; num_left_ext]));
+    let (saved_left_h, saved_right_h) = workspace::load_panel_heights();
+    let plugin_panel_h_model: Rc<VecModel<f32>> = Rc::new(VecModel::from(
+        (0..num_left_ext).map(|i| {
+            saved_left_h.get(i).copied().unwrap_or(DEFAULT_PLUGIN_PANEL_H)
+        }).collect::<Vec<_>>()
+    ));
     let plugin_images_model: Rc<VecModel<Image>> =
         Rc::new(VecModel::from(vec![Image::default(); num_left_ext]));
     let plugin_pixel_model: Rc<VecModel<bool>> = Rc::new(VecModel::from(
@@ -894,8 +927,11 @@ fn main() {
     // ── External plugin state models (right sidebar) ─────────────────────────
     let right_plugin_expanded_model: Rc<VecModel<bool>> =
         Rc::new(VecModel::from(vec![false; num_right_ext]));
-    let right_plugin_panel_h_model: Rc<VecModel<f32>> =
-        Rc::new(VecModel::from(vec![DEFAULT_PLUGIN_PANEL_H; num_right_ext]));
+    let right_plugin_panel_h_model: Rc<VecModel<f32>> = Rc::new(VecModel::from(
+        (0..num_right_ext).map(|i| {
+            saved_right_h.get(i).copied().unwrap_or(DEFAULT_PLUGIN_PANEL_H)
+        }).collect::<Vec<_>>()
+    ));
     let right_plugin_images_model: Rc<VecModel<Image>> =
         Rc::new(VecModel::from(vec![Image::default(); num_right_ext]));
     let right_plugin_pixel_model: Rc<VecModel<bool>> = Rc::new(VecModel::from(
@@ -916,6 +952,20 @@ fn main() {
 
     ui.set_top_plugin_images(ModelRc::new(Rc::clone(&top_plugin_images_model)));
     ui.set_top_plugin_pixel(ModelRc::new(Rc::clone(&top_plugin_pixel_model)));
+
+    // ── Top-right / bottom-right panel plugin UI setup ───────────────────────
+    let top_right_panel_w = if top_right_plugin.is_some() { config.top_right_panel_width } else { 0.0 };
+    let bottom_right_panel_w = if bottom_right_plugin.is_some() { config.bottom_right_panel_width } else { 0.0 };
+    ui.set_top_right_panel_width(top_right_panel_w);
+    ui.set_bottom_right_panel_width(bottom_right_panel_w);
+    if let Some(ref p) = top_right_plugin {
+        ui.set_top_right_plugin_icon(p.icon.as_str().into());
+        ui.set_top_right_plugin_title(p.id.to_uppercase().as_str().into());
+    }
+    if let Some(ref p) = bottom_right_plugin {
+        ui.set_bottom_right_plugin_icon(p.icon.as_str().into());
+        ui.set_bottom_right_plugin_title(p.id.as_str().into());
+    }
 
     // index → PixelPlugin for plugins with kind = "pixel" (left sidebar)
     let pixel_plugins: Rc<RefCell<std::collections::HashMap<usize, PixelPlugin>>> =
@@ -942,6 +992,10 @@ fn main() {
 
     // ── Text selection (for copy/paste) ──────────────────────────────────────
     let selection: Rc<RefCell<Option<Selection>>> = Rc::new(RefCell::new(None));
+
+    // Keyboard-driven selection anchor. Set when Shift+Arrow starts; cleared
+    // with the selection. The Selection's head tracks the moving end.
+    let kbd_anchor: Rc<RefCell<Option<(usize, usize)>>> = Rc::new(RefCell::new(None));
 
     // ── Float plugin state ────────────────────────────────────────────────────
     let float_plugin: Rc<RefCell<Option<(usize, bool)>>> = // (index, is_right)
@@ -970,6 +1024,8 @@ fn main() {
         let plugin_images_model = Rc::clone(&plugin_images_model);
         let right_plugin_images_model = Rc::clone(&right_plugin_images_model);
         let _top_plugin_images_model = Rc::clone(&top_plugin_images_model);
+        let top_right_plugin_timer = top_right_plugin.clone();
+        let bottom_right_plugin_timer = bottom_right_plugin.clone();
         let pixel_plugins = Rc::clone(&pixel_plugins);
         let right_pixel_plugins = Rc::clone(&right_pixel_plugins);
         let float_plugin = Rc::clone(&float_plugin);
@@ -1003,8 +1059,10 @@ fn main() {
 
             let dirty_bufs = registry.borrow_mut().drain_dirty(sel);
 
-            let mut tasku_buf:  Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> = None;
-            let mut runner_buf: Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> = None;
+            let mut tasku_buf:       Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> = None;
+            let mut runner_buf:      Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> = None;
+            let mut top_right_buf:   Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> = None;
+            let mut bottom_right_buf:Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> = None;
             // plugin_index → pixel buffer for left external plugins
             let mut plugin_bufs: Vec<(usize, slint::SharedPixelBuffer<slint::Rgba8Pixel>)> = Vec::new();
             // plugin_index → pixel buffer for right external plugins
@@ -1032,6 +1090,10 @@ fn main() {
                     if i < num_right_ext {
                         right_plugin_bufs.push((i, buf));
                     }
+                } else if top_right_plugin_timer.is_some() && id == top_right_plugin_node_id(0) {
+                    top_right_buf = Some(buf);
+                } else if bottom_right_plugin_timer.is_some() && id == bottom_right_plugin_node_id(0) {
+                    bottom_right_buf = Some(buf);
                 } else {
                     pane_dirty_ids.push(id);
                     imgs.insert(id, Image::from_rgba8(buf));
@@ -1081,6 +1143,7 @@ fn main() {
 
             if pane_dirty_ids.is_empty() && tasku_buf.is_none() && runner_buf.is_none()
                 && plugin_bufs.is_empty() && right_plugin_bufs.is_empty()
+                && top_right_buf.is_none() && bottom_right_buf.is_none()
             {
                 return;
             }
@@ -1091,6 +1154,7 @@ fn main() {
 
             if tasku_buf.is_some() || runner_buf.is_some()
                 || !plugin_bufs.is_empty() || !right_plugin_bufs.is_empty()
+                || top_right_buf.is_some() || bottom_right_buf.is_some()
             {
                 if let Some(ui) = ui_weak.upgrade() {
                     if let Some(buf) = tasku_buf {
@@ -1098,6 +1162,12 @@ fn main() {
                     }
                     if let Some(buf) = runner_buf {
                         ui.set_runner_terminal_image(Image::from_rgba8(buf));
+                    }
+                    if let Some(buf) = top_right_buf {
+                        ui.set_top_right_plugin_image(Image::from_rgba8(buf));
+                    }
+                    if let Some(buf) = bottom_right_buf {
+                        ui.set_bottom_right_plugin_image(Image::from_rgba8(buf));
                     }
                     for (i, buf) in plugin_bufs {
                         let img = Image::from_rgba8(buf);
@@ -1332,6 +1402,7 @@ fn main() {
         let pane_model = Rc::clone(&pane_model);
         let images = Rc::clone(&images);
         let selection = Rc::clone(&selection);
+        let kbd_anchor = Rc::clone(&kbd_anchor);
         let pending_paste = Rc::clone(&pending_paste);
         let ui_weak = ui.as_weak();
         move |id, text, ctrl, meta, alt, shift| {
@@ -1345,6 +1416,7 @@ fn main() {
 
             // Clear active selection on regular keystrokes (before acting on the key).
             if keys::should_clear_selection(t, ctrl, meta, shift) {
+                *kbd_anchor.borrow_mut() = None;
                 let prev_id = selection.borrow().as_ref().map(|s| s.pane_id);
                 *selection.borrow_mut() = None;
                 if let Some(sid) = prev_id {
@@ -1405,6 +1477,57 @@ fn main() {
                 }
                 keys::KeyAction::ArrowSeq(seq) => {
                     registry.borrow_mut().write_key(id as NodeId, &seq);
+                }
+                keys::KeyAction::ShiftArrow { dcol, drow, seq } => {
+                    let info = registry.borrow().cursor_info(id as NodeId);
+                    if let Some((cur_col, cur_row, cols, rows, in_alt)) = info {
+                        if in_alt {
+                            // Alt screen (nvim/helix): let the app handle selection.
+                            registry.borrow_mut().write_key(id as NodeId, &seq);
+                        } else {
+                            // Normal shell: drive Mado's own selection.
+                            let anchor = {
+                                let mut a = kbd_anchor.borrow_mut();
+                                if a.is_none() {
+                                    *a = Some((cur_col, cur_row));
+                                }
+                                a.unwrap()
+                            };
+                            // The selection head tracks the moving end.
+                            let prev_head = selection.borrow()
+                                .as_ref()
+                                .filter(|s| s.pane_id == id as NodeId)
+                                .map(|s| s.head)
+                                .unwrap_or((cur_col, cur_row));
+                            let new_col = (prev_head.0 as i32 + dcol as i32)
+                                .clamp(0, cols as i32 - 1) as usize;
+                            let new_row = (prev_head.1 as i32 + drow as i32)
+                                .clamp(0, rows as i32 - 1) as usize;
+                            *selection.borrow_mut() = Some(Selection {
+                                pane_id: id as NodeId,
+                                anchor,
+                                head: (new_col, new_row),
+                            });
+                            registry.borrow().mark_dirty(id as NodeId);
+                        }
+                    }
+                }
+                keys::KeyAction::SelectToLineEdge { to_end } => {
+                    let info = registry.borrow().cursor_info(id as NodeId);
+                    if let Some((cur_col, cur_row, cols, _rows, _in_alt)) = info {
+                        let anchor = {
+                            let mut a = kbd_anchor.borrow_mut();
+                            if a.is_none() { *a = Some((cur_col, cur_row)); }
+                            a.unwrap()
+                        };
+                        let head_col = if to_end { cols.saturating_sub(1) } else { 0 };
+                        *selection.borrow_mut() = Some(Selection {
+                            pane_id: id as NodeId,
+                            anchor,
+                            head: (head_col, cur_row),
+                        });
+                        registry.borrow().mark_dirty(id as NodeId);
+                    }
                 }
                 keys::KeyAction::ModifierOnly => {}
                 keys::KeyAction::Forward(bytes) => {
@@ -1529,6 +1652,8 @@ fn main() {
         let focused_id = Rc::clone(&focused_id);
         let initial_spawned = Rc::clone(&initial_spawned);
         let loaded_theme = Rc::clone(&loaded_theme);
+        let top_right_plugin_resize = top_right_plugin.clone();
+        let bottom_right_plugin_resize = bottom_right_plugin.clone();
         let ui_weak = ui.as_weak();
         let last_size: Rc<RefCell<(f32, f32)>> = Rc::new(RefCell::new((0.0, 0.0)));
         move |w, h| {
@@ -1551,7 +1676,7 @@ fn main() {
                     .map(|ui| ui.get_overlay_total_w())
                     .unwrap_or(w + 300.0);
                 // overlay_h = terminal-area height (window height minus 52px header)
-                let overlay_h = h;
+                let overlay_h = h - 52.0;
 
                 if !initial_spawned.get() && w > 50.0 && h > 50.0 {
                     initial_spawned.set(true);
@@ -1565,8 +1690,31 @@ fn main() {
                     }
                     if tasku_in_top {
                         let (term_w, term_h) = tasku_top_bar_size(overlay_w, overlay_h);
+                        let term_w = term_w.min(reg.max_logical_w(TASKU_MAX_COLS));
                         reg.spawn(SIDEBAR_TASKU_ID, term_w, term_h, None);
                         reg.write_key(SIDEBAR_TASKU_ID, b"tasku list\n");
+                    }
+                    // Spawn top-right panel plugin
+                    if let Some(ref plugin) = top_right_plugin_resize {
+                        let mut parts = plugin.command.split_whitespace();
+                        let program = parts.next().unwrap_or("").to_string();
+                        let args: Vec<String> = parts.map(|s| s.to_string()).collect();
+                        let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                        let plugin_id = plugin.id.clone();
+                        reg.spawn_cmd(top_right_plugin_node_id(0), (top_right_panel_w - PANE_H_INSET).max(10.0), (h - 52.0).max(50.0),
+                                      &program, &args_ref, None,
+                                      &[("MADO_PLUGIN_ID", &plugin_id)]);
+                    }
+                    // Spawn bottom-right panel plugin
+                    if let Some(ref plugin) = bottom_right_plugin_resize {
+                        let mut parts = plugin.command.split_whitespace();
+                        let program = parts.next().unwrap_or("").to_string();
+                        let args: Vec<String> = parts.map(|s| s.to_string()).collect();
+                        let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                        let plugin_id = plugin.id.clone();
+                        reg.spawn_cmd(bottom_right_plugin_node_id(0), bottom_right_panel_w, (h - 52.0).max(50.0),
+                                      &program, &args_ref, None,
+                                      &[("MADO_PLUGIN_ID", &plugin_id)]);
                     }
                 } else {
                     for p in &panes {
@@ -1574,7 +1722,16 @@ fn main() {
                     }
                     if tasku_in_top {
                         let (term_w, term_h) = tasku_top_bar_size(overlay_w, overlay_h);
+                        let term_w = term_w.min(reg.max_logical_w(TASKU_MAX_COLS));
                         reg.resize(SIDEBAR_TASKU_ID, term_w, term_h);
+                    }
+                    // Resize top-right panel plugin
+                    if top_right_plugin_resize.is_some() {
+                        reg.resize(top_right_plugin_node_id(0), (top_right_panel_w - PANE_H_INSET).max(10.0), (h - 52.0).max(50.0));
+                    }
+                    // Resize bottom-right panel plugin
+                    if bottom_right_plugin_resize.is_some() {
+                        reg.resize(bottom_right_plugin_node_id(0), bottom_right_panel_w, (h - 52.0).max(50.0));
                     }
                 }
 
@@ -2148,6 +2305,9 @@ fn main() {
                 (avail_w - total_sidebars - 24.0).max(50.0)
             };
             let (term_w, term_h) = tasku_top_bar_size(tasku_w, new_bar_h);
+            let reg = registry.borrow();
+            let term_w = term_w.min(reg.max_logical_w(TASKU_MAX_COLS));
+            drop(reg);
             registry.borrow_mut().resize(SIDEBAR_TASKU_ID, term_w, term_h);
         }
     });
@@ -2247,6 +2407,7 @@ fn main() {
         let sidebar = Rc::clone(&sidebar);
         let plugin_expanded_model = Rc::clone(&plugin_expanded_model);
         let plugin_panel_h_model = Rc::clone(&plugin_panel_h_model);
+        let right_plugin_panel_h_model = Rc::clone(&right_plugin_panel_h_model);
         let pixel_plugins = Rc::clone(&pixel_plugins);
         let ui_weak = ui.as_weak();
         move |idx, new_h| {
@@ -2268,6 +2429,14 @@ fn main() {
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_external_plugins_total_h(total);
             }
+            // Persist heights
+            let left_h: Vec<f32> = (0..num_left_ext)
+                .map(|i| plugin_panel_h_model.row_data(i).unwrap_or(DEFAULT_PLUGIN_PANEL_H))
+                .collect();
+            let right_h: Vec<f32> = (0..num_right_ext)
+                .map(|i| right_plugin_panel_h_model.row_data(i).unwrap_or(DEFAULT_PLUGIN_PANEL_H))
+                .collect();
+            workspace::save_panel_heights(&left_h, &right_h);
         }
     });
 
@@ -2433,6 +2602,7 @@ fn main() {
         let registry = Rc::clone(&registry);
         let sidebar = Rc::clone(&sidebar);
         let right_plugin_expanded_model = Rc::clone(&right_plugin_expanded_model);
+        let plugin_panel_h_model = Rc::clone(&plugin_panel_h_model);
         let right_plugin_panel_h_model = Rc::clone(&right_plugin_panel_h_model);
         let right_pixel_plugins = Rc::clone(&right_pixel_plugins);
         let ui_weak = ui.as_weak();
@@ -2454,6 +2624,14 @@ fn main() {
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_right_external_plugins_total_h(total);
             }
+            // Persist heights
+            let left_h: Vec<f32> = (0..num_left_ext)
+                .map(|i| plugin_panel_h_model.row_data(i).unwrap_or(DEFAULT_PLUGIN_PANEL_H))
+                .collect();
+            let right_h: Vec<f32> = (0..num_right_ext)
+                .map(|i| right_plugin_panel_h_model.row_data(i).unwrap_or(DEFAULT_PLUGIN_PANEL_H))
+                .collect();
+            workspace::save_panel_heights(&left_h, &right_h);
         }
     });
 
@@ -2636,6 +2814,95 @@ fn main() {
         move |_idx, _focused| { }
     });
 
+    // ── Top-right panel plugin callbacks ──────────────────────────────────────
+    ui.on_top_right_plugin_key_input({
+        let registry = Rc::clone(&registry);
+        let has_top_right = top_right_plugin.is_some();
+        move |text, ctrl, meta| {
+            if !has_top_right { return; }
+            let zoom_mod = ctrl || meta;
+            let t = text.as_str();
+            if zoom_mod && (t == "=" || t == "+" || t == "-" || t == "0") { return; }
+            let bytes = keys::key_text_to_bytes(&text);
+            registry.borrow_mut().write_key(top_right_plugin_node_id(0), &bytes);
+        }
+    });
+
+    ui.on_top_right_plugin_scroll({
+        let registry   = Rc::clone(&registry);
+        let scroll_acc = Rc::clone(&scroll_acc);
+        let has_top_right = top_right_plugin.is_some();
+        move |delta_px| {
+            if !has_top_right { return; }
+            let cell_h = {
+                let reg = registry.borrow();
+                reg.font.cell_h as f32 / reg.scale
+            };
+            if cell_h <= 0.0 { return; }
+            let node = top_right_plugin_node_id(0);
+            let mut acc = scroll_acc.borrow_mut();
+            let entry = acc.entry(node).or_insert(0.0);
+            *entry += -delta_px * scroll_dir;
+            let rows = (*entry / cell_h) as i32;
+            if rows != 0 {
+                *entry -= rows as f32 * cell_h;
+                registry.borrow_mut().scroll(node, rows);
+            }
+        }
+    });
+
+    // ── Top-right panel resize ────────────────────────────────────────────────
+    ui.on_top_right_panel_width_changed({
+        let registry = Rc::clone(&registry);
+        let ui_weak  = ui.as_weak();
+        move |new_w| {
+            // Resize the terminal session to the new panel width.
+            if let Some(ui) = ui_weak.upgrade() {
+                let h = ui.get_window_h();
+                let pane_w = (new_w - PANE_H_INSET as f32).max(10.0);
+                let pane_h = (h - 52.0).max(50.0);
+                registry.borrow_mut().resize(top_right_plugin_node_id(0), pane_w, pane_h);
+            }
+        }
+    });
+
+    // ── Bottom-right panel plugin callbacks ───────────────────────────────────
+    ui.on_bottom_right_plugin_key_input({
+        let registry = Rc::clone(&registry);
+        let has_bottom_right = bottom_right_plugin.is_some();
+        move |text, ctrl, meta| {
+            if !has_bottom_right { return; }
+            let zoom_mod = ctrl || meta;
+            let t = text.as_str();
+            if zoom_mod && (t == "=" || t == "+" || t == "-" || t == "0") { return; }
+            let bytes = keys::key_text_to_bytes(&text);
+            registry.borrow_mut().write_key(bottom_right_plugin_node_id(0), &bytes);
+        }
+    });
+
+    ui.on_bottom_right_plugin_scroll({
+        let registry   = Rc::clone(&registry);
+        let scroll_acc = Rc::clone(&scroll_acc);
+        let has_bottom_right = bottom_right_plugin.is_some();
+        move |delta_px| {
+            if !has_bottom_right { return; }
+            let cell_h = {
+                let reg = registry.borrow();
+                reg.font.cell_h as f32 / reg.scale
+            };
+            if cell_h <= 0.0 { return; }
+            let node = bottom_right_plugin_node_id(0);
+            let mut acc = scroll_acc.borrow_mut();
+            let entry = acc.entry(node).or_insert(0.0);
+            *entry += -delta_px * scroll_dir;
+            let rows = (*entry / cell_h) as i32;
+            if rows != 0 {
+                *entry -= rows as f32 * cell_h;
+                registry.borrow_mut().scroll(node, rows);
+            }
+        }
+    });
+
     ui.on_sidebar_escaped({
         let ui_weak = ui.as_weak();
         let focused_id = Rc::clone(&focused_id);
@@ -2725,6 +2992,127 @@ fn main() {
             slint::CloseRequestResponse::HideWindow
         });
     }
+
+    // ── Auto-save workspace every 30 s ──────────────────────────────────────
+    // The on_close_requested callback only fires on clean quit (red X button).
+    // Force-quit (pkill, SIGTERM) bypasses it entirely. This timer ensures the
+    // workspace is saved frequently so very little work is ever lost regardless
+    // of how Mado exits.
+    let _autosave_timer = {
+        let tree = Rc::clone(&tree);
+        let registry = Rc::clone(&registry);
+        let active_project = Rc::clone(&active_project);
+        let t = Timer::default();
+        t.start(
+            TimerMode::Repeated,
+            std::time::Duration::from_secs(30),
+            move || {
+                if let Some(ref proj) = *active_project.borrow() {
+                    let leaf_ids = tree.borrow().leaf_ids();
+                    let cwds = registry.borrow().collect_cwds(&leaf_ids);
+                    let saved_tree = tree.borrow().to_saved(&cwds);
+                    workspace::save_workspace(proj, &workspace::SavedWorkspace {
+                        project: proj.clone(),
+                        tree: saved_tree,
+                    });
+                }
+            },
+        );
+        t
+    };
+
+    // ── Fullscreen transparency recovery ─────────────────────────────────────
+    // macOS resets the Metal layer's isOpaque flag and CGS blur radius during
+    // the fullscreen transition animation.  Poll the style mask; when we
+    // detect the transition has completed, re-stamp both so transparency and
+    // blur survive fullscreen.
+    let _fullscreen_timer = {
+        let ui_weak = ui.as_weak();
+        let mut prev_fullscreen = false;
+        let t = Timer::default();
+        t.start(
+            TimerMode::Repeated,
+            std::time::Duration::from_millis(200),
+            move || {
+                let Some(ui) = ui_weak.upgrade() else { return };
+
+                let is_fullscreen = ui
+                    .window()
+                    .with_winit_window(|w| {
+                        #[cfg(target_os = "macos")]
+                        {
+                            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                            if let Ok(handle) = w.window_handle() {
+                                if let RawWindowHandle::AppKit(h) = handle.as_raw() {
+                                    unsafe {
+                                        use objc2::runtime::AnyObject;
+                                        let ns_view =
+                                            h.ns_view.as_ptr() as *mut AnyObject;
+                                        let ns_window: *mut AnyObject =
+                                            objc2::msg_send![ns_view, window];
+                                        const FS_MASK: u64 = 1 << 14;
+                                        let mask: u64 =
+                                            objc2::msg_send![ns_window, styleMask];
+                                        return (mask & FS_MASK) != 0;
+                                    }
+                                }
+                            }
+                        }
+                        false
+                    })
+                    .unwrap_or(false);
+
+                if is_fullscreen == prev_fullscreen {
+                    return;
+                }
+                prev_fullscreen = is_fullscreen;
+
+                // Re-apply immediately (catches the style-mask change),
+                // then again after the animation finishes (~1.5 s).
+                let ui2 = ui.as_weak();
+                Timer::single_shot(std::time::Duration::from_millis(1500), move || {
+                    let Some(ui) = ui2.upgrade() else { return };
+                    ui.window().with_winit_window(|w| { w.set_blur(true); });
+                });
+
+                ui.window().with_winit_window(|w| {
+                    w.set_blur(true);
+
+                    #[cfg(target_os = "macos")]
+                    {
+                        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                        if let Ok(handle) = w.window_handle() {
+                            if let RawWindowHandle::AppKit(h) = handle.as_raw() {
+                                unsafe {
+                                    use objc2::runtime::AnyObject;
+                                    let ns_view =
+                                        h.ns_view.as_ptr() as *mut AnyObject;
+                                    let ns_window: *mut AnyObject =
+                                        objc2::msg_send![ns_view, window];
+
+                                    // Re-apply window non-opaque flag.
+                                    let _: () = objc2::msg_send![
+                                        ns_window, setOpaque: false
+                                    ];
+
+                                    // Re-apply Metal layer non-opaque so
+                                    // transparent Slint pixels pass through.
+                                    let layer: *mut AnyObject =
+                                        objc2::msg_send![ns_view, layer];
+                                    if !layer.is_null() {
+                                        let _: () = objc2::msg_send![
+                                            layer, setOpaque: false
+                                        ];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            },
+        );
+        t
+    };
 
     ui.run().unwrap();
 }

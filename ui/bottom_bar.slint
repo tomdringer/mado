@@ -10,6 +10,10 @@ export component BottomBar inherits Rectangle {
     in-out property <bool> expanded: false;
     callback expanded-changed(bool);
 
+    in property <string> bottom-right-icon: "";
+    in property <string> bottom-right-title: "";
+    in property <float>  bottom-right-panel-width: 0;
+
     background: root.theme-card-bg;
 
     // Top separator line
@@ -67,6 +71,48 @@ export component BottomBar inherits Rectangle {
                 font-size: 12px;
                 horizontal-alignment: center; vertical-alignment: center;
                 width: parent.width; height: parent.height;
+            }
+        }
+
+        // Bottom-right panel header indicator
+        if root.bottom-right-panel-width > 0: Rectangle {
+            width: root.bottom-right-panel-width * 1px;
+            height: parent.height;
+            background: root.theme-card-bg;
+
+            Rectangle {
+                x: 0; y: 0; width: 1px; height: parent.height;
+                background: root.theme-card-border;
+            }
+
+            HorizontalLayout {
+                padding: 0; spacing: 0;
+                x: 1px;
+                width: parent.width - 1px;
+                height: parent.height;
+
+                Rectangle {
+                    width: 38px; height: parent.height;
+                    Text {
+                        text: root.bottom-right-icon;
+                        color: rgba(255, 255, 255, 0.45);
+                        font-family: "Hack Nerd Font";
+                        font-size: 22px;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        width: parent.width; height: parent.height;
+                    }
+                }
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.bottom-right-title;
+                    color: rgba(255, 255, 255, 0.80);
+                    font-family: "SF Pro Text";
+                    font-size: 18px; font-weight: 700;
+                    overflow: elide;
+                    vertical-alignment: center;
+                    height: parent.height;
+                }
             }
         }
     }
