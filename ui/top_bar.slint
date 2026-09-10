@@ -12,17 +12,30 @@ export component TopBar inherits Rectangle {
     in-out property <[PluginItem]> top-plugins;
     in-out property <bool> expanded: false;
 
+    // AI panel toggle button
+    in property <bool>    show-ai-button: false;
+    in-out property <bool> ai-active: false;
+    callback ai-toggled();
+
+    // Browser panel toggle button
+    in property <bool>    show-browser-button: false;
+    in-out property <bool> browser-active: false;
+    callback browser-toggled();
+
     callback expanded-changed(bool);
 
     background: root.theme-card-bg;
 
-    private property <int> n: root.top-plugins.length;
+    private property <int>    n: root.top-plugins.length;
+    private property <length> plugins-area-w: root.width
+        - (root.show-ai-button ? 52px : 0px)
+        - (root.show-browser-button ? 52px : 0px);
 
     // One header column per plugin
     for item[i] in root.top-plugins: Rectangle {
-        x: (root.width / root.n) * i;
+        x: (root.plugins-area-w / root.n) * i;
         y: 0px;
-        width: root.width / root.n;
+        width: root.plugins-area-w / root.n;
         height: parent.height;
         background: root.theme-card-bg;
         clip: true;
@@ -84,6 +97,74 @@ export component TopBar inherits Rectangle {
                     width: parent.width; height: parent.height;
                 }
             }
+        }
+    }
+
+    // Browser toggle button (to the left of the AI button)
+    if root.show-browser-button: Rectangle {
+        x: root.width - (root.show-ai-button ? 52px : 0px) - 52px;
+        y: 0;
+        width: 52px;
+        height: parent.height;
+        background: root.browser-active
+            ? rgba(255, 255, 255, 0.10)
+            : transparent;
+
+        // Left-edge separator
+        Rectangle {
+            x: 0; y: 0; width: 1px; height: parent.height;
+            background: root.theme-card-border;
+        }
+
+        Text {
+            text: "\u{f0ac}";
+            color: root.browser-active
+                ? rgba(255, 255, 255, 0.90)
+                : rgba(255, 255, 255, 0.45);
+            font-family: "Hack Nerd Font";
+            font-size: 20px;
+            horizontal-alignment: center; vertical-alignment: center;
+            width: parent.width; height: parent.height;
+        }
+
+        TouchArea {
+            width: parent.width; height: parent.height;
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.browser-toggled(); }
+        }
+    }
+
+    // AI toggle button (right side)
+    if root.show-ai-button: Rectangle {
+        x: root.width - 52px;
+        y: 0;
+        width: 52px;
+        height: parent.height;
+        background: root.ai-active
+            ? rgba(255, 255, 255, 0.10)
+            : transparent;
+
+        // Left-edge separator
+        Rectangle {
+            x: 0; y: 0; width: 1px; height: parent.height;
+            background: root.theme-card-border;
+        }
+
+        Text {
+            text: "\u{f086}";
+            color: root.ai-active
+                ? rgba(255, 255, 255, 0.90)
+                : rgba(255, 255, 255, 0.45);
+            font-family: "Hack Nerd Font";
+            font-size: 20px;
+            horizontal-alignment: center; vertical-alignment: center;
+            width: parent.width; height: parent.height;
+        }
+
+        TouchArea {
+            width: parent.width; height: parent.height;
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.ai-toggled(); }
         }
     }
 

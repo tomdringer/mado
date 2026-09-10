@@ -22,6 +22,8 @@ pub fn render_terminal(
     font: &FontRaster,
     force: bool,
     selection: Option<((usize, usize), (usize, usize))>,
+    phys_w: usize,
+    phys_h: usize,
 ) -> Option<SharedPixelBuffer<slint::Rgba8Pixel>> {
     let mut st = state.lock().unwrap();
     if !force && !st.dirty {
@@ -33,8 +35,14 @@ pub fn render_terminal(
     let rows = st.rows;
     let cw = font.cell_w;
     let ch = font.cell_h;
-    let w = cols * cw;
-    let h = rows * ch;
+    let cell_area_w = cols * cw;
+    let cell_area_h = rows * ch;
+
+    // Use the exact physical pane dimensions as the buffer size so Slint
+    // doesn't need to scale the image (which causes bilinear blur artifacts).
+    // Any strip beyond the cell area is filled with transparent background.
+    let w = phys_w.max(cell_area_w);
+    let h = phys_h.max(cell_area_h);
 
     if w == 0 || h == 0 {
         return None;

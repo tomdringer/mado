@@ -54,7 +54,7 @@ export component HelpOverlay inherits Rectangle {
     // Centered card
     card := Rectangle {
         private property <length> cw: min(760px, parent.width  - 60px);
-        private property <length> ch: min(520px, parent.height - 60px);
+        private property <length> ch: min(660px, parent.height - 60px);
         x: (parent.width  - self.cw) / 2;
         y: (parent.height - self.ch) / 2;
         width:  self.cw;
@@ -131,6 +131,13 @@ export component HelpOverlay inherits Rectangle {
                     ShortcutRow { keys: "← → ↑ ↓";    desc: "Navigate projects"; }
                     ShortcutRow { keys: "Enter";        desc: "Switch to project"; }
                     ShortcutRow { keys: "Esc";          desc: "Back to panels"; }
+
+                    SectionTitle { label: "TASKU PANEL"; }
+                    ShortcutRow { keys: "↑ / ↓";        desc: "Move cursor"; }
+                    ShortcutRow { keys: "a";             desc: "Add new task"; }
+                    ShortcutRow { keys: "e / Enter";     desc: "Edit selected task"; }
+                    ShortcutRow { keys: "d";             desc: "Delete selected task"; }
+                    ShortcutRow { keys: "q / Esc";       desc: "Quit list"; }
                 }
             }
 

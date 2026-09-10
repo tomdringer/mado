@@ -31,6 +31,7 @@ pub struct TerminalState {
     pub cur_fg: [u8; 4],
     pub cur_bg: [u8; 4],
     pub dirty: bool,
+    pub bell: bool,
     /// Last working directory reported via OSC 7 (file://host/path).
     pub cwd: Option<String>,
     /// Rows that have scrolled off the top (oldest first).
@@ -61,6 +62,7 @@ impl TerminalState {
             cur_fg: DEFAULT_FG,
             cur_bg: DEFAULT_BG,
             dirty: true,
+            bell: false,
             cwd: None,
             scrollback: VecDeque::new(),
             scroll_offset: 0,
@@ -603,6 +605,7 @@ pub struct VteHandler<'a>(pub &'a mut TerminalState);
 
 impl<'a> Perform for VteHandler<'a> {
     fn print(&mut self, ch: char) {
+        if ch == '\u{007F}' { return; } // DEL is a control character, not printable
         self.0.put_char(ch);
     }
 
@@ -614,7 +617,7 @@ impl<'a> Perform for VteHandler<'a> {
             0x08 => { // backspace
                 if st.cursor_col > 0 { st.cursor_col -= 1; }
             }
-            0x07 => {} // bell — ignore
+            0x07 => { st.bell = true; } // bell
             _ => {}
         }
     }

@@ -13,6 +13,10 @@ pub struct PtySession {
     pub dirty: Arc<AtomicBool>,
     /// PID of the shell process — used for cwd lookup when OSC 7 hasn't fired.
     pub pid: Option<u32>,
+    /// Physical pixel dimensions of the pane — used to size the render buffer
+    /// exactly so Slint doesn't need to scale it (which causes blurry artifacts).
+    pub phys_w: usize,
+    pub phys_h: usize,
     writer: Box<dyn Write + Send>,
     master: Box<dyn portable_pty::MasterPty + Send>,
 }
@@ -117,10 +121,14 @@ impl PtySession {
             });
         }
 
-        PtySession { state, dirty, pid, writer, master: pair.master }
+        let phys_w = cols as usize; // placeholder; registry sets real values after spawn
+        let phys_h = rows as usize;
+        PtySession { state, dirty, pid, phys_w, phys_h, writer, master: pair.master }
     }
 
-    pub fn resize(&mut self, cols: u16, rows: u16) {
+    pub fn resize(&mut self, cols: u16, rows: u16, phys_w: usize, phys_h: usize) {
+        self.phys_w = phys_w;
+        self.phys_h = phys_h;
         let _ = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
         self.state.lock().unwrap().resize(cols as usize, rows as usize);
         // Signal the timer that this session needs re-rendering

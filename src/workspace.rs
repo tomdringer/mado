@@ -42,6 +42,22 @@ fn workspace_dir() -> PathBuf {
 //   [SB1]
 //   path = "/Users/tom/Sites/supercode"
 
+/// Read the optional top-level `default = "<code>"` key from projects.toml.
+/// When set, Mado will automatically activate that project on launch.
+///
+/// Example projects.toml:
+///
+///   default = "MDO"
+///
+///   [MDO]
+///   path = "/Users/tom/Sites/mado"
+pub fn load_default_project() -> Option<String> {
+    let file = config_dir().join("projects.toml");
+    let content = fs::read_to_string(&file).ok()?;
+    let table = content.parse::<toml::Table>().ok()?;
+    table.get("default")?.as_str().map(|s| s.to_string())
+}
+
 pub fn load_project_paths() -> HashMap<String, String> {
     let file = config_dir().join("projects.toml");
     let content = match fs::read_to_string(&file) {
@@ -70,30 +86,75 @@ pub fn load_project_paths() -> HashMap<String, String> {
         .collect()
 }
 
-// ── Tasku fields preference ────────────────────────────────────────────────────
+// ── Project icons ─────────────────────────────────────────────────────────────
 //
-// Saved as ~/.config/mado/tasku_fields — a plain comma-separated string
-// of field names passed to `tasku list --fields`.
-// Default: "name,project,status"
+// Read from ~/.config/mado/projects.toml — each section may contain an `icon`
+// key with a Nerd Font glyph or one of the built-in named presets:
+//
+//   terminal   →  (terminal window)
+//   web        →  (globe)
+//   plugin     →  (plug)
+//   api        →  (circuit/nodes)
+//   mobile     →  (phone)
+//   design     →  (palette)
+//   data       →  (database)
+//   docs       →  (book)
+//   tool       →  (wrench)
+//   cloud      →  (cloud)
+//
+//   [MDO]
+//   path = "/Users/tom/Sites/mado"
+//   icon = "terminal"
+//
+//   [SB1]
+//   path = "/Users/tom/Sites/supercode"
+//   icon = ""   # or any Nerd Font glyph directly
 
-pub const DEFAULT_TASKU_FIELDS: &str = "name,project,status";
+const ICON_PRESETS: &[(&str, &str)] = &[
+    ("terminal", "\u{f489}"),  //
+    ("web",      "\u{f484}"),  //
+    ("plugin",   "\u{f1e6}"),  //
+    ("api",      "\u{eb11}"),  //
+    ("mobile",   "\u{f10b}"),  //
+    ("design",   "\u{f53f}"),  //
+    ("data",     "\u{f1c0}"),  //
+    ("docs",     "\u{f02d}"),  //
+    ("tool",     "\u{f0ad}"),  //
+    ("cloud",    "\u{f0c2}"),  //
+];
 
-#[allow(dead_code)]
-pub fn save_tasku_fields(fields: &str) {
-    let dir = config_dir();
-    if let Err(e) = fs::create_dir_all(&dir) {
-        eprintln!("mado: could not create config dir: {e}");
-        return;
+fn resolve_icon(raw: &str) -> String {
+    for (name, glyph) in ICON_PRESETS {
+        if raw == *name {
+            return glyph.to_string();
+        }
     }
-    if let Err(e) = fs::write(dir.join("tasku_fields"), fields) {
-        eprintln!("mado: could not save tasku fields: {e}");
-    }
+    raw.to_string()
 }
 
-pub fn load_tasku_fields() -> String {
-    fs::read_to_string(config_dir().join("tasku_fields"))
-        .unwrap_or_else(|_| DEFAULT_TASKU_FIELDS.to_string())
+pub fn load_project_icons() -> HashMap<String, String> {
+    let file = config_dir().join("projects.toml");
+    let content = match fs::read_to_string(&file) {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    let table = match content.parse::<toml::Table>() {
+        Ok(t) => t,
+        Err(_) => return HashMap::new(),
+    };
+    table
+        .into_iter()
+        .filter_map(|(section, val)| {
+            let raw = val.get("icon")?.as_str()?.to_string();
+            let key = val.get("project")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or(section);
+            Some((key, resolve_icon(&raw)))
+        })
+        .collect()
 }
+
 
 // ── Task runner commands ───────────────────────────────────────────────────────
 //
@@ -255,6 +316,26 @@ pub fn load_workspace(project: &str) -> Option<SavedWorkspace> {
     let path = workspace_dir().join(format!("{project}.json"));
     let json = fs::read_to_string(path).ok()?;
     serde_json::from_str(&json).ok()
+}
+
+/// Delete any workspace files whose code is not in `valid_codes`.
+pub fn prune_stale_workspaces(valid_codes: &[String]) {
+    let dir = workspace_dir();
+    let entries = match fs::read_dir(&dir) {
+        Ok(e)  => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") { continue; }
+        let stem = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None    => continue,
+        };
+        if !valid_codes.iter().any(|c| c == &stem) {
+            let _ = fs::remove_file(&path);
+        }
+    }
 }
 
 pub struct FetchedProject {

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
+use vte::Parser;
+
 /// Query the cwd of a process by PID using `lsof`.
 /// Output of `lsof -p <pid> -d cwd -Fn` looks like:
 ///   p12345
@@ -64,8 +66,10 @@ impl TerminalRegistry {
     /// Spawn a shell at `id`. `cwd` sets the initial working directory; pass
     /// `None` to inherit from the current process (default shell behaviour).
     pub fn spawn(&mut self, id: NodeId, logical_w: f32, logical_h: f32, cwd: Option<&str>) {
-        let (cols, rows) = self.logical_to_cells(logical_w, logical_h);
-        let session = PtySession::spawn(cols as u16, rows as u16, &self.shell.clone(), cwd);
+        let (cols, rows, pw, ph) = self.logical_to_cells(logical_w, logical_h);
+        let mut session = PtySession::spawn(cols as u16, rows as u16, &self.shell.clone(), cwd);
+        session.phys_w = pw;
+        session.phys_h = ph;
         self.sessions.insert(id, session);
     }
 
@@ -73,8 +77,10 @@ impl TerminalRegistry {
     pub fn spawn_cmd(&mut self, id: NodeId, logical_w: f32, logical_h: f32,
                      program: &str, args: &[&str], cwd: Option<&str>,
                      extra_env: &[(&str, &str)]) {
-        let (cols, rows) = self.logical_to_cells(logical_w, logical_h);
-        let session = PtySession::spawn_cmd(cols as u16, rows as u16, program, args, cwd, extra_env);
+        let (cols, rows, pw, ph) = self.logical_to_cells(logical_w, logical_h);
+        let mut session = PtySession::spawn_cmd(cols as u16, rows as u16, program, args, cwd, extra_env);
+        session.phys_w = pw;
+        session.phys_h = ph;
         self.sessions.insert(id, session);
     }
 
@@ -82,9 +88,11 @@ impl TerminalRegistry {
     /// reader thread starts — guaranteed to appear before any shell output.
     pub fn spawn_with_banner(&mut self, id: NodeId, logical_w: f32, logical_h: f32,
                               cwd: Option<&str>, banner: &[u8]) {
-        let (cols, rows) = self.logical_to_cells(logical_w, logical_h);
-        let session = PtySession::spawn_with_banner(
+        let (cols, rows, pw, ph) = self.logical_to_cells(logical_w, logical_h);
+        let mut session = PtySession::spawn_with_banner(
             cols as u16, rows as u16, &self.shell.clone(), cwd, banner);
+        session.phys_w = pw;
+        session.phys_h = ph;
         self.sessions.insert(id, session);
     }
 
@@ -165,9 +173,9 @@ impl TerminalRegistry {
     }
 
     pub fn resize(&mut self, id: NodeId, logical_w: f32, logical_h: f32) {
-        let (cols, rows) = self.logical_to_cells(logical_w, logical_h);
+        let (cols, rows, pw, ph) = self.logical_to_cells(logical_w, logical_h);
         if let Some(sess) = self.sessions.get_mut(&id) {
-            sess.resize(cols as u16, rows as u16);
+            sess.resize(cols as u16, rows as u16, pw, ph);
         }
     }
 
@@ -313,12 +321,54 @@ impl TerminalRegistry {
                     let sel = selection.and_then(|(sid, range)| {
                         if sid == *id { Some(range) } else { None }
                     });
-                    render_terminal(&sess.state, font, true, sel).map(|buf| (*id, buf))
+                    render_terminal(&sess.state, font, true, sel, sess.phys_w, sess.phys_h)
+                        .map(|buf| (*id, buf))
                 } else {
                     None
                 }
             })
             .collect()
+    }
+
+    /// Returns the ids of all sessions that have a pending bell, clearing the flag.
+    pub fn drain_bells(&mut self) -> Vec<NodeId> {
+        self.sessions.iter_mut()
+            .filter_map(|(id, sess)| {
+                let mut st = sess.state.lock().unwrap();
+                if st.bell {
+                    st.bell = false;
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Clear the visible screen for `id` and re-process `banner` bytes into it.
+    /// Used to re-center the welcome banner after the window is resized before
+    /// the user has typed anything.
+    pub fn reinject_banner(&self, id: NodeId, banner: &[u8]) {
+        use super::terminal_state::VteHandler;
+        if let Some(sess) = self.sessions.get(&id) {
+            if let Ok(mut st) = sess.state.lock() {
+                // Clear every visible cell without touching scrollback.
+                let blank = super::terminal_state::Cell::default();
+                for cell in &mut st.cells {
+                    *cell = blank.clone();
+                }
+                st.cursor_col = 0;
+                st.cursor_row = 0;
+                st.dirty = true;
+                // Re-process the banner with updated padding for the current cols.
+                let mut parser = Parser::new();
+                let mut handler = VteHandler(&mut *st);
+                for &b in banner {
+                    parser.advance(&mut handler, b);
+                }
+            }
+            sess.dirty.store(true, Ordering::Relaxed);
+        }
     }
 
     /// Estimate the terminal column count for a given logical pane width.
@@ -327,17 +377,18 @@ impl TerminalRegistry {
         (phys_w / self.font.cell_w.max(1)).max(1)
     }
 
+
     /// Maximum logical pixel width that yields at most `max_cols` columns.
     pub fn max_logical_w(&self, max_cols: usize) -> f32 {
         (max_cols * self.font.cell_w.max(1)) as f32 / self.scale.max(0.001)
     }
 
-    /// Convert logical pixel dimensions to terminal cols/rows using physical cell size.
-    fn logical_to_cells(&self, lw: f32, lh: f32) -> (usize, usize) {
+    /// Convert logical pixel dimensions to (cols, rows, phys_w, phys_h).
+    fn logical_to_cells(&self, lw: f32, lh: f32) -> (usize, usize, usize, usize) {
         let phys_w = (lw * self.scale) as usize;
         let phys_h = (lh * self.scale) as usize;
         let cw = self.font.cell_w.max(1);
         let ch = self.font.cell_h.max(1);
-        ((phys_w / cw).max(1), (phys_h / ch).max(1))
+        ((phys_w / cw).max(1), (phys_h / ch).max(1), phys_w.max(1), phys_h.max(1))
     }
 }

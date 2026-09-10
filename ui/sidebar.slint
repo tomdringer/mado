@@ -16,6 +16,7 @@ export struct WorkspaceProject {
     code:       string,
     color:      color,
     text-color: color,
+    icon:       string,
 }
 
 export struct PriorityProject {
@@ -62,7 +63,10 @@ export component TaskuContent inherits Rectangle {
     /// When false (default): buttons on top, terminal below (sidebar layout).
     in property <bool> horizontal: false;
     callback command(string);
-    callback key-input(string, bool, bool);  // text, ctrl, meta
+    callback key-input(string, bool, bool, bool, bool);  // text, ctrl, meta, alt, shift
+    callback mouse-press(float, float);      // x, y in logical px
+    callback mouse-move(float, float);
+    callback mouse-release();
     callback resize-start();
     callback resize-move(float);   // delta-y in logical px from press point
     callback resize-end();
@@ -82,8 +86,10 @@ export component TaskuContent inherits Rectangle {
         width: parent.width;
         height: parent.height - 8px;
 
+        init => { self.focus(); }
+
         key-pressed(e) => {
-            root.key-input(e.text, e.modifiers.control, e.modifiers.meta);
+            root.key-input(e.text, e.modifiers.control, e.modifiers.meta, e.modifiers.alt, e.modifiers.shift);
             accept
         }
     }
@@ -133,8 +139,8 @@ export component TaskuContent inherits Rectangle {
             clip: true;
 
             if root.terminal-image.width > 0: Image {
-                x: 8px;
-                width: parent.width - 8px; height: parent.height;
+                x: 0;
+                width: parent.width; height: parent.height;
                 source: root.terminal-image;
                 image-fit: fill;
             }
@@ -149,7 +155,19 @@ export component TaskuContent inherits Rectangle {
             TouchArea {
                 width: parent.width; height: parent.height;
                 mouse-cursor: MouseCursor.text;
-                clicked => { fs.focus(); }
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        fs.focus();
+                        root.mouse-press(self.mouse-x / 1px, self.mouse-y / 1px);
+                    } else if (e.kind == PointerEventKind.up) {
+                        root.mouse-release();
+                    }
+                }
+                moved => {
+                    if (self.pressed) {
+                        root.mouse-move(self.mouse-x / 1px, self.mouse-y / 1px);
+                    }
+                }
                 scroll-event(e) => {
                     root.scroll(e.delta-y / 1px);
                     accept
@@ -169,9 +187,9 @@ export component TaskuContent inherits Rectangle {
         padding: 8px;
         spacing: 6px;
 
-        // Button column — 3 × 120 px buttons + 2 × 4 px gaps = 368 px wide
+        // Button column — 3 × 80 px buttons + 2 × 4 px gaps = 248 px wide
         Rectangle {
-            width: 368px;
+            width: 248px;
             clip: true;
 
             VerticalLayout {
@@ -180,24 +198,24 @@ export component TaskuContent inherits Rectangle {
                 spacing: 4px;
 
                 Rectangle { width: parent.width; height: 32px;
-                    CmdButton { x: 0;      width: 120px; label: "Add";     command(l) => { root.command(l); fs.focus(); } }
-                    CmdButton { x: 124px;  width: 120px; label: "List";    command(l) => { root.command(l); fs.focus(); } }
-                    CmdButton { x: 248px;  width: 120px; label: "Stats";   command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 0;     width: 80px; label: "Add";     command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 84px;  width: 80px; label: "List";    command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 168px; width: 80px; label: "Stats";   command(l) => { root.command(l); fs.focus(); } }
                 }
                 Rectangle { width: parent.width; height: 32px;
-                    CmdButton { x: 0;      width: 120px; label: "Edit";    command(l) => { root.command(l); fs.focus(); } }
-                    CmdButton { x: 124px;  width: 120px; label: "Delete";  command(l) => { root.command(l); fs.focus(); } }
-                    CmdButton { x: 248px;  width: 120px; label: "SQL";     command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 0;     width: 80px; label: "Edit";    command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 84px;  width: 80px; label: "Delete";  command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 168px; width: 80px; label: "SQL";     command(l) => { root.command(l); fs.focus(); } }
                 }
                 Rectangle { width: parent.width; height: 32px;
-                    CmdButton { x: 0;      width: 120px; label: "Today";   command(l) => { root.command(l); fs.focus(); } }
-                    CmdButton { x: 124px;  width: 120px; label: "Tmrw";    command(l) => { root.command(l); fs.focus(); } }
-                    CmdButton { x: 248px;  width: 120px; label: "Overdue"; command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 0;     width: 80px; label: "Today";   command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 84px;  width: 80px; label: "Tmrw";    command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 168px; width: 80px; label: "Overdue"; command(l) => { root.command(l); fs.focus(); } }
                 }
                 Rectangle { width: parent.width; height: 32px;
-                    CmdButton { x: 0;      width: 120px; label: "Todo";    command(l) => { root.command(l); fs.focus(); } }
-                    CmdButton { x: 124px;  width: 120px; label: "Started"; command(l) => { root.command(l); fs.focus(); } }
-                    CmdButton { x: 248px;  width: 120px; label: "Done";    command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 0;     width: 80px; label: "Todo";    command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 84px;  width: 80px; label: "Started"; command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 168px; width: 80px; label: "Done";    command(l) => { root.command(l); fs.focus(); } }
                 }
             }
         }
@@ -226,7 +244,19 @@ export component TaskuContent inherits Rectangle {
             TouchArea {
                 width: parent.width; height: parent.height;
                 mouse-cursor: MouseCursor.text;
-                clicked => { fs.focus(); }
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down) {
+                        fs.focus();
+                        root.mouse-press(self.mouse-x / 1px, self.mouse-y / 1px);
+                    } else if (e.kind == PointerEventKind.up) {
+                        root.mouse-release();
+                    }
+                }
+                moved => {
+                    if (self.pressed) {
+                        root.mouse-move(self.mouse-x / 1px, self.mouse-y / 1px);
+                    }
+                }
                 scroll-event(e) => {
                     root.scroll(e.delta-y / 1px);
                     accept
@@ -291,6 +321,7 @@ component WorkspacesContent inherits Rectangle {
     in property <string>            active-project;
     in property <int>               kb-tile-index: -1;
     callback workspace-selected(string);
+    callback workspace-refresh();
 
     background: transparent;
     clip: true;
@@ -301,6 +332,22 @@ component WorkspacesContent inherits Rectangle {
     // 3 columns, 2 inter-column gaps, left+right padding
     private property <length> tile-w: (root.width - 2 * root.pad - 2 * root.gap) / 3;
 
+    // ── Refresh button ────────────────────────────────────────────────────────
+    refresh-ta := TouchArea {
+        x: root.width - 26px; y: 4px;
+        width: 22px; height: 22px;
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { root.workspace-refresh(); }
+    }
+    Text {
+        x: root.width - 26px; y: 4px;
+        width: 22px; height: 22px;
+        text: "↺";
+        color: refresh-ta.has-hover ? rgba(255,255,255,0.7) : rgba(255,255,255,0.2);
+        font-size: 15px;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+
     for proj[i] in root.projects: Rectangle {
         x: root.pad + mod(i, 3) * (root.tile-w + root.gap);
         y: root.pad + floor(i / 3) * (root.tile-w + root.gap);
@@ -308,36 +355,44 @@ component WorkspacesContent inherits Rectangle {
         height: root.tile-w;   // square
         border-radius: 8px;
         background: proj.color;
-        border-width: i == root.kb-tile-index ? 2px : 0px;
-        border-color: #ffffffaa;
+        // White border: solid when active, dimmer when keyboard-focused only
+        border-width: (proj.code == root.active-project || i == root.kb-tile-index) ? 2px : 0px;
+        border-color: proj.code == root.active-project
+            ? rgba(255, 255, 255, 0.9)
+            : rgba(255, 255, 255, 0.55);
 
-        // ── Content: indicator dot + code label ───────────────────────────────
+        // ── Content: icon + code label ────────────────────────────────────────
         VerticalLayout {
             alignment: center;
-            spacing: 5px;
+            spacing: 3px;
             width: parent.width; height: parent.height;
 
-            // Active indicator — circle centred above the code.
-            // Always occupies space so all tiles have identical layout;
-            // invisible when this project is not the active workspace.
-            HorizontalLayout {
-                alignment: center;
-                height: 8px;
-                Rectangle {
-                    width: 8px; height: 8px;
-                    border-radius: 4px;
-                    background: proj.text-color;
-                    opacity: proj.code == root.active-project ? 1.0 : 0.0;
+            if proj.icon != "": Rectangle {
+                width: parent.width;
+                height: 24px;
+                Text {
+                    text: proj.icon;
+                    color: proj.text-color;
+                    font-size: 20px;
+                    font-family: "Hack Nerd Font";
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    x: -4px;
+                    width: parent.width;
+                    height: parent.height;
                 }
             }
 
             Text {
                 text: proj.code;
                 color: proj.text-color;
-                font-size: 13px;
+                font-size: proj.icon != "" ? 13px : 15px;
                 font-weight: 700;
                 letter-spacing: 0.5px;
                 horizontal-alignment: center;
+                vertical-alignment: center;
+                width: parent.width;
+                height: 18px;
             }
         }
 
@@ -560,7 +615,7 @@ export component PluginContent inherits Rectangle {
     callback resize-start();
     callback resize-move(float);   // cumulative delta-y from press point (logical px)
     callback resize-end();
-    callback key-input(string, bool, bool);  // text, ctrl, meta
+    callback key-input(string, bool, bool, bool, bool);  // text, ctrl, meta, alt, shift
     callback scroll(float);                  // scroll-wheel delta-y in logical px
     callback click(float, float);            // x, y in logical px
     callback focus-changed(bool);            // true = gained, false = lost
@@ -577,7 +632,7 @@ export component PluginContent inherits Rectangle {
         height: parent.height - 8px;
 
         key-pressed(e) => {
-            root.key-input(e.text, e.modifiers.control, e.modifiers.meta);
+            root.key-input(e.text, e.modifiers.control, e.modifiers.meta, e.modifiers.alt, e.modifiers.shift);
             accept
         }
         changed has-focus => {
@@ -888,14 +943,18 @@ export component Sidebar inherits Rectangle {
     callback plugin-reordered(int, int);            // from-index, to-index
     callback tasku-toggled(bool);                   // true = expanded
     callback tasku-command(string);                 // button label → CLI command
-    callback tasku-key-input(string, bool, bool);   // text, ctrl, meta
+    callback tasku-key-input(string, bool, bool, bool, bool);   // text, ctrl, meta, alt, shift
+    callback tasku-mouse-press(float, float);       // x, y in logical px
+    callback tasku-mouse-move(float, float);
+    callback tasku-mouse-release();
     callback tasku-panel-height-changed(float);     // notifies Rust to resize PTY
     callback tasku-scroll(float);                   // scroll-wheel delta-y on terminal
     callback workspace-selected(string);            // project code clicked
+    callback workspace-refresh();                   // re-fetch projects from Tasku
     callback priority-reordered(int, int);          // priority drag-to-reorder
     callback plugin-toggled(int);                   // plugin-index toggled (Rust updates plugin-expanded)
     callback plugin-panel-height-changed(int, float); // plugin-index, new height
-    callback plugin-key-input(int, string, bool, bool); // plugin-index, text, ctrl, meta
+    callback plugin-key-input(int, string, bool, bool, bool, bool); // plugin-index, text, ctrl, meta, alt, shift
     callback plugin-scroll(int, float);             // plugin-index, scroll delta-y
     callback plugin-click(int, float, float);       // plugin-index, x, y
     callback plugin-focus-changed(int, bool);       // plugin-index, focused
@@ -1056,7 +1115,7 @@ export component Sidebar inherits Rectangle {
                     && root.plugin-expanded[root.plugins[root.kb-index].plugin-index]
                     && root.plugin-pixel[root.plugins[root.kb-index].plugin-index]) {
                 root.plugin-key-input(root.plugins[root.kb-index].plugin-index,
-                    e.text, e.modifiers.control, e.modifiers.meta);
+                    e.text, e.modifiers.control, e.modifiers.meta, e.modifiers.alt, e.modifiers.shift);
                 return accept;
             }
             return reject;
@@ -1159,7 +1218,10 @@ export component Sidebar inherits Rectangle {
                     terminal-image: root.tasku-terminal-image;
                     theme-terminal-area-bg: root.theme-terminal-area-bg;
                     command(cmd) => { root.tasku-command(cmd); }
-                    key-input(text, ctrl, meta) => { root.tasku-key-input(text, ctrl, meta); }
+                    key-input(text, ctrl, meta, alt, shift) => { root.tasku-key-input(text, ctrl, meta, alt, shift); }
+                    mouse-press(x, y) => { root.tasku-mouse-press(x, y); }
+                    mouse-move(x, y) => { root.tasku-mouse-move(x, y); }
+                    mouse-release => { root.tasku-mouse-release(); }
                     scroll(delta) => { root.tasku-scroll(delta); }
                     resize-start => {
                         root.tasku-press-h = root.tasku-panel-h;
@@ -1182,6 +1244,7 @@ export component Sidebar inherits Rectangle {
                     active-project: root.active-project;
                     kb-tile-index: root.ws-tile-index;
                     workspace-selected(code) => { root.workspace-selected(code); }
+                    workspace-refresh => { root.workspace-refresh(); }
                 }
 
                 if item.id == "priorities" && root.priorities-expanded: PrioritiesContent {
@@ -1197,8 +1260,8 @@ export component Sidebar inherits Rectangle {
                     height: root.plugin-panel-h[item.plugin-index] * 1px;
                     terminal-image: root.plugin-images[item.plugin-index];
                     is-pixel: root.plugin-pixel[item.plugin-index];
-                    key-input(text, ctrl, meta) => {
-                        root.plugin-key-input(item.plugin-index, text, ctrl, meta);
+                    key-input(text, ctrl, meta, alt, shift) => {
+                        root.plugin-key-input(item.plugin-index, text, ctrl, meta, alt, shift);
                     }
                     scroll(delta) => { root.plugin-scroll(item.plugin-index, delta); }
                     click(x, y) => { root.plugin-click(item.plugin-index, x, y); }

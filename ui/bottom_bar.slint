@@ -131,7 +131,7 @@ export component RunnerContent inherits Rectangle {
     callback play();
     callback stop();
     callback restart();
-    callback key-input(string, bool, bool);
+    callback key-input(string, bool, bool, bool, bool);  // text, ctrl, meta, alt, shift
     callback scroll(float);
     callback mouse-pressed(float, float);
     callback mouse-moved(float, float);
@@ -144,7 +144,7 @@ export component RunnerContent inherits Rectangle {
         width: parent.width;
         height: parent.height;
         key-pressed(e) => {
-            root.key-input(e.text, e.modifiers.control, e.modifiers.meta);
+            root.key-input(e.text, e.modifiers.control, e.modifiers.meta, e.modifiers.alt, e.modifiers.shift);
             accept
         }
     }
