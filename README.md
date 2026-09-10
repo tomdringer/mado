@@ -7,7 +7,7 @@ A macOS terminal multiplexer with a sidebar plugin architecture, built in Rust.
 ## Features
 
 - **Pane management** — split terminals horizontally and vertically, tmux-style
-- **Sidebar plugins** — left and right sidebars with built-in panels (Clock, Priorities, Workspaces, Clipboard) and support for custom plugins
+- **Sidebar plugins** — left and right sidebars with a growing plugin ecosystem and support for custom plugins
 - **22 themes** — built on Tailwind CSS palettes with Starship integration
 - **Workspace persistence** — pane layouts and working directories survive project switches
 - **Task management** — integrated [Tasku](https://github.com/nerimasoft/tasku) panel
@@ -67,6 +67,19 @@ theme = "slate"
 22 built-in themes are available. Drop a custom `.toml` into `~/.config/mado/themes/` to add your own.
 
 ![Tasku panel](assets/mado-tasku.png)
+
+## Plugins
+
+Community plugins are available at [github.com/tomdringer/mado-plugins](https://github.com/tomdringer/mado-plugins), including Clock, Pomodoro, and more. Install a plugin by adding it to your `config.toml`:
+
+```toml
+[[plugins]]
+id = "clock"
+command = "/path/to/mado-clock"
+position = "right"
+```
+
+A plugin browser is planned for a future release.
 
 ## Plugin protocol
 

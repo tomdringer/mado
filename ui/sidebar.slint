@@ -59,6 +59,8 @@ component CmdButton inherits Rectangle {
 export component TaskuContent inherits Rectangle {
     in property <image> terminal-image;
     in property <color> theme-terminal-area-bg: #020617;
+    /// "ok" | "not-installed" | "outdated"
+    in property <string> tasku-status: "ok";
     /// When true: buttons on left, terminal on right (top-bar layout).
     /// When false (default): buttons on top, terminal below (sidebar layout).
     in property <bool> horizontal: false;
@@ -105,7 +107,7 @@ export component TaskuContent inherits Rectangle {
         padding: 8px;
         spacing: 6px;
 
-        VerticalLayout {
+        if root.tasku-status == "ok": VerticalLayout {
             width: parent.width;
             spacing: 4px;
 
@@ -138,21 +140,57 @@ export component TaskuContent inherits Rectangle {
             border-radius: 4px;
             clip: true;
 
-            if root.terminal-image.width > 0: Image {
+            if root.tasku-status == "ok" && root.terminal-image.width > 0: Image {
                 x: 0;
                 width: parent.width; height: parent.height;
                 source: root.terminal-image;
                 image-fit: fill;
             }
-            if root.terminal-image.width == 0: Text {
+            if root.tasku-status == "ok" && root.terminal-image.width == 0: Text {
                 text: "starting…";
                 color: rgba(255, 255, 255, 0.12);
                 font-size: 11px;
                 horizontal-alignment: center; vertical-alignment: center;
                 width: parent.width; height: parent.height;
             }
+            if root.tasku-status == "not-installed": VerticalLayout {
+                width: parent.width; height: parent.height;
+                alignment: center;
+                spacing: 10px;
+                padding: 20px;
+                Text {
+                    text: "Tasku not found";
+                    color: rgba(255, 255, 255, 0.6);
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "gem install tasku";
+                    color: rgba(255, 255, 255, 0.3);
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                }
+            }
+            if root.tasku-status == "outdated": VerticalLayout {
+                width: parent.width; height: parent.height;
+                alignment: center;
+                spacing: 10px;
+                padding: 20px;
+                Text {
+                    text: "Tasku update available";
+                    color: rgba(255, 255, 255, 0.6);
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "gem update tasku";
+                    color: rgba(255, 255, 255, 0.3);
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                }
+            }
 
-            TouchArea {
+            if root.tasku-status == "ok": TouchArea {
                 width: parent.width; height: parent.height;
                 mouse-cursor: MouseCursor.text;
                 pointer-event(e) => {
@@ -188,7 +226,7 @@ export component TaskuContent inherits Rectangle {
         spacing: 6px;
 
         // Button column — 3 × 80 px buttons + 2 × 4 px gaps = 248 px wide
-        Rectangle {
+        if root.tasku-status == "ok": Rectangle {
             width: 248px;
             clip: true;
 
@@ -227,21 +265,57 @@ export component TaskuContent inherits Rectangle {
             border-radius: 4px;
             clip: true;
 
-            if root.terminal-image.width > 0: Image {
+            if root.tasku-status == "ok" && root.terminal-image.width > 0: Image {
                 x: 0; y: 0;
                 width: parent.width; height: parent.height;
                 source: root.terminal-image;
                 image-fit: fill;
             }
-            if root.terminal-image.width == 0: Text {
+            if root.tasku-status == "ok" && root.terminal-image.width == 0: Text {
                 text: "starting…";
                 color: rgba(255, 255, 255, 0.12);
                 font-size: 11px;
                 horizontal-alignment: center; vertical-alignment: center;
                 width: parent.width; height: parent.height;
             }
+            if root.tasku-status == "not-installed": VerticalLayout {
+                width: parent.width; height: parent.height;
+                alignment: center;
+                spacing: 10px;
+                padding: 20px;
+                Text {
+                    text: "Tasku not found";
+                    color: rgba(255, 255, 255, 0.6);
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "gem install tasku";
+                    color: rgba(255, 255, 255, 0.3);
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                }
+            }
+            if root.tasku-status == "outdated": VerticalLayout {
+                width: parent.width; height: parent.height;
+                alignment: center;
+                spacing: 10px;
+                padding: 20px;
+                Text {
+                    text: "Tasku update available";
+                    color: rgba(255, 255, 255, 0.6);
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "gem update tasku";
+                    color: rgba(255, 255, 255, 0.3);
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                }
+            }
 
-            TouchArea {
+            if root.tasku-status == "ok": TouchArea {
                 width: parent.width; height: parent.height;
                 mouse-cursor: MouseCursor.text;
                 pointer-event(e) => {
@@ -919,6 +993,8 @@ export component Sidebar inherits Rectangle {
 
     in-out property <[PluginItem]> plugins;
     in property <image> tasku-terminal-image;
+    /// "ok" | "not-installed" | "outdated"
+    in property <string> tasku-status: "ok";
     in property <[WorkspaceProject]> ws-projects;
     in property <string> active-project;
     in property <[PriorityProject]> priority-projects;
@@ -1216,6 +1292,7 @@ export component Sidebar inherits Rectangle {
                     width: parent.width;
                     height: root.tasku-panel-h;
                     terminal-image: root.tasku-terminal-image;
+                    tasku-status: root.tasku-status;
                     theme-terminal-area-bg: root.theme-terminal-area-bg;
                     command(cmd) => { root.tasku-command(cmd); }
                     key-input(text, ctrl, meta, alt, shift) => { root.tasku-key-input(text, ctrl, meta, alt, shift); }

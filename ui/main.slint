@@ -46,6 +46,8 @@ export component MainWindow inherits Window {
     in-out property <[PluginItem]> plugins;
     in-out property <float> sidebar-width: 300;
     in property <image> tasku-terminal-image;
+    /// "ok" | "not-installed" | "outdated"
+    in property <string> tasku-status: "ok";
     in property <[WorkspaceProject]> ws-projects;
     in-out property <string> active-project;
     in property <int> force-focus-id: -1;
@@ -317,6 +319,7 @@ export component MainWindow inherits Window {
                 }
                 plugins: root.plugins;
                 tasku-terminal-image: root.tasku-terminal-image;
+                tasku-status: root.tasku-status;
                 ws-projects: root.ws-projects;
                 active-project: root.active-project;
                 priority-projects: root.priority-projects;
@@ -542,6 +545,7 @@ export component MainWindow inherits Window {
                 }
                 plugins: root.right-plugins;
                 tasku-terminal-image: root.tasku-terminal-image;
+                tasku-status: root.tasku-status;
                 ws-projects: root.ws-projects;
                 active-project: root.active-project;
                 priority-projects: root.priority-projects;
@@ -611,6 +615,7 @@ export component MainWindow inherits Window {
             horizontal: true;
             show-resize-handle: false;
             terminal-image: root.tasku-terminal-image;
+            tasku-status: root.tasku-status;
             theme-terminal-area-bg: root.theme-terminal-area-bg;
             command(cmd) => { root.tasku-command(cmd); }
             key-input(text, ctrl, meta, alt, shift) => { root.tasku-key-input(text, ctrl, meta, alt, shift); }
