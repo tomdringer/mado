@@ -46,7 +46,7 @@ Mado is configured via `~/.config/mado/config.toml`. Run `mado config` to open i
 
 ### Projects
 
-Map project codes to paths in `~/.config/mado/projects.toml`:
+If you use [Tasku](https://github.com/tomdringer/tasku), your projects will appear automatically in the sidebar. You can also map project codes to paths manually in `~/.config/mado/projects.toml`:
 
 ```toml
 [projects.mado]
