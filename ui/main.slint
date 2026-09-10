@@ -62,6 +62,8 @@ export component MainWindow inherits Window {
     // ── Top bar ───────────────────────────────────────────────────────────────
     in-out property <float> top-bar-height: 200;
     in-out property <bool> show-top-bar: false;
+    // AI panel — toggled by the button in the top bar
+    in-out property <bool> show-ai-panel: false;
     in-out property <[PluginItem]> top-plugins;
     in property <[image]> top-plugin-images;
     in property <[bool]>  top-plugin-pixel;
@@ -85,19 +87,38 @@ export component MainWindow inherits Window {
     in property <string> top-right-plugin-icon: "";
     in property <string> top-right-plugin-title: "";
     in-out property <float> top-right-panel-width: 0;
-    callback top-right-plugin-key-input(string, bool, bool);
+    callback top-right-plugin-key-input(string, bool, bool, bool, bool); // text, ctrl, meta, alt, shift
     callback top-right-plugin-scroll(float);
+    callback top-right-plugin-mouse-press(float, float);
+    callback top-right-plugin-mouse-move(float, float);
+    callback top-right-plugin-mouse-release();
     callback top-right-panel-width-changed(float);
     private property <float> top-right-press-abs-x: 0;
     private property <float> top-right-press-width: 0;
     private property <bool>  top-right-is-resizing: false;
+
+    // ── Browser panel (native WKWebView overlay) ──────────────────────────────
+    in-out property <float> browser-panel-width: 0;
+    in-out property <bool> show-browser-panel: false;
+    // Fired when show-browser-panel toggles — Rust uses this to show/hide the WKWebView.
+    callback browser-visible-changed(bool);
+    callback browser-panel-width-changed(float);
+    // Exposes the browser panel's left edge in logical window coords so Rust can
+    // position the native WKWebView to match the Slint layout exactly.
+    out property <float> browser-panel-logical-x:
+        root.show-browser-panel && root.browser-panel-width > 0
+        ? (root.effective-sidebar-w + (terminal-area.width / 1px) + 1.0)
+        : 0.0;
+    private property <float> browser-press-abs-x: 0;
+    private property <float> browser-press-width: 0;
+    private property <bool>  browser-is-resizing: false;
 
     // ── Bottom-right panel plugin ─────────────────────────────────────────────
     in property <image>  bottom-right-plugin-image;
     in property <string> bottom-right-plugin-icon: "";
     in property <string> bottom-right-plugin-title: "";
     in-out property <float> bottom-right-panel-width: 0;
-    callback bottom-right-plugin-key-input(string, bool, bool);
+    callback bottom-right-plugin-key-input(string, bool, bool, bool, bool); // text, ctrl, meta, alt, shift
     callback bottom-right-plugin-scroll(float);
 
     // ── Bottom bar (task runner) ──────────────────────────────────────────────
@@ -140,6 +161,9 @@ export component MainWindow inherits Window {
     // ── Terminal area dimensions exposed to Rust ──────────────────────────────
     out property <float> window-w: terminal-area.width  / 1px;
     out property <float> window-h: terminal-area.height / 1px;
+    // Bottom bar logical height (52 when shown, 0 otherwise) — used by Rust to
+    // compute the native browser WKWebView y offset in NSView coordinates.
+    out property <float> bottom-bar-logical-h: root.effective-bottom-bar-h / 1px;
 
     // ── Callbacks ─────────────────────────────────────────────────────────────
     callback overlay-press(float, float);
@@ -163,14 +187,18 @@ export component MainWindow inherits Window {
     callback sidebar-width-changed(float);
     callback tasku-toggled(bool);
     callback tasku-command(string);
-    callback tasku-key-input(string, bool, bool);
+    callback tasku-key-input(string, bool, bool, bool, bool); // text, ctrl, meta, alt, shift
+    callback tasku-mouse-press(float, float);
+    callback tasku-mouse-move(float, float);
+    callback tasku-mouse-release();
     callback tasku-panel-height-changed(float);
     callback tasku-scroll(float);
     callback workspace-selected(string);
+    callback workspace-refresh();
     callback priority-reordered(int, int);
     callback plugin-toggled(int);
     callback plugin-panel-height-changed(int, float);
-    callback plugin-key-input(int, string, bool, bool);
+    callback plugin-key-input(int, string, bool, bool, bool, bool); // idx, text, ctrl, meta, alt, shift
     callback plugin-scroll(int, float);
     callback plugin-click(int, float, float);
     callback plugin-focus-changed(int, bool);
@@ -178,12 +206,12 @@ export component MainWindow inherits Window {
     // Bottom bar / runner callbacks
     callback runner-play();
     callback runner-stop();
-    callback runner-key-input(string, bool, bool);
+    callback runner-key-input(string, bool, bool, bool, bool); // text, ctrl, meta, alt, shift
     callback runner-scroll(float);
 
     // Top bar callbacks
     callback top-bar-height-changed(float);
-    callback top-plugin-key-input(int, string, bool, bool);
+    callback top-plugin-key-input(int, string, bool, bool, bool, bool); // idx, text, ctrl, meta, alt, shift
     callback top-plugin-scroll(int, float);
     callback top-plugin-click(int, float, float);
     callback top-plugin-focus-changed(int, bool);
@@ -192,16 +220,19 @@ export component MainWindow inherits Window {
     callback right-sidebar-width-changed(float);
     callback right-plugin-toggled(int);
     callback right-plugin-panel-height-changed(int, float);
-    callback right-plugin-key-input(int, string, bool, bool);
+    callback right-plugin-key-input(int, string, bool, bool, bool, bool); // idx, text, ctrl, meta, alt, shift
     callback right-plugin-scroll(int, float);
     callback right-plugin-click(int, float, float);
     callback right-plugin-focus-changed(int, bool);
 
     changed window-w => { root.window-resized(root.window-w, root.window-h); }
     changed window-h => { root.window-resized(root.window-w, root.window-h); }
+    changed show-browser-panel => { root.browser-visible-changed(root.show-browser-panel); }
 
+    // Top bar shows when explicitly enabled OR when the AI/browser panel is configured.
+    private property <bool>   show-top-bar-effective: root.show-top-bar || root.top-right-panel-width > 0 || root.browser-panel-width > 0;
     // Top bar is always 52px (header only). Content shown via overlay below.
-    private property <length> effective-top-bar-h: root.show-top-bar ? 52px : 0px;
+    private property <length> effective-top-bar-h: root.show-top-bar-effective ? 52px : 0px;
     // Bottom bar is always 52px (header only). Content shown via overlay above.
     private property <length> effective-bottom-bar-h: root.show-bottom-bar ? 52px : 0px;
 
@@ -248,13 +279,19 @@ export component MainWindow inherits Window {
         padding: 0;
 
         // ── Top bar header (always 52px; content rendered in overlay below) ─────
-        if root.show-top-bar: TopBar {
+        if root.show-top-bar-effective: TopBar {
             width: parent.width;
             height: 52px;
             expanded: root.top-bar-expanded;
             top-plugins: root.top-plugins;
             theme-card-bg: root.theme-card-bg;
             theme-card-border: root.theme-card-border;
+            show-ai-button: root.top-right-panel-width > 0;
+            ai-active: root.show-ai-panel;
+            ai-toggled => { root.show-ai-panel = !root.show-ai-panel; }
+            show-browser-button: root.browser-panel-width > 0;
+            browser-active: root.show-browser-panel;
+            browser-toggled => { root.show-browser-panel = !root.show-browser-panel; }
             expanded-changed(exp) => { root.top-bar-expanded = exp; }
         }
 
@@ -297,15 +334,16 @@ export component MainWindow inherits Window {
                 plugin-reordered(from, to) => { root.plugin-reordered(from, to); }
                 tasku-toggled(expanded) => { root.tasku-toggled(expanded); }
                 tasku-command(cmd) => { root.tasku-command(cmd); }
-                tasku-key-input(text, ctrl, meta) => { root.tasku-key-input(text, ctrl, meta); }
+                tasku-key-input(text, ctrl, meta, alt, shift) => { root.tasku-key-input(text, ctrl, meta, alt, shift); }
                 tasku-panel-height-changed(h) => { root.tasku-panel-height-changed(h); }
                 tasku-scroll(delta) => { root.tasku-scroll(delta); }
                 workspace-selected(code) => { root.workspace-selected(code); }
+                workspace-refresh => { root.workspace-refresh(); }
                 priority-reordered(from, to) => { root.priority-reordered(from, to); }
                 plugin-toggled(idx) => { root.plugin-toggled(idx); }
                 plugin-panel-height-changed(idx, h) => { root.plugin-panel-height-changed(idx, h); }
-                plugin-key-input(idx, text, ctrl, meta) => {
-                    root.plugin-key-input(idx, text, ctrl, meta);
+                plugin-key-input(idx, text, ctrl, meta, alt, shift) => {
+                    root.plugin-key-input(idx, text, ctrl, meta, alt, shift);
                 }
                 plugin-scroll(idx, delta) => { root.plugin-scroll(idx, delta); }
                 plugin-click(idx, x, y) => { root.plugin-click(idx, x, y); }
@@ -408,75 +446,43 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // ── Persistent AI panel (always visible alongside panes) ──────────
-            if root.top-right-panel-width > 0: Rectangle {
+            // ── Persistent browser panel (native WKWebView overlay) ──────────
+            // The actual content is a native WKWebView added by Rust as an NSView
+            // subview directly on the Slint NSView.  These Slint Rectangles exist
+            // only to reserve space in the HorizontalLayout so the terminal area
+            // shrinks correctly, and to provide the left-edge divider line.
+            if root.show-browser-panel && root.browser-panel-width > 0: Rectangle {
                 width: 1px;
                 background: root.theme-card-border;
             }
-            if root.top-right-panel-width > 0: Rectangle {
+            if root.show-browser-panel && root.browser-panel-width > 0: Rectangle {
+                width: root.browser-panel-width * 1px;
+                background: root.theme-terminal-area-bg;
+            }
+
+            // ── Persistent AI panel (toggled via top-bar button) ─────────────
+            if root.show-ai-panel && root.top-right-panel-width > 0: Rectangle {
+                width: 1px;
+                background: root.theme-card-border;
+            }
+            if root.show-ai-panel && root.top-right-panel-width > 0: Rectangle {
                 width: root.top-right-panel-width * 1px;
                 background: root.theme-terminal-area-bg;
                 clip: true;
 
-                // Header strip — 52px, matching TopBar style
-                Rectangle {
-                    x: 0; y: 0;
-                    width: parent.width; height: 52px;
-                    background: root.theme-card-bg;
-
-                    HorizontalLayout {
-                        x: 0; width: parent.width; height: parent.height;
-                        padding: 0; spacing: 0;
-
-                        Rectangle {
-                            width: 38px; height: parent.height;
-                            Text {
-                                text: root.top-right-plugin-icon;
-                                color: rgba(255, 255, 255, 0.45);
-                                font-family: "Hack Nerd Font";
-                                font-size: 22px;
-                                horizontal-alignment: center; vertical-alignment: center;
-                                width: parent.width; height: parent.height;
-                            }
-                        }
-
-                        Rectangle {
-                            horizontal-stretch: 1; height: parent.height;
-                            Text {
-                                text: root.top-right-plugin-title;
-                                color: rgba(255, 255, 255, 0.80);
-                                font-family: "SF Pro Text";
-                                font-size: 18px; font-weight: 700;
-                                letter-spacing: 0.4px;
-                                overflow: elide;
-                                vertical-alignment: center;
-                                x: 18px;
-                                width: parent.width - 22px; height: parent.height;
-                            }
-                        }
-                    }
-
-                    // Bottom border
-                    Rectangle {
-                        x: 0; y: parent.height - 1px;
-                        width: parent.width; height: 1px;
-                        background: root.theme-card-border;
-                    }
-                }
-
-                // FocusScope covers only the content area (below header)
+                // FocusScope covers the full panel (no header — toggle is in top bar)
                 ai-fs := FocusScope {
-                    x: 20px; y: 52px;
-                    width: parent.width - 40px; height: parent.height - 52px;
+                    x: 0px; y: 0px;
+                    width: parent.width; height: parent.height;
                     key-pressed(e) => {
-                        root.top-right-plugin-key-input(e.text, e.modifiers.control, e.modifiers.meta);
+                        root.top-right-plugin-key-input(e.text, e.modifiers.control, e.modifiers.meta, e.modifiers.alt, e.modifiers.shift);
                         accept
                     }
                 }
 
                 if root.top-right-plugin-image.width > 0: Image {
-                    x: 20px; y: 52px;
-                    width: parent.width - 40px; height: parent.height - 52px;
+                    x: 0px; y: 0px;
+                    width: parent.width; height: parent.height;
                     source: root.top-right-plugin-image;
                     image-fit: fill;
                 }
@@ -485,15 +491,26 @@ export component MainWindow inherits Window {
                     color: rgba(255, 255, 255, 0.12);
                     font-size: 11px;
                     horizontal-alignment: center; vertical-alignment: center;
-                    x: 20px; y: 52px;
-                    width: parent.width - 40px; height: parent.height - 52px;
+                    x: 0px; y: 0px;
+                    width: parent.width; height: parent.height;
                 }
 
                 TouchArea {
-                    x: 20px; y: 52px;
-                    width: parent.width - 40px; height: parent.height - 52px;
+                    x: 0px; y: 0px;
+                    width: parent.width; height: parent.height;
                     mouse-cursor: MouseCursor.text;
                     clicked => { ai-fs.focus(); }
+                    pointer-event(e) => {
+                        ai-fs.focus();
+                        if e.kind == PointerEventKind.down {
+                            root.top-right-plugin-mouse-press(self.mouse-x / 1px, self.mouse-y / 1px);
+                        } else if e.kind == PointerEventKind.up {
+                            root.top-right-plugin-mouse-release();
+                        }
+                    }
+                    moved => {
+                        root.top-right-plugin-mouse-move(self.mouse-x / 1px, self.mouse-y / 1px);
+                    }
                     scroll-event(e) => {
                         root.top-right-plugin-scroll(e.delta-y / 1px);
                         accept
@@ -543,8 +560,8 @@ export component MainWindow inherits Window {
                 plugin-panel-height-changed(idx, h) => {
                     root.right-plugin-panel-height-changed(idx, h);
                 }
-                plugin-key-input(idx, text, ctrl, meta) => {
-                    root.right-plugin-key-input(idx, text, ctrl, meta);
+                plugin-key-input(idx, text, ctrl, meta, alt, shift) => {
+                    root.right-plugin-key-input(idx, text, ctrl, meta, alt, shift);
                 }
                 plugin-scroll(idx, delta) => { root.right-plugin-scroll(idx, delta); }
                 plugin-click(idx, x, y) => { root.right-plugin-click(idx, x, y); }
@@ -560,6 +577,7 @@ export component MainWindow inherits Window {
                 tasku-panel-height-changed(h) => { }
                 tasku-scroll(d) => { }
                 workspace-selected(code) => { }
+                workspace-refresh => { }
                 priority-reordered(from, to) => { }
             }
         }
@@ -595,7 +613,10 @@ export component MainWindow inherits Window {
             terminal-image: root.tasku-terminal-image;
             theme-terminal-area-bg: root.theme-terminal-area-bg;
             command(cmd) => { root.tasku-command(cmd); }
-            key-input(text, ctrl, meta) => { root.tasku-key-input(text, ctrl, meta); }
+            key-input(text, ctrl, meta, alt, shift) => { root.tasku-key-input(text, ctrl, meta, alt, shift); }
+            mouse-press(x, y) => { root.tasku-mouse-press(x, y); }
+            mouse-move(x, y) => { root.tasku-mouse-move(x, y); }
+            mouse-release => { root.tasku-mouse-release(); }
             scroll(delta) => { root.tasku-scroll(delta); }
             resize-start => { }
             resize-move(delta) => { }
@@ -632,7 +653,7 @@ export component MainWindow inherits Window {
                 play    => { root.runner-play(); }
                 stop    => { root.runner-stop(); }
                 restart => { root.runner-restart(); }
-                key-input(text, ctrl, meta) => { root.runner-key-input(text, ctrl, meta); }
+                key-input(text, ctrl, meta, alt, shift) => { root.runner-key-input(text, ctrl, meta, alt, shift); }
                 scroll(delta) => { root.runner-scroll(delta); }
                 mouse-pressed(x, y) => { root.runner-mouse-pressed(x, y); }
                 mouse-moved(x, y)   => { root.runner-mouse-moved(x, y); }
@@ -661,7 +682,7 @@ export component MainWindow inherits Window {
                         x: 0; y: 0;
                         width: parent.width; height: parent.height;
                         key-pressed(e) => {
-                            root.bottom-right-plugin-key-input(e.text, e.modifiers.control, e.modifiers.meta);
+                            root.bottom-right-plugin-key-input(e.text, e.modifiers.control, e.modifiers.meta, e.modifiers.alt, e.modifiers.shift);
                             accept
                         }
                     }
@@ -808,8 +829,44 @@ export component MainWindow inherits Window {
         }
     }
 
+    // ── Browser panel resize handle ──────────────────────────────────────────
+    if root.show-browser-panel && root.browser-panel-width > 0: TouchArea {
+        x: root.width
+           - root.effective-right-w * 1px
+           - (root.show-ai-panel && root.top-right-panel-width > 0 ? root.top-right-panel-width * 1px : 0px)
+           - (root.browser-is-resizing ? root.browser-press-width : root.browser-panel-width) * 1px
+           - 4px;
+        y: root.effective-top-bar-h;
+        width: 8px;
+        height: root.height - root.effective-top-bar-h - root.effective-bottom-bar-h;
+        mouse-cursor: MouseCursor.ew-resize;
+
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.browser-press-abs-x = self.absolute-position.x / 1px + self.mouse-x / 1px;
+                root.browser-press-width = root.browser-panel-width;
+                root.browser-is-resizing = true;
+            } else if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
+                root.browser-is-resizing = false;
+                root.browser-panel-width-changed(root.browser-panel-width);
+            }
+        }
+
+        moved => {
+            if (root.browser-is-resizing) {
+                root.browser-panel-width = clamp(
+                    root.browser-press-width
+                        - (self.absolute-position.x / 1px + self.mouse-x / 1px
+                           - root.browser-press-abs-x),
+                    200,
+                    root.width / 1px - 400
+                );
+            }
+        }
+    }
+
     // ── Top-right panel resize handle ────────────────────────────────────────
-    if root.top-right-panel-width > 0: TouchArea {
+    if root.show-ai-panel && root.top-right-panel-width > 0: TouchArea {
         x: root.width
            - root.effective-right-w * 1px
            - (root.top-right-is-resizing ? root.top-right-press-width : root.top-right-panel-width) * 1px

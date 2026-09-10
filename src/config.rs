@@ -173,6 +173,8 @@ pub struct Config {
     pub top_right_panel_width: f32,
     /// Width of the bottom-right panel (for plugins with position = "bottom-right"). Default: 600.0
     pub bottom_right_panel_width: f32,
+    /// Width of the browser panel (for plugins with position = "browser"). Default: 600.0
+    pub browser_panel_width: f32,
     /// Keyboard shortcuts.
     pub keybindings: Keybindings,
 }
@@ -183,7 +185,7 @@ impl Default for Config {
             font_size: 18.0,
             font_family: String::new(),
             shell: None,
-            sidebar_width: 300.0,
+            sidebar_width: 380.0,
             theme: "gray".into(),
             editor: String::new(),
             theme_starship: false,
@@ -197,6 +199,7 @@ impl Default for Config {
             show_bottom_bar: false,
             top_right_panel_width: 600.0,
             bottom_right_panel_width: 600.0,
+            browser_panel_width: 600.0,
             keybindings: Keybindings::default(),
         }
     }

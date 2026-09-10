@@ -1,3 +1,4 @@
+mod browser;
 mod config;
 mod keys;
 mod pane_tree;
@@ -24,10 +25,33 @@ use tasku::detect as detect_tasku;
 use terminal::TerminalRegistry;
 use slint::{Image, Model, ModelRc, Timer, TimerMode, VecModel};
 
+/// Encode raw RGBA pixel data as a base64-encoded PNG string.
+#[cfg(target_os = "macos")]
+fn encode_png_base64(width: u32, height: u32, rgba: &[u8]) -> Option<String> {
+    let mut buf = Vec::new();
+    {
+        let mut enc = png::Encoder::new(std::io::Cursor::new(&mut buf), width, height);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut w = enc.write_header().ok()?;
+        w.write_image_data(rgba).ok()?;
+    }
+    Some(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &buf))
+}
+
 // Special NodeIds for sidebar terminals — must not collide with pane IDs.
 // Pane IDs are allocated sequentially from the PaneTree counter; u32::MAX
 // is a safe sentinel. External plugin IDs count down from u32::MAX - 1.
 const SIDEBAR_TASKU_ID: NodeId = u32::MAX;
+
+/// Path to the file where `tasku list` writes the currently selected task ID
+/// when running in Mado mode (MADO=1). Mado button handlers read this to
+/// inject the task ID into commands like `tasku edit <id>`.
+const TASKU_SEL_FILE: &str = "/tmp/tasku_mado_sel";
+
+/// Path to the file where Mado writes the Tasku PTY column count so that
+/// tasku can read the exact width without relying on unreliable ioctl methods.
+const TASKU_COLS_FILE: &str = "/tmp/tasku_mado_cols";
 
 /// NodeId for LEFT external plugin at index `i`.
 fn plugin_node_id(i: usize) -> NodeId { u32::MAX - 1 - i as u32 }
@@ -69,10 +93,15 @@ const TASKU_PANEL_FIXED_H: f32 = 162.0;
 const PLUGIN_PANEL_FIXED_H: f32 = 16.0;
 
 // Horizontal (top-bar) Tasku layout constants.
-// Button column: 8px pad-L + 368px (3×120+2×4) + 6px spacing + 8px pad-R = 390px
+// Button column: 8px pad-L + 248px (3×80+2×4) + 6px spacing + 8px pad-R = 270px
 // Terminal height: panel_h minus 8px top pad + 8px bot pad = panel_h - 16px
-const TASKU_HORIZ_BTN_W: f32 = 390.0;
+const TASKU_HORIZ_BTN_W: f32 = 270.0;
 const TASKU_HORIZ_PAD_H: f32 = 16.0;
+
+// Sidebar Tasku: spawn the PTY wider than the visual area so tasku allocates
+// more characters per column. image-fit:fill scales the buffer back down.
+// 1.5× = 50% more cols; text renders at ~67% width.
+const TASKU_SIDEBAR_COL_BOOST: f32 = 1.5;
 const TASKU_MAX_COLS: usize  = 500;
 
 // Runner (bottom bar) PTY node ID and layout constants.
@@ -91,7 +120,6 @@ fn runner_size(overlay_w: f32) -> (f32, f32) {
 /// PTY size for Tasku in the top bar overlay (horizontal layout).
 /// `overlay_w` = full window width; `overlay_h` = window height minus the 52px header.
 fn tasku_top_bar_size(overlay_w: f32, overlay_h: f32) -> (f32, f32) {
-    // Round to integer pixels so image-fit:fill is always a 1:1 mapping.
     let term_w = (overlay_w - TASKU_HORIZ_BTN_W).max(50.0).round();
     let term_h = (overlay_h - TASKU_HORIZ_PAD_H).max(50.0).round();
     (term_w, term_h)
@@ -105,6 +133,15 @@ fn tasku_terminal_h(panel_h: f32) -> f32 {
 /// Terminal rect height inside an external plugin panel.
 fn plugin_terminal_h(panel_h: f32) -> f32 {
     (panel_h - PLUGIN_PANEL_FIXED_H).max(50.0)
+}
+
+/// Read the task ID written by `tasku list` in Mado mode.
+/// Returns an empty string if the file is missing, empty, or non-numeric.
+fn read_tasku_sel() -> String {
+    std::fs::read_to_string(TASKU_SEL_FILE)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 slint::include_modules!();
@@ -594,12 +631,27 @@ fn main() {
                 let _ = std::fs::create_dir_all(parent);
             }
             let defaults = concat!(
-                "# Mado project paths\n",
-                "# Map a Tasku project code to its root directory.\n",
+                "# Mado project config\n",
                 "#\n",
-                "# [paths]\n",
-                "# MYAPP = \"/Users/you/Sites/myapp\"\n",
-                "# WORK  = \"/Users/you/work/project\"\n",
+                "# Set a default project to activate on launch (optional):\n",
+                "# default = \"MDO\"\n",
+                "#\n",
+                "# Each section maps a Tasku project code to its settings.\n",
+                "# All fields except [CODE] are optional.\n",
+                "#\n",
+                "# [MDO]\n",
+                "# path    = \"/Users/you/Sites/mado\"   # root directory for new panes\n",
+                "# icon    = \"terminal\"                 # workspace tile icon (see presets below)\n",
+                "# task    = \"cargo run\"                # command for the bottom-bar runner\n",
+                "# project = \"Mado\"                     # override: match a Tasku project by name\n",
+                "#\n",
+                "# Icon presets:\n",
+                "#   terminal  \u{f489}    web      \u{f484}    plugin   \u{f1e6}\n",
+                "#   api       \u{eb11}    mobile   \u{f10b}    design   \u{f53f}\n",
+                "#   data      \u{f1c0}    docs     \u{f02d}    tool     \u{f0ad}\n",
+                "#   cloud     \u{f0c2}\n",
+                "#\n",
+                "# You can also paste any Nerd Font glyph directly as the icon value.\n",
             );
             let _ = std::fs::write(&projects_path, defaults);
         }
@@ -761,6 +813,9 @@ fn main() {
     let bottom_right_plugin: Option<config::PluginConfig> = all_plugins.iter()
         .find(|p| p.position == "bottom-right")
         .cloned();
+    let browser_plugin: Option<config::PluginConfig> = all_plugins.iter()
+        .find(|p| p.position == "browser")
+        .cloned();
 
     let sidebar = Rc::new(RefCell::new(SidebarState::new(
         config.sidebar_width,
@@ -785,8 +840,6 @@ fn main() {
     ui.set_right_sidebar_width(config.right_sidebar_width);
     ui.set_top_bar_height(config.top_bar_height);
 
-    let tasku_fields = Rc::new(workspace::load_tasku_fields());
-
     // ── Task runner ──────────────────────────────────────────────────────────
     let runner_tasks: Rc<std::collections::HashMap<String, String>> =
         Rc::new(workspace::load_runner_tasks());
@@ -807,6 +860,12 @@ fn main() {
         }
     };
 
+    // Remove workspace files for projects no longer in Tasku.
+    {
+        let valid_codes: Vec<String> = fetched.iter().map(|fp| fp.code.clone()).collect();
+        workspace::prune_stale_workspaces(&valid_codes);
+    }
+
     let code_to_name: Rc<HashMap<String, String>> = Rc::new(
         fetched.iter().map(|fp| (fp.code.clone(), fp.name.clone())).collect()
     );
@@ -814,16 +873,29 @@ fn main() {
     // Project root paths from ~/.config/mado/projects.toml
     let project_paths: Rc<HashMap<String, String>> = Rc::new(workspace::load_project_paths());
 
-    // Workspace tiles (code + colour only)
-    {
-        let ws_projects: Vec<WorkspaceProject> = fetched.iter().map(|fp| WorkspaceProject {
-            code:       fp.code.clone().into(),
-            color:      fp.color,
-            text_color: fp.text_color,
+    // Optional default project to activate on launch (projects.toml `default` key)
+    let default_project: Option<String> = workspace::load_default_project();
+
+    // Per-project icons from projects.toml `icon` field
+    let project_icons: HashMap<String, String> = workspace::load_project_icons();
+
+    // Workspace tiles (code + colour + icon)
+    let ws_model: Rc<VecModel<WorkspaceProject>> = {
+        let ws_projects: Vec<WorkspaceProject> = fetched.iter().map(|fp| {
+            let icon = project_icons.get(&fp.code)
+                .or_else(|| project_icons.get(&fp.name))
+                .cloned()
+                .unwrap_or_default();
+            WorkspaceProject {
+                code:       fp.code.clone().into(),
+                color:      fp.color,
+                text_color: fp.text_color,
+                icon:       icon.into(),
+            }
         }).collect();
-        let ws_model = Rc::new(VecModel::<WorkspaceProject>::from(ws_projects));
-        ui.set_ws_projects(ModelRc::new(ws_model));
-    }
+        Rc::new(VecModel::<WorkspaceProject>::from(ws_projects))
+    };
+    ui.set_ws_projects(ModelRc::new(Rc::clone(&ws_model)));
 
     // Priority list — apply saved order, append unknown projects at the end
     let prio_model: Rc<VecModel<PriorityProject>> = {
@@ -953,11 +1025,13 @@ fn main() {
     ui.set_top_plugin_images(ModelRc::new(Rc::clone(&top_plugin_images_model)));
     ui.set_top_plugin_pixel(ModelRc::new(Rc::clone(&top_plugin_pixel_model)));
 
-    // ── Top-right / bottom-right panel plugin UI setup ───────────────────────
+    // ── Top-right / bottom-right / browser panel plugin UI setup ────────────
     let top_right_panel_w = if top_right_plugin.is_some() { config.top_right_panel_width } else { 0.0 };
     let bottom_right_panel_w = if bottom_right_plugin.is_some() { config.bottom_right_panel_width } else { 0.0 };
+    let browser_panel_w = if browser_plugin.is_some() { config.browser_panel_width } else { 0.0 };
     ui.set_top_right_panel_width(top_right_panel_w);
     ui.set_bottom_right_panel_width(bottom_right_panel_w);
+    ui.set_browser_panel_width(browser_panel_w);
     if let Some(ref p) = top_right_plugin {
         ui.set_top_right_plugin_icon(p.icon.as_str().into());
         ui.set_top_right_plugin_title(p.id.to_uppercase().as_str().into());
@@ -973,6 +1047,14 @@ fn main() {
     // index → PixelPlugin for right sidebar pixel plugins
     let right_pixel_plugins: Rc<RefCell<std::collections::HashMap<usize, PixelPlugin>>> =
         Rc::new(RefCell::new(std::collections::HashMap::new()));
+    // PixelPlugin for the top-right panel when kind = "pixel"
+    let top_right_pixel: Rc<RefCell<Option<PixelPlugin>>> = Rc::new(RefCell::new(None));
+    // Pending clipboard paste result for top-right pixel plugin
+    let top_right_paste_result: Rc<RefCell<Option<Arc<std::sync::Mutex<Option<Vec<u8>>>>>>> =
+        Rc::new(RefCell::new(None));
+    // Native browser panel (WKWebView embedded in NSWindow).
+    let native_browser: Rc<RefCell<Option<browser::NativeBrowser>>> =
+        Rc::new(RefCell::new(None));
 
     let pane_model = Rc::new(VecModel::<FlatPane>::from(vec![]));
     let div_model  = Rc::new(VecModel::<FlatDivider>::from(vec![]));
@@ -1004,6 +1086,9 @@ fn main() {
     // Initial terminal is spawned lazily inside on_window_resized so we have
     // real PTY dimensions and can prepend the welcome banner before the shell prompt.
     let initial_spawned: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
+    // True until the user types anything in the root pane. While true, window
+    // resize events re-center the welcome banner to match the new column count.
+    let banner_active: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(true));
     *focused_id.borrow_mut() = Some(tree.borrow().root);
 
     // Shared pending paste: key handler runs pbpaste on a background thread,
@@ -1030,6 +1115,8 @@ fn main() {
         let right_pixel_plugins = Rc::clone(&right_pixel_plugins);
         let float_plugin = Rc::clone(&float_plugin);
         let pending_paste = Rc::clone(&pending_paste);
+        let top_right_pixel = Rc::clone(&top_right_pixel);
+        let top_right_paste_result = Rc::clone(&top_right_paste_result);
         let ui_weak = ui.as_weak();
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, std::time::Duration::from_millis(16), move || {
@@ -1054,6 +1141,19 @@ fn main() {
                         registry.borrow_mut().write_key(paste_id, &data);
                     }
                     *pending_paste.borrow_mut() = None;
+                }
+            }
+
+            // Play a sound for any pane that rang the bell while not focused.
+            {
+                let focused = *focused_id.borrow();
+                let bells = registry.borrow_mut().drain_bells();
+                for bell_id in bells {
+                    if focused != Some(bell_id) {
+                        let _ = std::process::Command::new("afplay")
+                            .arg("/System/Library/Sounds/Glass.aiff")
+                            .spawn();
+                    }
                 }
             }
 
@@ -1141,6 +1241,36 @@ fn main() {
                 }
             }
 
+            // Drain dirty top-right pixel plugin
+            {
+                let mut trp = top_right_pixel.borrow_mut();
+                if let Some(pp) = trp.as_mut() {
+                    if pp.dirty.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        if let Ok(guard) = pp.image.lock() {
+                            if let Some(ref buf) = *guard {
+                                top_right_buf = Some(buf.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            // Drain top-right pixel plugin paste
+            {
+                let paste = top_right_paste_result.borrow();
+                if let Some(arc) = paste.as_ref() {
+                    let mut locked = arc.lock().unwrap();
+                    if let Some(bytes) = locked.take() {
+                        drop(locked);
+                        drop(paste);
+                        if let Ok(text) = String::from_utf8(bytes) {
+                            if let Some(pp) = top_right_pixel.borrow_mut().as_mut() {
+                                pp.send_paste(&text);
+                            }
+                        }
+                        *top_right_paste_result.borrow_mut() = None;
+                    }
+                }
+            }
             if pane_dirty_ids.is_empty() && tasku_buf.is_none() && runner_buf.is_none()
                 && plugin_bufs.is_empty() && right_plugin_bufs.is_empty()
                 && top_right_buf.is_none() && bottom_right_buf.is_none()
@@ -1404,6 +1534,7 @@ fn main() {
         let selection = Rc::clone(&selection);
         let kbd_anchor = Rc::clone(&kbd_anchor);
         let pending_paste = Rc::clone(&pending_paste);
+        let banner_active = Rc::clone(&banner_active);
         let ui_weak = ui.as_weak();
         move |id, text, ctrl, meta, alt, shift| {
             if *focused_id.borrow() != Some(id as NodeId) { return; }
@@ -1531,6 +1662,7 @@ fn main() {
                 }
                 keys::KeyAction::ModifierOnly => {}
                 keys::KeyAction::Forward(bytes) => {
+                    banner_active.set(false);
                     registry.borrow_mut().write_key(id as NodeId, &bytes);
                 }
             }
@@ -1651,10 +1783,15 @@ fn main() {
         let images = Rc::clone(&images);
         let focused_id = Rc::clone(&focused_id);
         let initial_spawned = Rc::clone(&initial_spawned);
+        let banner_active = Rc::clone(&banner_active);
         let loaded_theme = Rc::clone(&loaded_theme);
         let top_right_plugin_resize = top_right_plugin.clone();
         let bottom_right_plugin_resize = bottom_right_plugin.clone();
+        let top_right_pixel_resize = Rc::clone(&top_right_pixel);
+        let browser_plugin_resize = browser_plugin.clone();
+        let native_browser_resize = Rc::clone(&native_browser);
         let ui_weak = ui.as_weak();
+        let default_project = default_project.clone();
         let last_size: Rc<RefCell<(f32, f32)>> = Rc::new(RefCell::new((0.0, 0.0)));
         move |w, h| {
             let (lw, lh) = *last_size.borrow();
@@ -1680,19 +1817,38 @@ fn main() {
 
                 if !initial_spawned.get() && w > 50.0 && h > 50.0 {
                     initial_spawned.set(true);
-                    let root_id = tree.borrow().root;
-                    if let Some(p) = panes.iter().find(|p| p.id == root_id) {
-                        let pane_w = (p.width  - PANE_H_INSET).max(10.0);
-                        let pane_h = (p.height - PANE_TOP_INSET).max(10.0);
-                        let cols   = reg.logical_to_cols(pane_w);
-                        let banner = welcome_banner(cols, &loaded_theme);
-                        reg.spawn_with_banner(root_id, pane_w, pane_h, None, &banner);
+                    if let Some(ref code) = default_project {
+                        // Activate the default project instead of showing the welcome banner.
+                        // Deferred via a 0ms timer so the registry borrow above is released first.
+                        let code = code.clone();
+                        let ui_weak2 = ui_weak.clone();
+                        Timer::single_shot(std::time::Duration::from_millis(0), move || {
+                            if let Some(ui) = ui_weak2.upgrade() {
+                                ui.invoke_workspace_selected(code.into());
+                            }
+                        });
+                    } else {
+                        let root_id = tree.borrow().root;
+                        if let Some(p) = panes.iter().find(|p| p.id == root_id) {
+                            let pane_w = (p.width  - PANE_H_INSET).max(10.0);
+                            let pane_h = (p.height - PANE_TOP_INSET).max(10.0);
+                            let cols   = reg.logical_to_cols(pane_w);
+                            let banner = welcome_banner(cols, &loaded_theme);
+                            reg.spawn_with_banner(root_id, pane_w, pane_h, None, &banner);
+                        }
                     }
                     if tasku_in_top {
                         let (term_w, term_h) = tasku_top_bar_size(overlay_w, overlay_h);
                         let term_w = term_w.min(reg.max_logical_w(TASKU_MAX_COLS));
                         reg.spawn(SIDEBAR_TASKU_ID, term_w, term_h, None);
-                        reg.write_key(SIDEBAR_TASKU_ID, b"tasku list\n");
+                        let tasku_cols = reg.cols(SIDEBAR_TASKU_ID);
+                        eprintln!("mado: tasku PTY spawned — overlay_w={overlay_w} term_w={term_w} cols={tasku_cols}");
+                        let _ = std::fs::write(TASKU_COLS_FILE, tasku_cols.to_string());
+                        reg.write_key(SIDEBAR_TASKU_ID,
+                            format!("export MADO=1; export TASKU_SEL_FILE={TASKU_SEL_FILE}\n").as_bytes());
+                        // Do NOT run tasku list here — the window may not yet be at its
+                        // final size (e.g. fullscreen startup). tasku list is deferred to
+                        // the first time the user opens the overlay (on_tasku_toggled).
                     }
                     // Spawn top-right panel plugin
                     if let Some(ref plugin) = top_right_plugin_resize {
@@ -1700,10 +1856,23 @@ fn main() {
                         let program = parts.next().unwrap_or("").to_string();
                         let args: Vec<String> = parts.map(|s| s.to_string()).collect();
                         let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-                        let plugin_id = plugin.id.clone();
-                        reg.spawn_cmd(top_right_plugin_node_id(0), (top_right_panel_w - PANE_H_INSET).max(10.0), (h - 52.0).max(50.0),
-                                      &program, &args_ref, None,
-                                      &[("MADO_PLUGIN_ID", &plugin_id)]);
+                        if plugin.kind == "pixel" {
+                            let phys_w = ((top_right_panel_w - PANE_H_INSET as f32).max(10.0) * reg.scale) as u32;
+                            let phys_h = (h.max(50.0) * reg.scale) as u32;
+                            let fs_str = reg.font_size.to_string();
+                            let sc_str = reg.scale.to_string();
+                            if let Some(pp) = PixelPlugin::spawn(&program, &args_ref, phys_w, phys_h,
+                                &[("MADO_FONT_SIZE", &fs_str), ("MADO_SCALE", &sc_str)]) {
+                                *top_right_pixel_resize.borrow_mut() = Some(pp);
+                            } else {
+                                eprintln!("mado: failed to spawn top-right pixel plugin '{}'", plugin.id);
+                            }
+                        } else {
+                            let plugin_id = plugin.id.clone();
+                            reg.spawn_cmd(top_right_plugin_node_id(0), (top_right_panel_w - PANE_H_INSET as f32).max(10.0), h.max(50.0),
+                                          &program, &args_ref, None,
+                                          &[("MADO_PLUGIN_ID", &plugin_id)]);
+                        }
                     }
                     // Spawn bottom-right panel plugin
                     if let Some(ref plugin) = bottom_right_plugin_resize {
@@ -1716,22 +1885,81 @@ fn main() {
                                       &program, &args_ref, None,
                                       &[("MADO_PLUGIN_ID", &plugin_id)]);
                     }
+                    // Create native browser WKWebView (hidden; shown on first toggle)
+                    if browser_plugin_resize.is_some() {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            let initial_url = browser_plugin_resize.as_ref()
+                                .map(|p| p.command.as_str())
+                                .filter(|s| s.starts_with("http"))
+                                .unwrap_or(browser::DEFAULT_BROWSER_URL)
+                                .to_string();
+                            #[cfg(target_os = "macos")]
+                            ui.window().with_winit_window(|win| {
+                                use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                                if let Ok(handle) = win.window_handle() {
+                                    if let RawWindowHandle::AppKit(appkit_h) = handle.as_raw() {
+                                        let ns_view = appkit_h.ns_view.as_ptr()
+                                            as *mut objc2::runtime::AnyObject;
+                                        // Start with a placeholder frame; real frame is set
+                                        // the first time the panel becomes visible.
+                                        if let Some(nb) = browser::NativeBrowser::new(
+                                            ns_view, 0.0, 0.0,
+                                            browser_panel_w as f64, h as f64,
+                                            &initial_url,
+                                        ) {
+                                            *native_browser_resize.borrow_mut() = Some(nb);
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    }
                 } else {
                     for p in &panes {
                         reg.resize(p.id, (p.width - PANE_H_INSET).max(10.0), (p.height - PANE_TOP_INSET).max(10.0));
+                    }
+                    // Re-center the welcome banner when the window is resized before
+                    // the user has typed anything (e.g. going fullscreen on launch).
+                    if banner_active.get() {
+                        let root_id = tree.borrow().root;
+                        if let Some(p) = panes.iter().find(|p| p.id == root_id) {
+                            let pane_w = (p.width - PANE_H_INSET).max(10.0);
+                            let cols   = reg.logical_to_cols(pane_w);
+                            let banner = welcome_banner(cols, &loaded_theme);
+                            reg.reinject_banner(root_id, &banner);
+                        }
                     }
                     if tasku_in_top {
                         let (term_w, term_h) = tasku_top_bar_size(overlay_w, overlay_h);
                         let term_w = term_w.min(reg.max_logical_w(TASKU_MAX_COLS));
                         reg.resize(SIDEBAR_TASKU_ID, term_w, term_h);
+                        let tasku_cols = reg.cols(SIDEBAR_TASKU_ID);
+                        eprintln!("mado: tasku PTY resized — overlay_w={overlay_w} term_w={term_w} cols={tasku_cols}");
+                        let _ = std::fs::write(TASKU_COLS_FILE, tasku_cols.to_string());
                     }
                     // Resize top-right panel plugin
-                    if top_right_plugin_resize.is_some() {
-                        reg.resize(top_right_plugin_node_id(0), (top_right_panel_w - PANE_H_INSET).max(10.0), (h - 52.0).max(50.0));
+                    if let Some(ref plugin) = top_right_plugin_resize {
+                        if plugin.kind == "pixel" {
+                            let phys_w = ((top_right_panel_w - PANE_H_INSET as f32).max(10.0) * reg.scale) as u32;
+                            let phys_h = (h.max(50.0) * reg.scale) as u32;
+                            if let Some(pp) = top_right_pixel_resize.borrow_mut().as_mut() {
+                                pp.send_resize(phys_w, phys_h);
+                            }
+                        } else {
+                            reg.resize(top_right_plugin_node_id(0), (top_right_panel_w - PANE_H_INSET as f32).max(10.0), h.max(50.0));
+                        }
                     }
                     // Resize bottom-right panel plugin
                     if bottom_right_plugin_resize.is_some() {
                         reg.resize(bottom_right_plugin_node_id(0), bottom_right_panel_w, (h - 52.0).max(50.0));
+                    }
+                    // Update native browser WKWebView frame on window resize
+                    if let Some(nb) = native_browser_resize.borrow().as_ref() {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            let x = ui.get_browser_panel_logical_x() as f64;
+                            let y = ui.get_bottom_bar_logical_h() as f64;
+                            nb.update_frame(x, y, browser_panel_w as f64, h as f64);
+                        }
                     }
                 }
 
@@ -1857,10 +2085,11 @@ fn main() {
                 (s.tasku_panel_h, s.tasku_position.clone())
             };
             let sidebar_w = (new_width - 24.0).max(50.0);
+            let tasku_sidebar_w = (new_width - 17.0).max(50.0) * TASKU_SIDEBAR_COL_BOOST;
             let mut reg = registry.borrow_mut();
             // Only resize tasku here if it lives in the left sidebar
             if tasku_pos == "left" || tasku_pos.is_empty() {
-                reg.resize(SIDEBAR_TASKU_ID, sidebar_w, tasku_terminal_h(tasku_h));
+                reg.resize(SIDEBAR_TASKU_ID, tasku_sidebar_w, tasku_terminal_h(tasku_h));
             }
             // Resize any open left external plugins
             let mut pp = pixel_plugins.borrow_mut();
@@ -1884,23 +2113,87 @@ fn main() {
     ui.on_tasku_toggled({
         let registry = Rc::clone(&registry);
         let sidebar = Rc::clone(&sidebar);
+        let active_project = Rc::clone(&active_project);
+        let code_to_name = Rc::clone(&code_to_name);
         move |expanded| {
             let tasku_pos = sidebar.borrow().tasku_position.clone();
             if tasku_pos == "top" {
-                // PTY is always running (spawned in on_window_resized);
-                // the overlay is shown/hidden purely in Slint — nothing to do here.
+                // PTY is always running (spawned in on_window_resized).
+                // Run tasku list when the overlay opens so it always executes at
+                // the correct terminal width (avoids the fullscreen-startup race
+                // where the PTY is created while the window is still animating).
+                if expanded {
+                    let cols = registry.borrow().cols(SIDEBAR_TASKU_ID);
+                    eprintln!("mado: tasku overlay opened, PTY cols={cols}");
+                    let _ = std::fs::write(TASKU_COLS_FILE, cols.to_string());
+                    let pf = active_project.borrow().as_ref()
+                        .and_then(|code| code_to_name.get(code))
+                        .map(|name| format!(" --project {name}"))
+                        .unwrap_or_default();
+                    registry.borrow_mut().write_key(
+                        SIDEBAR_TASKU_ID,
+                        format!("\x03tasku list{pf}\n").as_bytes(),
+                    );
+                }
                 return;
             }
             let mut reg = registry.borrow_mut();
             if expanded {
                 let (tasku_w, panel_h) = {
                     let s = sidebar.borrow();
-                    ((s.width - 24.0).max(50.0), s.tasku_panel_h)
+                    ((s.width - 17.0).max(50.0) * TASKU_SIDEBAR_COL_BOOST, s.tasku_panel_h)
                 };
                 reg.spawn(SIDEBAR_TASKU_ID, tasku_w, tasku_terminal_h(panel_h), None);
+                let cols = reg.cols(SIDEBAR_TASKU_ID);
+                let _ = std::fs::write(TASKU_COLS_FILE, cols.to_string());
+                reg.write_key(SIDEBAR_TASKU_ID,
+                    format!("export MADO=1; export TASKU_SEL_FILE={TASKU_SEL_FILE}\n").as_bytes());
                 reg.write_key(SIDEBAR_TASKU_ID, b"tasku list\n");
             } else {
                 reg.remove(SIDEBAR_TASKU_ID);
+            }
+        }
+    });
+
+    // ── Tasku mouse selection ────────────────────────────────────────────────
+    ui.on_tasku_mouse_press({
+        let registry = Rc::clone(&registry);
+        let selection = Rc::clone(&selection);
+        move |x, y| {
+            let cell = runner_px_to_cell(x, y, &registry.borrow());
+            *selection.borrow_mut() = Some(Selection {
+                pane_id: SIDEBAR_TASKU_ID, anchor: cell, head: cell,
+            });
+            registry.borrow().mark_dirty(SIDEBAR_TASKU_ID);
+        }
+    });
+
+    ui.on_tasku_mouse_move({
+        let registry = Rc::clone(&registry);
+        let selection = Rc::clone(&selection);
+        move |x, y| {
+            let mut sel = selection.borrow_mut();
+            if let Some(ref mut s) = *sel {
+                if s.pane_id == SIDEBAR_TASKU_ID {
+                    s.head = runner_px_to_cell(x, y, &registry.borrow());
+                    drop(sel);
+                    registry.borrow().mark_dirty(SIDEBAR_TASKU_ID);
+                }
+            }
+        }
+    });
+
+    ui.on_tasku_mouse_release({
+        let registry = Rc::clone(&registry);
+        let selection = Rc::clone(&selection);
+        move || {
+            let mut sel = selection.borrow_mut();
+            if let Some(ref s) = *sel {
+                if s.pane_id == SIDEBAR_TASKU_ID && s.is_empty() {
+                    *sel = None;
+                    drop(sel);
+                    registry.borrow().mark_dirty(SIDEBAR_TASKU_ID);
+                }
             }
         }
     });
@@ -1910,7 +2203,6 @@ fn main() {
         let registry = Rc::clone(&registry);
         let active_project = Rc::clone(&active_project);
         let code_to_name = Rc::clone(&code_to_name);
-        let tasku_fields = Rc::clone(&tasku_fields);
         move |label| {
             // Resolve active project code → full name for --project flag.
             // Unfiltered commands (Edit, Delete, SQL) ignore the project flag.
@@ -1918,34 +2210,171 @@ fn main() {
                 .and_then(|code| code_to_name.get(code))
                 .map(|name| format!(" --project {name}"))
                 .unwrap_or_default();
-            let ff = format!(" --fields {}", tasku_fields.as_ref());
 
-            let cmd = match label.as_str() {
-                "List"    => format!("tasku list{pf}\n"),
-                "Stats"   => format!("tasku stats{pf}\n"),
-                "Today"   => format!("tasku list --due today{pf}{ff}\n"),
-                "Tmrw"    => format!("tasku list --due tomorrow{pf}{ff}\n"),
-                "Overdue" => format!("tasku list --overdue{pf}{ff}\n"),
-                "Todo"    => format!("tasku list --status todo{pf}{ff}\n"),
-                "Started" => format!("tasku list --status started{pf}{ff}\n"),
-                "Done"    => format!("tasku list --status done{pf}{ff}\n"),
-                // Unfiltered — these launch interactive prompts
-                "Add"    => "tasku add\n".to_string(),
-                "Edit"   => "tasku edit\n".to_string(),
-                "Delete" => "tasku delete\n".to_string(),
-                "SQL"    => "tasku sql\n".to_string(),
-                _ => return,
-            };
-            registry.borrow_mut().write_key(SIDEBAR_TASKU_ID, cmd.as_bytes());
+            // Commands that need the selected task ID: read from the selection
+            // file written by `tasku list` in Mado mode.
+            match label.as_str() {
+                "Edit" => {
+                    let id = read_tasku_sel();
+                    if id.is_empty() { return; }
+                    let cmd = format!("\x03tasku edit {id} -i; tasku list\n");
+                    registry.borrow_mut().write_key(SIDEBAR_TASKU_ID, cmd.as_bytes());
+                }
+                "Delete" => {
+                    let id = read_tasku_sel();
+                    if id.is_empty() { return; }
+                    let cmd = format!("\x03tasku delete {id} -f; tasku list\n");
+                    registry.borrow_mut().write_key(SIDEBAR_TASKU_ID, cmd.as_bytes());
+                }
+                "Add" => {
+                    registry.borrow_mut().write_key(
+                        SIDEBAR_TASKU_ID, b"\x03tasku add -i; tasku list\n");
+                }
+                _ => {
+                    // List/filter commands: interrupt the running interactive list,
+                    // run the new command, then restart the interactive list.
+                    let cmd = match label.as_str() {
+                        "List"    => format!("\x03tasku list{pf}\n"),
+                        "Stats"   => format!("\x03tasku stats{pf}\n"),
+                        "Today"   => format!("\x03tasku list --due today{pf}\n"),
+                        "Tmrw"    => format!("\x03tasku list --due tomorrow{pf}\n"),
+                        "Overdue" => format!("\x03tasku list --overdue{pf}\n"),
+                        "Todo"    => format!("\x03tasku list --status todo{pf}\n"),
+                        "Started" => format!("\x03tasku list --status started{pf}\n"),
+                        "Done"    => format!("\x03tasku list --status done{pf}\n"),
+                        "SQL"     => format!("\x03tasku sql\n"),
+                        _         => return,
+                    };
+                    registry.borrow_mut().write_key(SIDEBAR_TASKU_ID, cmd.as_bytes());
+                }
+            }
         }
     });
 
     // ── Tasku key input ──────────────────────────────────────────────────────
     ui.on_tasku_key_input({
-        let registry = Rc::clone(&registry);
-        move |text, _ctrl, _meta| {
-            let bytes = keys::key_text_to_bytes(&text);
-            registry.borrow_mut().write_key(SIDEBAR_TASKU_ID, &bytes);
+        let registry      = Rc::clone(&registry);
+        let selection     = Rc::clone(&selection);
+        let pending_paste = Rc::clone(&pending_paste);
+        move |text, ctrl, meta, _alt, shift| {
+            let t = text.as_str();
+            let has_sel = {
+                let sel = selection.borrow();
+                sel.as_ref().map_or(false, |s| !s.is_empty() && s.pane_id == SIDEBAR_TASKU_ID)
+            };
+
+            // Mirror the pane handler: clear selection on plain keystrokes but
+            // preserve it while a modifier chord is in progress (e.g. Cmd+C).
+            if keys::should_clear_selection(t, ctrl, meta, shift) {
+                let prev_id = selection.borrow().as_ref().map(|s| s.pane_id);
+                *selection.borrow_mut() = None;
+                if let Some(sid) = prev_id {
+                    registry.borrow().mark_dirty(sid);
+                }
+            }
+
+            match keys::classify_key(t, ctrl, meta, false, shift, has_sel) {
+                keys::KeyAction::CopySelection => {
+                    let norm = {
+                        let sel = selection.borrow();
+                        sel.as_ref().unwrap().normalized()
+                    };
+                    let copied = registry.borrow().get_selection_text(SIDEBAR_TASKU_ID, norm);
+                    if !copied.is_empty() {
+                        let _ = std::process::Command::new("/bin/sh")
+                            .args(["-c", &format!("printf '%s' {} | pbcopy",
+                                shell_escape(&copied))])
+                            .status();
+                    }
+                    let prev_id = selection.borrow().as_ref().map(|s| s.pane_id);
+                    *selection.borrow_mut() = None;
+                    if let Some(sid) = prev_id {
+                        registry.borrow().mark_dirty(sid);
+                    }
+                }
+                keys::KeyAction::Nothing => {}
+                keys::KeyAction::Paste => {
+                    let result: Arc<std::sync::Mutex<Option<Vec<u8>>>> =
+                        Arc::new(std::sync::Mutex::new(None));
+                    let result2 = Arc::clone(&result);
+                    std::thread::spawn(move || {
+                        if let Ok(out) = std::process::Command::new("pbpaste").output() {
+                            *result2.lock().unwrap() = Some(out.stdout);
+                        }
+                    });
+                    *pending_paste.borrow_mut() = Some((SIDEBAR_TASKU_ID, result));
+                }
+                keys::KeyAction::Forward(bytes) => {
+                    if !bytes.is_empty() {
+                        registry.borrow_mut().write_key(SIDEBAR_TASKU_ID, &bytes);
+                    }
+                }
+                _ => {
+                    // Zoom, arrow sequences, etc. are not applicable in the Tasku panel.
+                    let bytes = keys::key_text_to_bytes(&text);
+                    if !bytes.is_empty() {
+                        registry.borrow_mut().write_key(SIDEBAR_TASKU_ID, &bytes);
+                    }
+                }
+            }
+        }
+    });
+
+    // ── Workspace refresh ────────────────────────────────────────────────────
+    ui.on_workspace_refresh({
+        let sidebar     = Rc::clone(&sidebar);
+        let ws_model    = Rc::clone(&ws_model);
+        let prio_model  = Rc::clone(&prio_model);
+        move || {
+            let fetched: Vec<workspace::FetchedProject> = {
+                let s = sidebar.borrow();
+                match &s.tasku_path {
+                    Some(p) => workspace::fetch_projects(p),
+                    None    => return,
+                }
+            };
+
+            // Remove workspace files for projects no longer in Tasku.
+            {
+                let valid_codes: Vec<String> = fetched.iter().map(|fp| fp.code.clone()).collect();
+                workspace::prune_stale_workspaces(&valid_codes);
+            }
+
+            // Repopulate workspace tiles
+            let refreshed_icons = workspace::load_project_icons();
+            while ws_model.row_count() > 0 { ws_model.remove(ws_model.row_count() - 1); }
+            for fp in &fetched {
+                let icon = refreshed_icons.get(&fp.code)
+                    .or_else(|| refreshed_icons.get(&fp.name))
+                    .cloned()
+                    .unwrap_or_default();
+                ws_model.push(WorkspaceProject {
+                    code:       fp.code.clone().into(),
+                    color:      fp.color,
+                    text_color: fp.text_color,
+                    icon:       icon.into(),
+                });
+            }
+
+            // Repopulate priority list, preserving saved order
+            let saved_order = workspace::load_priority_order();
+            let mut remaining: Vec<&workspace::FetchedProject> = fetched.iter().collect();
+            let mut ordered:   Vec<&workspace::FetchedProject> = Vec::new();
+            for code in &saved_order {
+                if let Some(pos) = remaining.iter().position(|fp| &fp.code == code) {
+                    ordered.push(remaining.remove(pos));
+                }
+            }
+            ordered.extend(remaining);
+
+            while prio_model.row_count() > 0 { prio_model.remove(prio_model.row_count() - 1); }
+            for fp in ordered {
+                prio_model.push(PriorityProject {
+                    name:  fp.name.clone().into(),
+                    code:  fp.code.clone().into(),
+                    color: fp.color,
+                });
+            }
         }
     });
 
@@ -1961,8 +2390,8 @@ fn main() {
         let active_project = Rc::clone(&active_project);
         let code_to_name = Rc::clone(&code_to_name);
         let project_paths = Rc::clone(&project_paths);
-        let tasku_fields = Rc::clone(&tasku_fields);
         let runner_tasks = Rc::clone(&runner_tasks);
+        let top_right_pixel = Rc::clone(&top_right_pixel);
         let ui_weak = ui.as_weak();
         move |code| {
             let code = code.to_string();
@@ -2037,6 +2466,11 @@ fn main() {
                 *active_project.borrow_mut() = Some(code.clone());
                 ui.set_active_project(code.clone().into());
 
+                // 4c. Tell the Claude AI plugin to cd to the project root
+                if let Some(pp) = top_right_pixel.borrow_mut().as_mut() {
+                    pp.send_chdir(&project_root);
+                }
+
                 // 4b. Update runner command for the new workspace
                 let proj_name = code_to_name.get(&code).map(|s| s.as_str());
                 let cmd = runner_tasks.get(&code)
@@ -2048,8 +2482,7 @@ fn main() {
                 // 5. If the Tasku panel is open, refresh with project filter
                 if registry.borrow().sessions.contains_key(&SIDEBAR_TASKU_ID) {
                     let name = code_to_name.get(&code).cloned().unwrap_or_else(|| code.clone());
-                    let fields = tasku_fields.as_ref();
-                    let cmd = format!("tasku list --project {name} --fields {fields}\n");
+                    let cmd = format!("tasku list --project {name}\n");
                     registry.borrow_mut().write_key(SIDEBAR_TASKU_ID, cmd.as_bytes());
                 }
             }
@@ -2155,7 +2588,7 @@ fn main() {
     ui.on_runner_key_input({
         let registry  = Rc::clone(&registry);
         let selection = Rc::clone(&selection);
-        move |text, ctrl, meta| {
+        move |text, ctrl, meta, _alt, _shift| {
             let t = text.as_str();
             // Cmd+C or Ctrl+C with a selection → copy, don't send ^C
             if (meta && t == "c") || (ctrl && t == "c") {
@@ -2275,7 +2708,7 @@ fn main() {
             let (sidebar_w, tasku_pos) = {
                 let mut s = sidebar.borrow_mut();
                 s.tasku_panel_h = new_h;
-                ((s.width - 24.0).max(50.0), s.tasku_position.clone())
+                ((s.width - 17.0).max(50.0) * TASKU_SIDEBAR_COL_BOOST, s.tasku_position.clone())
             };
             // Only applies when tasku is in left sidebar
             if tasku_pos == "left" || tasku_pos.is_empty() {
@@ -2294,17 +2727,16 @@ fn main() {
         let sidebar = Rc::clone(&sidebar);
         let ui_weak = ui.as_weak();
         move |new_bar_h| {
-            let tasku_w = {
+            // The Tasku overlay covers the full window width, not just the pane
+            // area — use overlay_total_w (same source as the initial spawn).
+            let overlay_w = {
                 let mut s = sidebar.borrow_mut();
                 s.top_bar_h = new_bar_h;
-                let avail_w = ui_weak.upgrade()
-                    .map(|ui| ui.get_window_w())
-                    .unwrap_or(1200.0);
-                let total_sidebars = s.width
-                    + if has_right_plugins { s.right_width } else { 0.0 };
-                (avail_w - total_sidebars - 24.0).max(50.0)
+                ui_weak.upgrade()
+                    .map(|ui| ui.get_overlay_total_w())
+                    .unwrap_or(1200.0)
             };
-            let (term_w, term_h) = tasku_top_bar_size(tasku_w, new_bar_h);
+            let (term_w, term_h) = tasku_top_bar_size(overlay_w, new_bar_h);
             let reg = registry.borrow();
             let term_w = term_w.min(reg.max_logical_w(TASKU_MAX_COLS));
             drop(reg);
@@ -2369,7 +2801,7 @@ fn main() {
                 if kind == "pixel" {
                     let phys_w = (sidebar_w * scale) as u32;
                     let phys_h = (panel_h * scale) as u32;
-                    if let Some(plugin) = PixelPlugin::spawn(&program, &args_ref, phys_w, phys_h) {
+                    if let Some(plugin) = PixelPlugin::spawn(&program, &args_ref, phys_w, phys_h, &[]) {
                         pixel_plugins.borrow_mut().insert(idx, plugin);
                     } else {
                         eprintln!("mado: failed to spawn pixel plugin '{plugin_id}'");
@@ -2444,11 +2876,12 @@ fn main() {
     ui.on_plugin_key_input({
         let registry = Rc::clone(&registry);
         let pixel_plugins = Rc::clone(&pixel_plugins);
-        move |idx, text, ctrl, meta| {
+        move |idx, text, ctrl, meta, alt, shift| {
             let idx = idx as usize;
             if idx >= num_left_ext { return; }
             if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
-                plugin.send_key(text.as_str(), ctrl, meta);
+                if keys::is_modifier_only(text.as_str()) { return; }
+                plugin.send_key(text.as_str(), ctrl, meta, alt, shift);
             } else {
                 let zoom_mod = ctrl || meta;
                 let t = text.as_str();
@@ -2566,7 +2999,7 @@ fn main() {
                 if kind == "pixel" {
                     let phys_w = (sidebar_w * scale) as u32;
                     let phys_h = (panel_h * scale) as u32;
-                    if let Some(plugin) = PixelPlugin::spawn(&program, &args_ref, phys_w, phys_h) {
+                    if let Some(plugin) = PixelPlugin::spawn(&program, &args_ref, phys_w, phys_h, &[]) {
                         right_pixel_plugins.borrow_mut().insert(idx, plugin);
                     } else {
                         eprintln!("mado: failed to spawn pixel plugin '{plugin_id}'");
@@ -2639,11 +3072,12 @@ fn main() {
     ui.on_right_plugin_key_input({
         let registry = Rc::clone(&registry);
         let right_pixel_plugins = Rc::clone(&right_pixel_plugins);
-        move |idx, text, ctrl, meta| {
+        move |idx, text, ctrl, meta, alt, shift| {
             let idx = idx as usize;
             if idx >= num_right_ext { return; }
             if let Some(plugin) = right_pixel_plugins.borrow_mut().get_mut(&idx) {
-                plugin.send_key(text.as_str(), ctrl, meta);
+                if keys::is_modifier_only(text.as_str()) { return; }
+                plugin.send_key(text.as_str(), ctrl, meta, alt, shift);
             } else {
                 let zoom_mod = ctrl || meta;
                 let t = text.as_str();
@@ -2772,7 +3206,7 @@ fn main() {
     // ── Top bar plugin callbacks ──────────────────────────────────────────────
     ui.on_top_plugin_key_input({
         let registry = Rc::clone(&registry);
-        move |idx, text, ctrl, meta| {
+        move |idx, text, ctrl, meta, _alt, _shift| {
             let idx = idx as usize;
             if idx >= num_top_ext { return; }
             let zoom_mod = ctrl || meta;
@@ -2816,15 +3250,179 @@ fn main() {
 
     // ── Top-right panel plugin callbacks ──────────────────────────────────────
     ui.on_top_right_plugin_key_input({
-        let registry = Rc::clone(&registry);
+        let registry      = Rc::clone(&registry);
+        let selection     = Rc::clone(&selection);
+        let pending_paste = Rc::clone(&pending_paste);
         let has_top_right = top_right_plugin.is_some();
-        move |text, ctrl, meta| {
+        let top_right_pixel = Rc::clone(&top_right_pixel);
+        let top_right_paste_result = Rc::clone(&top_right_paste_result);
+        move |text, ctrl, meta, alt, shift| {
+            // Route to pixel plugin if present
+            if top_right_pixel.borrow().is_some() {
+                let t = text.as_str();
+                if keys::is_modifier_only(t) { return; }
+                let is_paste = (meta || ctrl) && t == "v";
+                if is_paste {
+                    // Try clipboard image first (synchronous — fast)
+                    let mut sent_image = false;
+                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                        if let Ok(img) = cb.get_image() {
+                            if let Some(b64) = encode_png_base64(
+                                img.width as u32, img.height as u32, &img.bytes)
+                            {
+                                if let Some(pp) = top_right_pixel.borrow_mut().as_mut() {
+                                    pp.send_paste_image(&b64, "image/png");
+                                    sent_image = true;
+                                }
+                            }
+                        }
+                    }
+                    if !sent_image {
+                        // Fall back to text paste (existing pbpaste approach)
+                        let result: Arc<std::sync::Mutex<Option<Vec<u8>>>> =
+                            Arc::new(std::sync::Mutex::new(None));
+                        let result2 = Arc::clone(&result);
+                        std::thread::spawn(move || {
+                            if let Ok(out) = std::process::Command::new("pbpaste").output() {
+                                *result2.lock().unwrap() = Some(out.stdout);
+                            }
+                        });
+                        *top_right_paste_result.borrow_mut() = Some(result);
+                    }
+                } else {
+                    // Cmd+C, Cmd+X and all other keys: pass through to plugin
+                    if let Some(pp) = top_right_pixel.borrow_mut().as_mut() {
+                        pp.send_key(text.as_str(), ctrl, meta, alt, shift);
+                    }
+                }
+                return;
+            }
             if !has_top_right { return; }
-            let zoom_mod = ctrl || meta;
+            let node = top_right_plugin_node_id(0);
             let t = text.as_str();
-            if zoom_mod && (t == "=" || t == "+" || t == "-" || t == "0") { return; }
-            let bytes = keys::key_text_to_bytes(&text);
-            registry.borrow_mut().write_key(top_right_plugin_node_id(0), &bytes);
+            let has_sel = {
+                let sel = selection.borrow();
+                sel.as_ref().map_or(false, |s| !s.is_empty() && s.pane_id == node)
+            };
+            if keys::should_clear_selection(t, ctrl, meta, false) {
+                let prev_id = selection.borrow().as_ref().map(|s| s.pane_id);
+                *selection.borrow_mut() = None;
+                if let Some(sid) = prev_id {
+                    registry.borrow().mark_dirty(sid);
+                }
+            }
+            match keys::classify_key(t, ctrl, meta, false, false, has_sel) {
+                keys::KeyAction::CopySelection => {
+                    let norm = {
+                        let sel = selection.borrow();
+                        sel.as_ref().unwrap().normalized()
+                    };
+                    let copied = registry.borrow().get_selection_text(node, norm);
+                    if !copied.is_empty() {
+                        let _ = std::process::Command::new("/bin/sh")
+                            .args(["-c", &format!("printf '%s' {} | pbcopy",
+                                shell_escape(&copied))])
+                            .status();
+                    }
+                    let prev_id = selection.borrow().as_ref().map(|s| s.pane_id);
+                    *selection.borrow_mut() = None;
+                    if let Some(sid) = prev_id {
+                        registry.borrow().mark_dirty(sid);
+                    }
+                }
+                keys::KeyAction::Nothing => {}
+                keys::KeyAction::Paste => {
+                    let result: Arc<std::sync::Mutex<Option<Vec<u8>>>> =
+                        Arc::new(std::sync::Mutex::new(None));
+                    let result2 = Arc::clone(&result);
+                    std::thread::spawn(move || {
+                        if let Ok(out) = std::process::Command::new("pbpaste").output() {
+                            *result2.lock().unwrap() = Some(out.stdout);
+                        }
+                    });
+                    *pending_paste.borrow_mut() = Some((node, result));
+                }
+                keys::KeyAction::ZoomIn | keys::KeyAction::ZoomOut
+                | keys::KeyAction::ZoomReset => {}
+                keys::KeyAction::Forward(bytes) => {
+                    if !bytes.is_empty() {
+                        registry.borrow_mut().write_key(node, &bytes);
+                    }
+                }
+                _ => {
+                    let bytes = keys::key_text_to_bytes(&text);
+                    if !bytes.is_empty() {
+                        registry.borrow_mut().write_key(node, &bytes);
+                    }
+                }
+            }
+        }
+    });
+
+    ui.on_top_right_plugin_mouse_press({
+        let registry      = Rc::clone(&registry);
+        let selection     = Rc::clone(&selection);
+        let top_right_pixel = Rc::clone(&top_right_pixel);
+        let has_top_right = top_right_plugin.is_some();
+        move |x, y| {
+            // Pixel plugin: forward as physical coordinates
+            if let Some(pp) = top_right_pixel.borrow_mut().as_mut() {
+                let scale = registry.borrow().scale;
+                pp.send_mouse_press(x * scale, y * scale);
+                return;
+            }
+            if !has_top_right { return; }
+            let node = top_right_plugin_node_id(0);
+            let cell = runner_px_to_cell(x, y, &registry.borrow());
+            *selection.borrow_mut() = Some(Selection { pane_id: node, anchor: cell, head: cell });
+            registry.borrow().mark_dirty(node);
+        }
+    });
+
+    ui.on_top_right_plugin_mouse_move({
+        let registry      = Rc::clone(&registry);
+        let selection     = Rc::clone(&selection);
+        let top_right_pixel = Rc::clone(&top_right_pixel);
+        let has_top_right = top_right_plugin.is_some();
+        move |x, y| {
+            // Pixel plugin: forward as physical coordinates
+            if let Some(pp) = top_right_pixel.borrow_mut().as_mut() {
+                let scale = registry.borrow().scale;
+                pp.send_mouse_move(x * scale, y * scale);
+                return;
+            }
+            if !has_top_right { return; }
+            let node = top_right_plugin_node_id(0);
+            let mut sel = selection.borrow_mut();
+            if let Some(s) = sel.as_mut() {
+                if s.pane_id == node {
+                    s.head = runner_px_to_cell(x, y, &registry.borrow());
+                    registry.borrow().mark_dirty(node);
+                }
+            }
+        }
+    });
+
+    ui.on_top_right_plugin_mouse_release({
+        let registry      = Rc::clone(&registry);
+        let selection     = Rc::clone(&selection);
+        let top_right_pixel = Rc::clone(&top_right_pixel);
+        let has_top_right = top_right_plugin.is_some();
+        move || {
+            // Pixel plugin: forward release
+            if let Some(pp) = top_right_pixel.borrow_mut().as_mut() {
+                pp.send_mouse_release();
+                return;
+            }
+            if !has_top_right { return; }
+            let node = top_right_plugin_node_id(0);
+            let mut sel = selection.borrow_mut();
+            if let Some(s) = sel.as_ref() {
+                if s.pane_id == node && s.is_empty() {
+                    *sel = None;
+                    registry.borrow().mark_dirty(node);
+                }
+            }
         }
     });
 
@@ -2832,7 +3430,12 @@ fn main() {
         let registry   = Rc::clone(&registry);
         let scroll_acc = Rc::clone(&scroll_acc);
         let has_top_right = top_right_plugin.is_some();
+        let top_right_pixel = Rc::clone(&top_right_pixel);
         move |delta_px| {
+            if let Some(pp) = top_right_pixel.borrow_mut().as_mut() {
+                pp.send_scroll(delta_px);
+                return;
+            }
             if !has_top_right { return; }
             let cell_h = {
                 let reg = registry.borrow();
@@ -2855,13 +3458,56 @@ fn main() {
     ui.on_top_right_panel_width_changed({
         let registry = Rc::clone(&registry);
         let ui_weak  = ui.as_weak();
+        let top_right_pixel = Rc::clone(&top_right_pixel);
         move |new_w| {
             // Resize the terminal session to the new panel width.
             if let Some(ui) = ui_weak.upgrade() {
                 let h = ui.get_window_h();
                 let pane_w = (new_w - PANE_H_INSET as f32).max(10.0);
                 let pane_h = (h - 52.0).max(50.0);
+                if let Some(pp) = top_right_pixel.borrow_mut().as_mut() {
+                    let scale = registry.borrow().scale;
+                    pp.send_resize((pane_w * scale) as u32, (pane_h * scale) as u32);
+                    return;
+                }
                 registry.borrow_mut().resize(top_right_plugin_node_id(0), pane_w, pane_h);
+            }
+        }
+    });
+
+    // ── Native browser panel callbacks ────────────────────────────────────────
+    ui.on_browser_panel_width_changed({
+        let native_browser = Rc::clone(&native_browser);
+        let ui_weak = ui.as_weak();
+        move |new_w| {
+            if let Some(nb) = native_browser.borrow().as_ref() {
+                if let Some(ui) = ui_weak.upgrade() {
+                    let x = ui.get_browser_panel_logical_x() as f64;
+                    let y = ui.get_bottom_bar_logical_h() as f64;
+                    let h = ui.get_window_h() as f64;
+                    nb.update_frame(x, y, new_w as f64, h);
+                }
+            }
+        }
+    });
+
+    ui.on_browser_visible_changed({
+        let native_browser = Rc::clone(&native_browser);
+        let ui_weak = ui.as_weak();
+        move |visible| {
+            if let Some(nb) = native_browser.borrow().as_ref() {
+                nb.set_visible(visible);
+                if visible {
+                    // Update frame now that the Slint layout has recalculated with
+                    // the browser panel occupying its correct space.
+                    if let Some(ui) = ui_weak.upgrade() {
+                        let x = ui.get_browser_panel_logical_x() as f64;
+                        let y = ui.get_bottom_bar_logical_h() as f64;
+                        let h = ui.get_window_h() as f64;
+                        let w = ui.get_browser_panel_width() as f64;
+                        nb.update_frame(x, y, w, h);
+                    }
+                }
             }
         }
     });
@@ -2870,7 +3516,7 @@ fn main() {
     ui.on_bottom_right_plugin_key_input({
         let registry = Rc::clone(&registry);
         let has_bottom_right = bottom_right_plugin.is_some();
-        move |text, ctrl, meta| {
+        move |text, ctrl, meta, _alt, _shift| {
             if !has_bottom_right { return; }
             let zoom_mod = ctrl || meta;
             let t = text.as_str();

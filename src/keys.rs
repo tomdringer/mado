@@ -376,9 +376,15 @@ mod tests {
 
     #[test]
     fn shift_left_produces_char_selection_seq() {
-        // Shift+Left → N=2 → ESC[1;2D
+        // Shift+Left → ShiftArrow (Mado handles selection) with the standard
+        // xterm N=2 escape sequence embedded so it can be forwarded to PTY
+        // apps that understand it (e.g. neovim in alt-screen mode).
         let action = classify_key("\u{F702}", false, false, false, true, false);
-        assert_eq!(action, KeyAction::ArrowSeq(b"\x1b[1;2D".to_vec()));
+        assert_eq!(action, KeyAction::ShiftArrow {
+            dcol: -1,
+            drow:  0,
+            seq:   b"\x1b[1;2D".to_vec(),
+        });
     }
 
     #[test]
