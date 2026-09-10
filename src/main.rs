@@ -21,7 +21,7 @@ use config::Config;
 use pane_tree::{FlatDividerData, NavDir, NodeId, SplitDir};
 use pixel_plugin::PixelPlugin;
 use sidebar::SidebarState;
-use tasku::detect as detect_tasku;
+use tasku::{detect as detect_tasku, status as tasku_status};
 use terminal::TerminalRegistry;
 use slint::{Image, Model, ModelRc, Timer, TimerMode, VecModel};
 
@@ -787,9 +787,11 @@ fn main() {
     registry.borrow().font.prewarm();
 
     // ── Sidebar + Tasku detection ────────────────────────────────────────────
-    let tasku_path = detect_tasku().map(|t| t.path.to_string_lossy().into_owned());
+    let tasku_install = detect_tasku();
+    let tasku_status_str = tasku_status(&tasku_install).to_string();
+    let tasku_path = tasku_install.map(|t| t.path.to_string_lossy().into_owned());
     if let Some(ref p) = tasku_path {
-        println!("mado: tasku found at {p}");
+        println!("mado: tasku found at {p} (status: {tasku_status_str})");
     } else {
         println!("mado: tasku not found");
     }
@@ -896,6 +898,7 @@ fn main() {
         Rc::new(VecModel::<WorkspaceProject>::from(ws_projects))
     };
     ui.set_ws_projects(ModelRc::new(Rc::clone(&ws_model)));
+    ui.set_tasku_status(tasku_status_str.into());
 
     // Priority list — apply saved order, append unknown projects at the end
     let prio_model: Rc<VecModel<PriorityProject>> = {
