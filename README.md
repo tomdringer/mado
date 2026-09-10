@@ -16,6 +16,8 @@ A macOS terminal multiplexer with a sidebar plugin architecture, built in Rust.
 
 ![Themes](assets/mado-themes.png)
 
+> Screenshots use [Starship](https://starship.rs) for the shell prompt. Mado integrates with Starship automatically if it's installed.
+
 ## Installation
 
 ### Homebrew
