@@ -94,6 +94,7 @@ export component MainWindow inherits Window {
     callback top-right-plugin-mouse-press(float, float);
     callback top-right-plugin-mouse-move(float, float);
     callback top-right-plugin-mouse-release();
+    callback top-right-plugin-focus-changed(bool);
     callback top-right-panel-width-changed(float);
     private property <float> top-right-press-abs-x: 0;
     private property <float> top-right-press-width: 0;
@@ -230,6 +231,7 @@ export component MainWindow inherits Window {
     changed window-w => { root.window-resized(root.window-w, root.window-h); }
     changed window-h => { root.window-resized(root.window-w, root.window-h); }
     changed show-browser-panel => { root.browser-visible-changed(root.show-browser-panel); }
+    changed top-bar-expanded => { root.tasku-toggled(root.top-bar-expanded); }
 
     // Top bar shows when explicitly enabled OR when the AI/browser panel is configured.
     private property <bool>   show-top-bar-effective: root.show-top-bar || root.top-right-panel-width > 0 || root.browser-panel-width > 0;
@@ -290,7 +292,10 @@ export component MainWindow inherits Window {
             theme-card-border: root.theme-card-border;
             show-ai-button: root.top-right-panel-width > 0;
             ai-active: root.show-ai-panel;
-            ai-toggled => { root.show-ai-panel = !root.show-ai-panel; }
+            ai-toggled => {
+                root.show-ai-panel = !root.show-ai-panel;
+                root.top-right-plugin-focus-changed(root.show-ai-panel);
+            }
             show-browser-button: root.browser-panel-width > 0;
             browser-active: root.show-browser-panel;
             browser-toggled => { root.show-browser-panel = !root.show-browser-panel; }
@@ -477,6 +482,7 @@ export component MainWindow inherits Window {
                 ai-fs := FocusScope {
                     x: 0px; y: 0px;
                     width: parent.width; height: parent.height;
+                    init => { self.focus(); }
                     key-pressed(e) => {
                         root.top-right-plugin-key-input(e.text, e.modifiers.control, e.modifiers.meta, e.modifiers.alt, e.modifiers.shift);
                         accept

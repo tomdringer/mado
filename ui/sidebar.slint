@@ -114,7 +114,7 @@ export component TaskuContent inherits Rectangle {
             Rectangle { width: parent.width; height: 32px;
                 CmdButton { x: 0;                              width: root.btn-w; label: "Add";     command(l) => { root.command(l); fs.focus(); } }
                 CmdButton { x: root.btn-w + root.btn-gap;      width: root.btn-w; label: "List";    command(l) => { root.command(l); fs.focus(); } }
-                CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "Stats";   command(l) => { root.command(l); fs.focus(); } }
+                CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "List all";   command(l) => { root.command(l); fs.focus(); } }
             }
             Rectangle { width: parent.width; height: 32px;
                 CmdButton { x: 0;                              width: root.btn-w; label: "Edit";    command(l) => { root.command(l); fs.focus(); } }
@@ -238,7 +238,7 @@ export component TaskuContent inherits Rectangle {
                 Rectangle { width: parent.width; height: 32px;
                     CmdButton { x: 0;     width: 80px; label: "Add";     command(l) => { root.command(l); fs.focus(); } }
                     CmdButton { x: 84px;  width: 80px; label: "List";    command(l) => { root.command(l); fs.focus(); } }
-                    CmdButton { x: 168px; width: 80px; label: "Stats";   command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 168px; width: 80px; label: "List all";   command(l) => { root.command(l); fs.focus(); } }
                 }
                 Rectangle { width: parent.width; height: 32px;
                     CmdButton { x: 0;     width: 80px; label: "Edit";    command(l) => { root.command(l); fs.focus(); } }

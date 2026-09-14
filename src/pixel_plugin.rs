@@ -93,6 +93,11 @@ pub(crate) fn fmt_chdir(path: &str) -> String {
     format!(r#"{{"type":"chdir","path":{json_path}}}"#)
 }
 
+pub(crate) fn fmt_workspace(code: &str) -> String {
+    let json_code = serde_json::to_string(code).unwrap_or_else(|_| "\"\"".to_string());
+    format!(r#"{{"type":"workspace","code":{json_code}}}"#)
+}
+
 /// Returns `true` if `json` contains the `"paste"` action string.
 pub(crate) fn mact_is_paste(json: &[u8]) -> bool {
     json.windows(7).any(|w| w == b"\"paste\"")
@@ -215,6 +220,10 @@ impl PixelPlugin {
 
     pub fn send_chdir(&mut self, path: &str) {
         let _ = writeln!(self.stdin, "{}", fmt_chdir(path));
+    }
+
+    pub fn send_workspace(&mut self, code: &str) {
+        let _ = writeln!(self.stdin, "{}", fmt_workspace(code));
     }
 
     pub fn send_paste_image(&mut self, base64_data: &str, media_type: &str) {
