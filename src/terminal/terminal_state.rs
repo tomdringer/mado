@@ -172,6 +172,13 @@ impl TerminalState {
             self.theme_bg = Some(self.cur_bg);
         }
 
+        // Mode 3: erase scrollback — clear the scrollback buffer and snap back
+        // to the live view so the next render always starts from a clean top.
+        if mode == 3 && !self.in_alt_screen {
+            self.scrollback.clear();
+            self.scroll_offset = 0;
+        }
+
         let (start, end) = match mode {
             0 => {
                 // from cursor to end
@@ -183,7 +190,7 @@ impl TerminalState {
                 let e = self.cell_idx(self.cursor_col, self.cursor_row) + 1;
                 (0, e)
             }
-            _ => (0, self.cols * self.rows), // erase all
+            _ => (0, self.cols * self.rows), // erase all (mode 2, 3, other)
         };
         let blank = Cell { ch: ' ', fg: self.cur_fg, bg: self.cur_bg };
         for i in start..end.min(self.cells.len()) {
@@ -466,6 +473,22 @@ mod tests {
         st.cur_bg = [0x12, 0x34, 0x56, 0xFF];
         st.erase_in_display(2);
         assert_eq!(st.theme_bg, Some([0x12, 0x34, 0x56, 0xFF]));
+    }
+
+    #[test]
+    fn erase_in_display_mode3_clears_scrollback_and_resets_offset() {
+        let mut st = make(4, 2);
+        // Push some rows into scrollback by filling and scrolling
+        for ch in ['A','B','C','D'] { st.put_char(ch); }
+        st.scroll_up(1); // scroll one row into scrollback
+        assert!(!st.scrollback.is_empty());
+        st.scroll_offset = 1; // simulate user having scrolled up
+        // Mode 3 should clear scrollback and snap back to live view
+        st.erase_in_display(3);
+        assert!(st.scrollback.is_empty());
+        assert_eq!(st.scroll_offset, 0);
+        // Visible cells should also be cleared
+        assert!(st.cells.iter().all(|c| c.ch == ' '));
     }
 
     // ── erase_in_line ─────────────────────────────────────────────────────────
