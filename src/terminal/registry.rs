@@ -377,10 +377,6 @@ impl TerminalRegistry {
         (phys_w / self.font.cell_w.max(1)).max(1)
     }
 
-    pub fn logical_to_rows(&self, logical_h: f32) -> usize {
-        let phys_h = (logical_h * self.scale) as usize;
-        (phys_h / self.font.cell_h.max(1)).max(1)
-    }
 
 
     /// Maximum logical pixel width that yields at most `max_cols` columns.

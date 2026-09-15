@@ -543,7 +543,7 @@ fn apply_starship_theme(t: &theme::Theme) {
 
 /// Build the welcome banner as raw bytes ready to inject into a TerminalState.
 /// `cols` is the terminal width so the block can be centred.
-fn welcome_banner(cols: usize, rows: usize, t: &theme::Theme) -> Vec<u8> {
+fn welcome_banner(cols: usize, t: &theme::Theme) -> Vec<u8> {
     let [br, bg, bb] = t.welcome_border;
     let [mr, mg, mb] = t.welcome_muted;
     let [dr, dg, db] = t.welcome_dim;
@@ -572,9 +572,10 @@ fn welcome_banner(cols: usize, rows: usize, t: &theme::Theme) -> Vec<u8> {
     let inner  = BOX_W - 2; // space between the two border chars
     let top    = format!("{pad}{red}╔{}╗{reset}\r\n", "═".repeat(inner));
     let spacer = format!("{pad}{red}║{}║{reset}\r\n", " ".repeat(inner));
-    // No trailing \r\n on bot — the cursor stays on this line so it can never
-    // push past scroll_bot and scroll the border off the top of the viewport.
-    let bot    = format!("{pad}{red}╚{}╝{reset}", "═".repeat(inner));
+    // Trailing \r\n moves cursor to the line below the banner so zsh's PROMPT_SP
+    // doesn't print a stray "%". Safe here because the banner is at the top —
+    // there's nothing above it to scroll off the viewport.
+    let bot    = format!("{pad}{red}╚{}╝{reset}\r\n", "═".repeat(inner));
 
     // Logo lines (each exactly 37 visible chars — trailing space makes 38).
     let logo = [
@@ -605,13 +606,7 @@ fn welcome_banner(cols: usize, rows: usize, t: &theme::Theme) -> Vec<u8> {
     let hint2 = row(&format!("{muted}{h2t}{reset}  {dim}{h2d}{reset}"),
                     h2t.len() + 2 + h2d.len());
 
-    // Vertically centre: banner is 15 content rows (top…bot inclusive).
-    // Add padding lines above so the box sits in the middle of the terminal.
-    const BANNER_ROWS: usize = 15;
-    let top_pad = rows.saturating_sub(BANNER_ROWS) / 2;
-    let padding = "\r\n".repeat(top_pad);
-
-    let s = format!("{padding}{top}{spacer}{logo_rows}{spacer}{subtitle}{spacer}{hint1}{hint2}{spacer}{bot}");
+    let s = format!("{top}{spacer}{logo_rows}{spacer}{subtitle}{spacer}{hint1}{hint2}{spacer}{bot}");
     s.into_bytes()
 }
 
@@ -1910,8 +1905,7 @@ fn main() {
                             let pane_w = (p.width  - PANE_H_INSET).max(10.0);
                             let pane_h = (p.height - PANE_TOP_INSET).max(10.0);
                             let cols   = reg.logical_to_cols(pane_w);
-                            let rows   = reg.logical_to_rows(pane_h);
-                            let banner = welcome_banner(cols, rows, &loaded_theme);
+                            let banner = welcome_banner(cols, &loaded_theme);
                             reg.spawn_with_banner(root_id, pane_w, pane_h, None, &banner);
                         }
                     }
@@ -2002,10 +1996,8 @@ fn main() {
                         let root_id = tree.borrow().root;
                         if let Some(p) = panes.iter().find(|p| p.id == root_id) {
                             let pane_w = (p.width - PANE_H_INSET).max(10.0);
-                            let pane_h = (p.height - PANE_TOP_INSET).max(10.0);
                             let cols   = reg.logical_to_cols(pane_w);
-                            let rows   = reg.logical_to_rows(pane_h);
-                            let banner = welcome_banner(cols, rows, &loaded_theme);
+                            let banner = welcome_banner(cols, &loaded_theme);
                             reg.reinject_banner(root_id, &banner);
                         }
                     }
