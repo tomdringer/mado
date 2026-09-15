@@ -1888,8 +1888,6 @@ fn main() {
                                     let ns_window: *mut AnyObject =
                                         objc2::msg_send![ns_view, window];
 
-                                    eprintln!("mado: titlebar setup — ns_view={ns_view:?}");
-
                                     // Hide the window title text (keep traffic lights).
                                     // NSWindowTitleVisibility = NSInteger → isize; Hidden = 1
                                     let _: () = objc2::msg_send![ns_window, setTitleVisibility: 1isize];
@@ -1900,7 +1898,6 @@ fn main() {
                                         let container: *mut AnyObject = objc2::msg_send![close_btn, superview];
                                         if !container.is_null() {
                                             let f: Rect = objc2::msg_send![container, frame];
-                                            eprintln!("mado: titlebar container frame h={:.1}", f.size.height);
                                             if f.size.height > 4.0 { f.size.height } else { 28.0 }
                                         } else { 28.0 }
                                     } else { 28.0 };
@@ -1914,11 +1911,9 @@ fn main() {
 
                                     let tf_bounds: Rect = objc2::msg_send![frame_view, bounds];
                                     let tf_flipped: bool = objc2::msg_send![frame_view, isFlipped];
-                                    eprintln!("mado: NSThemeFrame bounds={:.0}×{:.0} flipped={tf_flipped}", tf_bounds.size.width, tf_bounds.size.height);
 
                                     // In non-flipped AppKit coords y=0 is bottom; title bar is at top.
                                     let cover_y = if tf_flipped { 0.0 } else { tf_bounds.size.height - title_h };
-                                    eprintln!("mado: titlebar cover frame: y={cover_y:.1} h={title_h:.1} w={:.1}", tf_bounds.size.width);
 
                                     let cover_frame = Rect {
                                         origin: P  { x: 0.0, y: cover_y },
@@ -1944,7 +1939,6 @@ fn main() {
                                     let nil_v: *mut AnyObject = std::ptr::null_mut();
                                     let _: () = objc2::msg_send![frame_view, addSubview: cover positioned: 1isize relativeTo: nil_v];
                                     titlebar_cover_ptr.set(cover as usize);
-                                    eprintln!("mado: titlebar cover added to NSThemeFrame");
 
                                     // 4. Paint the layer with card_bg.
                                     // CGColorRef has ObjC encoding ^{CGColor=}. Declare a proper
@@ -1969,7 +1963,6 @@ fn main() {
 
                                     let [r, g, b] = loaded_theme.card_bg;
                                     let layer: *mut AnyObject = objc2::msg_send![cover, layer];
-                                    eprintln!("mado: titlebar cover layer={layer:?} rgb=({r},{g},{b})");
                                     if !layer.is_null() {
                                         let cg = CGColorCreateSRGB(
                                             r as f64 / 255.0,
@@ -1980,7 +1973,6 @@ fn main() {
                                         if !cg.is_null() {
                                             let _: () = objc2::msg_send![layer, setBackgroundColor: cg];
                                             CFRelease(cg as *const _);
-                                            eprintln!("mado: titlebar cover backgroundColor set ✓");
                                         }
                                     }
                                 }
