@@ -241,13 +241,13 @@ pub mod macos_impl {
                 if wk.is_null() { return None; }
 
                 // setInspectable: YES — macOS 13.3+ (safe for Mado's target range).
-                let _: () = objc2::msg_send![wk, setInspectable: 1i8];
+                let _: () = objc2::msg_send![wk, setInspectable: true];
 
                 // ── Add as subview ────────────────────────────────────────────
                 let _: () = objc2::msg_send![parent_ns_view, addSubview: wk];
 
                 // Start hidden; frame is corrected on first show.
-                let _: () = objc2::msg_send![wk, setHidden: 1i8];
+                let _: () = objc2::msg_send![wk, setHidden: true];
 
                 let browser = NativeBrowser { wk_view: wk };
                 browser.load_url(initial_url);
@@ -268,8 +268,7 @@ pub mod macos_impl {
         /// Show or hide the WKWebView without destroying it.
         pub fn set_visible(&self, visible: bool) {
             unsafe {
-                let hidden: i8 = if visible { 0 } else { 1 };
-                let _: () = objc2::msg_send![self.wk_view, setHidden: hidden];
+                let _: () = objc2::msg_send![self.wk_view, setHidden: !visible];
             }
         }
 
