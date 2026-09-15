@@ -292,6 +292,8 @@ fn rgba([r, g, b]: [u8; 3], a: u8) -> slint::Color {
 fn apply_theme(ui: &MainWindow, t: &theme::Theme) {
     // Sidebar and chrome are solid; only terminal panes are glassy (~47% opacity).
     ui.set_theme_window_bg(rgb(t.window_bg));
+    // macOS title-bar fix is applied in on_window_resized (first fire only),
+    // because with_winit_window/window_handle() returns None before the event loop.
     ui.set_theme_terminal_area_bg(rgb(t.terminal_area_bg));
     ui.set_theme_pane_bg(rgba(t.pane_bg, 120));
     ui.set_theme_pane_toolbar(rgb(t.pane_toolbar));
@@ -797,29 +799,10 @@ fn main() {
 
     let ui = MainWindow::new().unwrap();
 
-    // Make the window resizable and enable the macOS full-screen green button.
-    ui.window().with_winit_window(move |w| {
-        w.set_resizable(true);
-
-        #[cfg(target_os = "macos")]
-        {
-            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            if let Ok(handle) = w.window_handle() {
-                if let RawWindowHandle::AppKit(h) = handle.as_raw() {
-                    const FULL_SCREEN_PRIMARY: u64 = 1 << 7;
-                    unsafe {
-                        use objc2::runtime::AnyObject;
-                        let ns_view = h.ns_view.as_ptr() as *mut AnyObject;
-                        let ns_window: *mut AnyObject =
-                            objc2::msg_send![ns_view, window];
-                        let _: () = objc2::msg_send![
-                            ns_window, setCollectionBehavior: FULL_SCREEN_PRIMARY
-                        ];
-                    }
-                }
-            }
-        }
-    });
+    // Make the window resizable. The ObjC window setup (FSCVM, title bar cover)
+    // must happen inside an event-loop callback because window_handle() returns
+    // Err before the event loop starts. See on_window_resized below.
+    ui.window().with_winit_window(move |w| { w.set_resizable(true); });
 
     // Load config first — font size, shell, theme, etc.
     let config = Config::load();
@@ -1152,6 +1135,12 @@ fn main() {
     // Initial terminal is spawned lazily inside on_window_resized so we have
     // real PTY dimensions and can prepend the welcome banner before the shell prompt.
     let initial_spawned: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
+    // One-shot flag: apply macOS title-bar fix (FSCVM + cover view) on first
+    // on_window_resized, which is the earliest point window_handle() is valid.
+    let titlebar_setup_done: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
+    // Stores the cover NSView pointer (as usize) so on_window_resized can
+    // hide it in fullscreen and show it in windowed mode.
+    let titlebar_cover_ptr: Rc<std::cell::Cell<usize>> = Rc::new(std::cell::Cell::new(0));
     // Tracks whether the top-bar tasku overlay is currently open.
     // Used by on_window_resized to re-run tasku list after a resize.
     let tasku_open: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
@@ -1852,6 +1841,8 @@ fn main() {
         let images = Rc::clone(&images);
         let focused_id = Rc::clone(&focused_id);
         let initial_spawned = Rc::clone(&initial_spawned);
+        let titlebar_setup_done = Rc::clone(&titlebar_setup_done);
+        let titlebar_cover_ptr = Rc::clone(&titlebar_cover_ptr);
         let banner_active = Rc::clone(&banner_active);
         let loaded_theme = Rc::clone(&loaded_theme);
         let active_project_resize = Rc::clone(&active_project);
@@ -1866,6 +1857,172 @@ fn main() {
         let default_project = default_project.clone();
         let last_size: Rc<RefCell<(f32, f32)>> = Rc::new(RefCell::new((0.0, 0.0)));
         move |w, h| {
+            // ── One-time macOS title-bar setup ───────────────────────────────
+            // window_handle() is only valid once the event loop is running.
+            // This is the earliest safe point to run ObjC window modifications.
+            #[cfg(target_os = "macos")]
+            if !titlebar_setup_done.get() {
+                if let Some(ui_tb) = ui_weak.upgrade() {
+                    let did_setup = ui_tb.window().with_winit_window(|win| {
+                        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                        if let Ok(handle) = win.window_handle() {
+                            if let RawWindowHandle::AppKit(h) = handle.as_raw() {
+                                use objc2::encode::{Encode, Encoding, RefEncode};
+                                use objc2::runtime::{AnyClass, AnyObject};
+
+                                #[repr(C)] #[derive(Copy,Clone)]
+                                struct P { x: f64, y: f64 }
+                                unsafe impl Encode for P { const ENCODING: Encoding = Encoding::Struct("CGPoint",&[f64::ENCODING,f64::ENCODING]); }
+                                unsafe impl RefEncode for P { const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING); }
+                                #[repr(C)] #[derive(Copy,Clone)]
+                                struct Sz { width: f64, height: f64 }
+                                unsafe impl Encode for Sz { const ENCODING: Encoding = Encoding::Struct("CGSize",&[f64::ENCODING,f64::ENCODING]); }
+                                unsafe impl RefEncode for Sz { const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING); }
+                                #[repr(C)] #[derive(Copy,Clone)]
+                                struct Rect { origin: P, size: Sz }
+                                unsafe impl Encode for Rect { const ENCODING: Encoding = Encoding::Struct("CGRect",&[P::ENCODING,Sz::ENCODING]); }
+                                unsafe impl RefEncode for Rect { const ENCODING_REF: Encoding = Encoding::Pointer(&Self::ENCODING); }
+
+                                unsafe {
+                                    let ns_view = h.ns_view.as_ptr() as *mut AnyObject;
+                                    let ns_window: *mut AnyObject =
+                                        objc2::msg_send![ns_view, window];
+
+                                    eprintln!("mado: titlebar setup — ns_view={ns_view:?}");
+
+                                    // Hide the window title text (keep traffic lights).
+                                    // NSWindowTitleVisibility = NSInteger → isize; Hidden = 1
+                                    let _: () = objc2::msg_send![ns_window, setTitleVisibility: 1isize];
+
+                                    // Measure title bar height via close button container.
+                                    let close_btn: *mut AnyObject = objc2::msg_send![ns_window, standardWindowButton: 0usize];
+                                    let title_h: f64 = if !close_btn.is_null() {
+                                        let container: *mut AnyObject = objc2::msg_send![close_btn, superview];
+                                        if !container.is_null() {
+                                            let f: Rect = objc2::msg_send![container, frame];
+                                            eprintln!("mado: titlebar container frame h={:.1}", f.size.height);
+                                            if f.size.height > 4.0 { f.size.height } else { 28.0 }
+                                        } else { 28.0 }
+                                    } else { 28.0 };
+
+                                    // Place the cover in NSThemeFrame (the parent of Slint's
+                                    // contentView) at the title bar zone. This blocks CGS blur
+                                    // for the full title bar width without requiring FSCVM or
+                                    // touching Slint's layout at all.
+                                    let frame_view: *mut AnyObject = objc2::msg_send![ns_view, superview];
+                                    if frame_view.is_null() { return; }
+
+                                    let tf_bounds: Rect = objc2::msg_send![frame_view, bounds];
+                                    let tf_flipped: bool = objc2::msg_send![frame_view, isFlipped];
+                                    eprintln!("mado: NSThemeFrame bounds={:.0}×{:.0} flipped={tf_flipped}", tf_bounds.size.width, tf_bounds.size.height);
+
+                                    // In non-flipped AppKit coords y=0 is bottom; title bar is at top.
+                                    let cover_y = if tf_flipped { 0.0 } else { tf_bounds.size.height - title_h };
+                                    eprintln!("mado: titlebar cover frame: y={cover_y:.1} h={title_h:.1} w={:.1}", tf_bounds.size.width);
+
+                                    let cover_frame = Rect {
+                                        origin: P  { x: 0.0, y: cover_y },
+                                        size:   Sz { width: tf_bounds.size.width, height: title_h },
+                                    };
+
+                                    let vcls = AnyClass::get("NSView").expect("NSView");
+                                    let v: *mut AnyObject = objc2::msg_send![vcls, alloc];
+                                    let cover: *mut AnyObject = objc2::msg_send![v, initWithFrame: cover_frame];
+                                    if cover.is_null() {
+                                        eprintln!("mado: titlebar cover initWithFrame returned nil");
+                                        return;
+                                    }
+                                    let _: () = objc2::msg_send![cover, setWantsLayer: true];
+                                    // NSViewWidthSizable | NSViewMinYMargin (non-flipped: pin to top)
+                                    // NSViewWidthSizable | NSViewMaxYMargin (flipped: pin to top)
+                                    let mask: usize = if tf_flipped {
+                                        (1 << 1) | (1 << 5)
+                                    } else {
+                                        (1 << 1) | (1 << 3)
+                                    };
+                                    let _: () = objc2::msg_send![cover, setAutoresizingMask: mask];
+                                    let nil_v: *mut AnyObject = std::ptr::null_mut();
+                                    let _: () = objc2::msg_send![frame_view, addSubview: cover positioned: 1isize relativeTo: nil_v];
+                                    titlebar_cover_ptr.set(cover as usize);
+                                    eprintln!("mado: titlebar cover added to NSThemeFrame");
+
+                                    // 4. Paint the layer with card_bg.
+                                    // CGColorRef has ObjC encoding ^{CGColor=}. Declare a proper
+                                    // opaque type so msg_send! passes the right type code.
+                                    // We bypass NSColor.CGColor (which returns '@' not '^{CGColor=}')
+                                    // and call CGColorCreateSRGB directly from CoreGraphics.
+                                    #[repr(C)]
+                                    struct CGColorOpaque([u8; 0]);
+                                    unsafe impl Encode for CGColorOpaque {
+                                        const ENCODING: Encoding =
+                                            Encoding::Struct("CGColor", &[]);
+                                    }
+                                    unsafe impl RefEncode for CGColorOpaque {
+                                        const ENCODING_REF: Encoding =
+                                            Encoding::Pointer(&Self::ENCODING);
+                                    }
+                                    unsafe extern "C" {
+                                        fn CGColorCreateSRGB(r: f64, g: f64, b: f64, a: f64)
+                                            -> *mut CGColorOpaque;
+                                        fn CFRelease(cf: *const std::ffi::c_void);
+                                    }
+
+                                    let [r, g, b] = loaded_theme.card_bg;
+                                    let layer: *mut AnyObject = objc2::msg_send![cover, layer];
+                                    eprintln!("mado: titlebar cover layer={layer:?} rgb=({r},{g},{b})");
+                                    if !layer.is_null() {
+                                        let cg = CGColorCreateSRGB(
+                                            r as f64 / 255.0,
+                                            g as f64 / 255.0,
+                                            b as f64 / 255.0,
+                                            1.0_f64,
+                                        );
+                                        if !cg.is_null() {
+                                            let _: () = objc2::msg_send![layer, setBackgroundColor: cg];
+                                            CFRelease(cg as *const _);
+                                            eprintln!("mado: titlebar cover backgroundColor set ✓");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                    if did_setup.is_some() {
+                        titlebar_setup_done.set(true);
+                    }
+                }
+            }
+
+            // Hide the title-bar cover in fullscreen (NSThemeFrame fills the screen,
+            // so the cover would sit over the TopBar). Show it again in windowed mode.
+            #[cfg(target_os = "macos")]
+            {
+                let cover_raw = titlebar_cover_ptr.get();
+                if cover_raw != 0 {
+                    if let Some(ui_tc) = ui_weak.upgrade() {
+                        ui_tc.window().with_winit_window(|win| {
+                            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                            if let Ok(handle) = win.window_handle() {
+                                if let RawWindowHandle::AppKit(h) = handle.as_raw() {
+                                    use objc2::runtime::AnyObject;
+                                    unsafe {
+                                        let ns_view = h.ns_view.as_ptr() as *mut AnyObject;
+                                        let ns_window: *mut AnyObject =
+                                            objc2::msg_send![ns_view, window];
+                                        let style: usize =
+                                            objc2::msg_send![ns_window, styleMask];
+                                        // NSWindowStyleMaskFullScreen = 1 << 14
+                                        let is_fullscreen = (style & (1 << 14)) != 0;
+                                        let cover = cover_raw as *mut AnyObject;
+                                        let _: () = objc2::msg_send![cover, setHidden: is_fullscreen];
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+
             let (lw, lh) = *last_size.borrow();
             if (w - lw).abs() > 0.5 || (h - lh).abs() > 0.5 {
                 *last_size.borrow_mut() = (w, h);
