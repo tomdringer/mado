@@ -210,7 +210,7 @@ pub mod macos_impl {
                 let prefs: *mut AnyObject = objc2::msg_send![cfg, preferences];
                 let key_str = nsstr("developerExtrasEnabled");
                 let num_cls = AnyClass::get("NSNumber")?;
-                let yes: *mut AnyObject = objc2::msg_send![num_cls, numberWithBool: 1i8];
+                let yes: *mut AnyObject = objc2::msg_send![num_cls, numberWithBool: true];
                 let _: () = objc2::msg_send![prefs, setValue: yes forKey: key_str];
 
                 // ── Nav-bar user script ───────────────────────────────────────
@@ -221,8 +221,8 @@ pub mod macos_impl {
                     let script: *mut AnyObject = objc2::msg_send![
                         script,
                         initWithSource:          js_src
-                        injectionTime:           1i64   // DocumentEnd
-                        forMainFrameOnly:        1i8
+                        injectionTime:           1isize  // WKUserScriptInjectionTimeAtDocumentEnd
+                        forMainFrameOnly:        true
                     ];
                     if !script.is_null() {
                         let controller: *mut AnyObject =
@@ -252,7 +252,6 @@ pub mod macos_impl {
                 let browser = NativeBrowser { wk_view: wk };
                 browser.load_url(initial_url);
 
-                eprintln!("mado: native browser WKWebView created, loading {initial_url}");
                 Some(browser)
             }
         }
@@ -283,7 +282,7 @@ pub mod macos_impl {
                 let Some(req_cls) = AnyClass::get("NSURLRequest") else { return };
                 let req: *mut AnyObject =
                     objc2::msg_send![req_cls, requestWithURL: ns_url];
-                let _: () = objc2::msg_send![self.wk_view, loadRequest: req];
+                let _: *mut AnyObject = objc2::msg_send![self.wk_view, loadRequest: req];
             }
         }
     }
