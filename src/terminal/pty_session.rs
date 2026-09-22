@@ -19,6 +19,10 @@ pub struct PtySession {
     /// exactly so Slint doesn't need to scale it (which causes blurry artifacts).
     pub phys_w: usize,
     pub phys_h: usize,
+    /// Set by the wait thread when the child process exits.
+    pub exited:       Arc<AtomicBool>,
+    /// Set to true if the process exited with status 0, false otherwise.
+    pub exit_success: Arc<AtomicBool>,
     writer: Box<dyn Write + Send>,
     master: Box<dyn portable_pty::MasterPty + Send>,
 }
@@ -75,12 +79,24 @@ impl PtySession {
             pixel_height: 0,
         }).expect("openpty failed");
 
-        let child = pair.slave.spawn_command(cmd).expect("spawn failed");
+        let mut child = pair.slave.spawn_command(cmd).expect("spawn failed");
         let pid = child.process_id();
-        drop(child);
 
         // Drop slave after spawning so the master gets EOF when child exits
         drop(pair.slave);
+
+        let exited:       Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+        let exit_success: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
+        {
+            let exited_w       = Arc::clone(&exited);
+            let exit_success_w = Arc::clone(&exit_success);
+            thread::spawn(move || {
+                if let Ok(status) = child.wait() {
+                    exit_success_w.store(status.success(), Ordering::Relaxed);
+                }
+                exited_w.store(true, Ordering::Relaxed);
+            });
+        }
 
         let state = Arc::new(Mutex::new(TerminalState::new(cols as usize, rows as usize)));
         let dirty = Arc::new(AtomicBool::new(true));
@@ -131,7 +147,7 @@ impl PtySession {
 
         let phys_w = cols as usize; // placeholder; registry sets real values after spawn
         let phys_h = rows as usize;
-        PtySession { state, dirty, bell, pid, phys_w, phys_h, writer, master: pair.master }
+        PtySession { state, dirty, bell, pid, phys_w, phys_h, exited, exit_success, writer, master: pair.master }
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16, phys_w: usize, phys_h: usize) {
