@@ -32,13 +32,16 @@ use std::thread;
 use slint::SharedPixelBuffer;
 
 pub struct PixelPlugin {
-    pub dirty:         Arc<AtomicBool>,
-    pub image:         Arc<Mutex<Option<SharedPixelBuffer<slint::Rgba8Pixel>>>>,
+    pub dirty:          Arc<AtomicBool>,
+    pub image:          Arc<Mutex<Option<SharedPixelBuffer<slint::Rgba8Pixel>>>>,
     /// Set by the reader thread when the plugin sends a MACT paste action.
     /// Cleared by the render timer after acting on it.
-    pub paste_pending: Arc<AtomicBool>,
-    stdin:             std::process::ChildStdin,
-    _child:            std::process::Child,
+    pub paste_pending:  Arc<AtomicBool>,
+    /// Set by the reader thread when the plugin sends a MACT notify action.
+    /// Holds (title, message). Cleared by the render timer after firing.
+    pub notify_pending: Arc<Mutex<Option<(String, String)>>>,
+    stdin:              std::process::ChildStdin,
+    _child:             std::process::Child,
 }
 
 // ── Pure event-format helpers ─────────────────────────────────────────────────
@@ -103,6 +106,21 @@ pub(crate) fn mact_is_paste(json: &[u8]) -> bool {
     json.windows(7).any(|w| w == b"\"paste\"")
 }
 
+/// If `json` is a `{"action":"notify","title":"...","message":"..."}` payload,
+/// returns `(title, message)`. Returns `None` for any other action.
+pub(crate) fn mact_extract_notify(json: &[u8]) -> Option<(String, String)> {
+    #[derive(serde::Deserialize)]
+    struct NotifyAction {
+        action:  String,
+        title:   Option<String>,
+        message: String,
+    }
+    let parsed: NotifyAction = serde_json::from_slice(json).ok()?;
+    if parsed.action != "notify" { return None; }
+    let title = parsed.title.unwrap_or_else(|| "Mado".into());
+    Some((title, parsed.message))
+}
+
 /// Validate MADO frame dimensions.  Returns `(width, height)` only when
 /// both are non-zero and within the 8192-pixel cap.
 pub(crate) fn validate_frame_dims(w: u32, h: u32) -> Option<(u32, u32)> {
@@ -125,17 +143,20 @@ impl PixelPlugin {
         let mut stdin  = child.stdin.take()?;
         let     stdout = child.stdout.take()?;
 
-        let dirty:         Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-        let image:         Arc<Mutex<Option<SharedPixelBuffer<slint::Rgba8Pixel>>>> =
+        let dirty:          Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+        let image:          Arc<Mutex<Option<SharedPixelBuffer<slint::Rgba8Pixel>>>> =
             Arc::new(Mutex::new(None));
-        let paste_pending: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+        let paste_pending:  Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+        let notify_pending: Arc<Mutex<Option<(String, String)>>> =
+            Arc::new(Mutex::new(None));
 
         let _ = writeln!(stdin, "{}", fmt_resize(width, height));
 
         {
-            let dirty         = Arc::clone(&dirty);
-            let image         = Arc::clone(&image);
-            let paste_pending = Arc::clone(&paste_pending);
+            let dirty          = Arc::clone(&dirty);
+            let image          = Arc::clone(&image);
+            let paste_pending  = Arc::clone(&paste_pending);
+            let notify_pending = Arc::clone(&notify_pending);
             thread::spawn(move || {
                 let mut reader = BufReader::new(stdout);
                 loop {
@@ -168,6 +189,10 @@ impl PixelPlugin {
                             if reader.read_exact(&mut json).is_err() { break; }
                             if mact_is_paste(&json) {
                                 paste_pending.store(true, Ordering::Relaxed);
+                            } else if let Some(notif) = mact_extract_notify(&json) {
+                                if let Ok(mut g) = notify_pending.lock() {
+                                    *g = Some(notif);
+                                }
                             }
                         }
                         _ => {
@@ -179,7 +204,7 @@ impl PixelPlugin {
             });
         }
 
-        Some(PixelPlugin { dirty, image, paste_pending, stdin, _child: child })
+        Some(PixelPlugin { dirty, image, paste_pending, notify_pending, stdin, _child: child })
     }
 
     pub fn send_resize(&mut self, width: u32, height: u32) {
@@ -778,5 +803,39 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(e)
                 .unwrap_or_else(|err| panic!("invalid JSON: {err}\n  input: {e}"));
         }
+    }
+
+    // ── mact_extract_notify() ─────────────────────────────────────────────────
+
+    #[test]
+    fn notify_action_parsed() {
+        let json = br#"{"action":"notify","title":"Mado Pomodoro","message":"Time's up!"}"#;
+        let result = mact_extract_notify(json);
+        assert_eq!(result, Some(("Mado Pomodoro".into(), "Time's up!".into())));
+    }
+
+    #[test]
+    fn notify_action_default_title() {
+        let json = br#"{"action":"notify","message":"Hello"}"#;
+        let (title, msg) = mact_extract_notify(json).unwrap();
+        assert_eq!(title, "Mado");
+        assert_eq!(msg, "Hello");
+    }
+
+    #[test]
+    fn notify_action_wrong_action_returns_none() {
+        let json = br#"{"action":"paste","message":"foo"}"#;
+        assert_eq!(mact_extract_notify(json), None);
+    }
+
+    #[test]
+    fn notify_action_invalid_json_returns_none() {
+        assert_eq!(mact_extract_notify(b"not json"), None);
+    }
+
+    #[test]
+    fn notify_action_missing_message_returns_none() {
+        let json = br#"{"action":"notify","title":"X"}"#;
+        assert_eq!(mact_extract_notify(json), None);
     }
 }

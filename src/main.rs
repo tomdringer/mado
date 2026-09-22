@@ -290,6 +290,17 @@ fn rgba([r, g, b]: [u8; 3], a: u8) -> slint::Color {
     slint::Color::from_argb_u8(a, r, g, b)
 }
 
+fn fire_notification(title: &str, message: &str) {
+    let script = format!(
+        "display notification {} with title {} sound name \"Ping\"",
+        serde_json::to_string(message).unwrap_or_else(|_| "\"\"".into()),
+        serde_json::to_string(title).unwrap_or_else(|_| "\"Mado\"".into()),
+    );
+    let _ = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .spawn();
+}
+
 fn apply_theme(ui: &MainWindow, t: &theme::Theme) {
     // Sidebar and chrome are solid; only terminal panes are glassy (~47% opacity).
     ui.set_theme_window_bg(rgb(t.window_bg));
@@ -1449,6 +1460,11 @@ fn main() {
                             *pending_paste.borrow_mut() = Some((paste_id, result));
                         }
                     }
+                    if let Ok(mut g) = plugin.notify_pending.lock() {
+                        if let Some((title, msg)) = g.take() {
+                            fire_notification(&title, &msg);
+                        }
+                    }
                 }
             }
 
@@ -1461,6 +1477,11 @@ fn main() {
                             if let Some(ref buf) = *guard {
                                 right_plugin_bufs.push((*i, buf.clone()));
                             }
+                        }
+                    }
+                    if let Ok(mut g) = plugin.notify_pending.lock() {
+                        if let Some((title, msg)) = g.take() {
+                            fire_notification(&title, &msg);
                         }
                     }
                 }
