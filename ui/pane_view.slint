@@ -21,6 +21,8 @@ export component PaneView inherits Rectangle {
     callback toggle-bottom-bar();
     callback toggle-help();
     in property <bool> help-visible: false;
+    // Foreground process name or CWD basename — shown in toolbar on focused pane.
+    in property <string> pane-title: "";
     // Incremented by MainWindow when a sidebar/overlay releases focus back to panes.
     // Avoids the Rust set_force_focus_id round-trip which Slint can batch away.
     in property <int> refocus-counter: 0;
@@ -188,12 +190,24 @@ export component PaneView inherits Rectangle {
                 width: 22px;
             }
 
+            // Pane title — foreground process name or CWD basename
+            if root.pane-title != "": Text {
+                text: root.pane-title;
+                color: root.is-focused ? #aaaaaa : #555555;
+                font-family: "Hack Nerd Font";
+                font-size: 11px;
+                vertical-alignment: center;
+                overflow: elide;
+                max-width: 180px;
+            }
+
             // Spacer — pushes buttons to the right
             Rectangle { horizontal-stretch: 1; }
 
             // Split / close buttons — only on the focused pane
-            if root.is-focused: h-area := TouchArea {
-                width: 22px;
+            h-area := TouchArea {
+                visible: root.is-focused;
+                width: root.is-focused ? 22px : 0;
                 height: 20px;
                 clicked => { root.split-horizontal(); }
 
@@ -204,18 +218,19 @@ export component PaneView inherits Rectangle {
                     background: h-area.has-hover ? #ffffff30 : #ffffff18;
 
                     Text {
-                        text: "⇔";
-                        color: #aaaaaa;
-                        font-family: "Hack Nerd Font";
-                        font-size: 18px;
+                        text: "|";
+                        color: h-area.has-hover ? #ffffff : #cccccc;
+                        font-size: 15px;
+                        font-weight: 900;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
                 }
             }
 
-            if root.is-focused: v-area := TouchArea {
-                width: 22px;
+            v-area := TouchArea {
+                visible: root.is-focused;
+                width: root.is-focused ? 22px : 0;
                 height: 20px;
                 clicked => { root.split-vertical(); }
 
@@ -226,10 +241,10 @@ export component PaneView inherits Rectangle {
                     background: v-area.has-hover ? #ffffff30 : #ffffff18;
 
                     Text {
-                        text: "⇕";
-                        color: #aaaaaa;
-                        font-family: "Hack Nerd Font";
-                        font-size: 18px;
+                        text: "-";
+                        color: v-area.has-hover ? #ffffff : #cccccc;
+                        font-size: 15px;
+                        font-weight: 900;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
@@ -237,8 +252,9 @@ export component PaneView inherits Rectangle {
             }
 
             // Close
-            if root.is-focused && root.is-closable: close-area := TouchArea {
-                width: 22px;
+            close-area := TouchArea {
+                visible: root.is-focused && root.is-closable;
+                width: (root.is-focused && root.is-closable) ? 22px : 0;
                 height: 20px;
                 clicked => { root.close(); }
 
@@ -249,14 +265,69 @@ export component PaneView inherits Rectangle {
                     background: close-area.has-hover ? #ff444430 : #ffffff18;
 
                     Text {
-                        text: "✕";
-                        color: close-area.has-hover ? #ff6666 : #aaaaaa;
-                        font-family: "Hack Nerd Font";
-                        font-size: 18px;
+                        text: "×";
+                        color: close-area.has-hover ? #ff6666 : #cccccc;
+                        font-size: 15px;
+                        font-weight: 900;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
                 }
+            }
+        }
+
+        // Hover tooltips — absolutely positioned below toolbar
+        if h-area.has-hover: Rectangle {
+            x: toolbar.width - 108px;
+            y: 30px;
+            width: 78px;
+            height: 20px;
+            background: #1e293b;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: #334155;
+            Text {
+                text: "Split Right";
+                color: #94a3b8;
+                font-size: 10px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        if v-area.has-hover: Rectangle {
+            x: toolbar.width - 108px;
+            y: 30px;
+            width: 78px;
+            height: 20px;
+            background: #1e293b;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: #334155;
+            Text {
+                text: "Split Down";
+                color: #94a3b8;
+                font-size: 10px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        if close-area.has-hover: Rectangle {
+            x: toolbar.width - 60px;
+            y: 30px;
+            width: 44px;
+            height: 20px;
+            background: #1e293b;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: #334155;
+            Text {
+                text: "Close";
+                color: #94a3b8;
+                font-size: 10px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
             }
         }
     }

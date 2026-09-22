@@ -197,6 +197,43 @@ pub fn load_runner_tasks() -> HashMap<String, String> {
         .collect()
 }
 
+// ── Deploy commands ────────────────────────────────────────────────────────────
+//
+// Optional `deploy` key alongside `task` in projects.toml:
+//
+//   [MDO]
+//   path = "/Users/tom/Sites/mado"
+//   task   = "cargo run"
+//   deploy = "fly deploy"
+//
+// The runner Deploy button looks up this entry on click.
+
+pub fn load_deploy_commands() -> HashMap<String, String> {
+    let file = config_dir().join("projects.toml");
+    let content = match fs::read_to_string(&file) {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    let table = match content.parse::<toml::Table>() {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("mado: could not parse projects.toml: {e}");
+            return HashMap::new();
+        }
+    };
+    table
+        .into_iter()
+        .filter_map(|(section, val)| {
+            let deploy = val.get("deploy")?.as_str()?.to_string();
+            let key = val.get("project")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or(section);
+            Some((key, deploy))
+        })
+        .collect()
+}
+
 // ── Plugin order persistence ───────────────────────────────────────────────────
 //
 // Saved as ~/.config/mado/sidebar.json — a JSON array of plugin IDs

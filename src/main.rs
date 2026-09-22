@@ -165,8 +165,9 @@ fn read_tasku_sel() -> String {
 /// Build the PTY command string for a Tasku top-bar button press.
 ///
 /// * `label`   — the button label (e.g. "List", "Edit", "Delete")
-/// * `pf`      — project-filter suffix already formatted as `" --project NAME"`
-///               or `""` when no project is active
+/// * `pf`      — project-filter suffix already formatted as `" --project \"NAME\""`
+///               or `""` when no project is active; used by all list commands
+///               including the post-edit/delete/add refresh
 /// * `sel_id`  — the currently-selected task ID (from TASKU_SEL_FILE),
 ///               required for Edit and Delete; ignored by all other commands
 ///
@@ -177,13 +178,13 @@ fn tasku_button_command(label: &str, pf: &str, sel_id: &str) -> Option<String> {
         // can run the interactive program, then restart the list via semicolon.
         "Edit" => {
             if sel_id.is_empty() { return None; }
-            Some(format!("\x03tasku edit {sel_id} -i; tasku list\n"))
+            Some(format!("\x03tasku edit {sel_id} -i; tasku list{pf}\n"))
         }
         "Delete" => {
             if sel_id.is_empty() { return None; }
-            Some(format!("\x03tasku delete {sel_id} -f; tasku list\n"))
+            Some(format!("\x03tasku delete {sel_id} -f; tasku list{pf}\n"))
         }
-        "Add" => Some("\x03tasku add -i; tasku list\n".to_string()),
+        "Add" => Some(format!("\x03tasku add -i; tasku list{pf}\n")),
 
         // Filter / display commands: use the STX inline-exec protocol (\x02).
         // MadoList reads the command string and calls exec() itself, so we
@@ -332,7 +333,26 @@ fn make_panes(
         is_closable: p.is_closable,
         terminal_image: images.get(&p.id).cloned().unwrap_or_default(),
         is_focused: focused_id == Some(p.id),
+        title: Default::default(), // populated shortly after by push_titles
     }).collect()
+}
+
+/// Update only the title field on each pane row, minimising Slint model churn.
+fn push_titles(
+    pane_model: &VecModel<FlatPane>,
+    titles: &HashMap<NodeId, String>,
+) {
+    for row in 0..pane_model.row_count() {
+        if let Some(mut pane) = pane_model.row_data(row) {
+            let id = pane.id as NodeId;
+            let new_title: slint::SharedString =
+                titles.get(&id).map(|s| s.as_str()).unwrap_or("").into();
+            if pane.title != new_title {
+                pane.title = new_title;
+                pane_model.set_row_data(row, pane);
+            }
+        }
+    }
 }
 
 fn make_dividers(dividers: &[FlatDividerData], active_id: Option<u32>) -> Vec<FlatDivider> {
@@ -661,6 +681,18 @@ fn main() {
                 "# [[plugins]]\n",
                 "# id      = \"clock\"       # label shown in the sidebar\n",
                 "# command = \"mado-clock\"  # binary on $PATH or absolute path\n",
+                "\n",
+                "# AI assistant panel (top-right). Mado ships with a Claude plugin.\n",
+                "# To use a different provider, swap the command for any AI CLI:\n",
+                "#   Claude:  command = \"mado-claude\"   (built-in, needs ANTHROPIC_API_KEY)\n",
+                "#   Gemini:  command = \"mado-ai\"        (opens a shell — run `gemini`)\n",
+                "#   OpenAI:  command = \"mado-ai\"        (opens a shell — run `sgpt` etc.)\n",
+                "# [[plugins]]\n",
+                "# id       = \"ai\"\n",
+                "# command  = \"mado-claude\"\n",
+                "# kind     = \"pixel\"\n",
+                "# icon     = \"\\uF086\"\n",
+                "# position = \"top-right\"\n",
             );
             let _ = std::fs::write(&config_path, defaults);
         }
@@ -891,6 +923,8 @@ fn main() {
     // ── Task runner ──────────────────────────────────────────────────────────
     let runner_tasks: Rc<std::collections::HashMap<String, String>> =
         Rc::new(workspace::load_runner_tasks());
+    let deploy_commands: Rc<std::collections::HashMap<String, String>> =
+        Rc::new(workspace::load_deploy_commands());
     let runner_is_running: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
 
     // ── Workspace + priority projects ────────────────────────────────────────
@@ -1116,6 +1150,9 @@ fn main() {
     // Image cache — id → most recent slint::Image (at physical pixel resolution)
     let images: Rc<RefCell<HashMap<NodeId, Image>>> = Rc::new(RefCell::new(HashMap::new()));
     let focused_id: Rc<RefCell<Option<NodeId>>> = Rc::new(RefCell::new(None));
+    // Live pane titles — id → foreground process name or CWD basename.
+    // Polled every ~1 s by the render timer and pushed to the pane model.
+    let pane_titles: Rc<RefCell<HashMap<NodeId, String>>> = Rc::new(RefCell::new(HashMap::new()));
     let font_size: Rc<RefCell<f32>> = Rc::new(RefCell::new(default_font_size));
 
     // ── Active workspace tracking ────────────────────────────────────────────
@@ -1154,6 +1191,10 @@ fn main() {
     let pending_paste: Rc<RefCell<Option<(NodeId, Arc<std::sync::Mutex<Option<Vec<u8>>>>)>>> =
         Rc::new(RefCell::new(None));
 
+    // Background title poll result: background thread writes here, timer reads.
+    let title_poll_result: Arc<std::sync::Mutex<Option<HashMap<NodeId, String>>>> =
+        Arc::new(std::sync::Mutex::new(None));
+
     // ── 60fps render timer ──────────────────────────────────────────────────
     // Uses set_row_data so PaneView instances (and their FocusScopes) are never
     // recreated — keyboard focus survives across frame updates.
@@ -1174,7 +1215,10 @@ fn main() {
         let float_plugin = Rc::clone(&float_plugin);
         let pending_paste = Rc::clone(&pending_paste);
         let top_right_pixel = Rc::clone(&top_right_pixel);
+        let pane_titles_timer = Rc::clone(&pane_titles);
+        let title_tick = Rc::new(std::cell::Cell::new(0u32));
         let top_right_paste_result = Rc::clone(&top_right_paste_result);
+        let title_poll_result_timer = Arc::clone(&title_poll_result);
         let ui_weak = ui.as_weak();
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, std::time::Duration::from_millis(16), move || {
@@ -1329,6 +1373,43 @@ fn main() {
                     }
                 }
             }
+            // Flush pre-typed inject commands (internal timeout check, runs every tick).
+            registry.borrow_mut().flush_injects();
+
+            // Apply title results from the most recent background poll.
+            if let Ok(mut guard) = title_poll_result_timer.try_lock() {
+                if let Some(new_titles) = guard.take() {
+                    let mut titles = pane_titles_timer.borrow_mut();
+                    let mut changed = false;
+                    for (id, t) in &new_titles {
+                        if titles.get(id).map(|s| s.as_str()).unwrap_or("") != t.as_str() {
+                            titles.insert(*id, t.clone());
+                            changed = true;
+                        }
+                    }
+                    drop(titles);
+                    if changed {
+                        push_titles(&pane_model, &pane_titles_timer.borrow());
+                    }
+                }
+            }
+
+            // Kick off a background title poll every ~1 s (~60 ticks at 60 fps).
+            // pgrep + ps are blocking — must not run on the UI thread.
+            let tc = title_tick.get();
+            title_tick.set(tc.wrapping_add(1));
+            if tc % 60 == 0 {
+                let inputs = registry.borrow().collect_title_inputs();
+                let result = Arc::clone(&title_poll_result_timer);
+                std::thread::spawn(move || {
+                    use crate::terminal::registry::compute_pane_title;
+                    let map: HashMap<NodeId, String> = inputs.into_iter()
+                        .map(|(id, pid, cwd)| (id, compute_pane_title(pid, cwd)))
+                        .collect();
+                    *result.lock().unwrap() = Some(map);
+                });
+            }
+
             if pane_dirty_ids.is_empty() && tasku_buf.is_none() && runner_buf.is_none()
                 && plugin_bufs.is_empty() && right_plugin_bufs.is_empty()
                 && top_right_buf.is_none() && bottom_right_buf.is_none()
@@ -1936,8 +2017,11 @@ fn main() {
                                         (1 << 1) | (1 << 3)
                                     };
                                     let _: () = objc2::msg_send![cover, setAutoresizingMask: mask];
-                                    let nil_v: *mut AnyObject = std::ptr::null_mut();
-                                    let _: () = objc2::msg_send![frame_view, addSubview: cover positioned: 1isize relativeTo: nil_v];
+                                    // Insert the cover just above Slint's content view, not
+                                    // above everything — this keeps it below the native title-bar
+                                    // controls (_NSTitlebarContainerView / traffic lights) so they
+                                    // are never accidentally obscured.
+                                    let _: () = objc2::msg_send![frame_view, addSubview: cover positioned: 1isize relativeTo: ns_view];
                                     titlebar_cover_ptr.set(cover as usize);
 
                                     // 4. Paint the layer with card_bg.
@@ -2079,7 +2163,7 @@ fn main() {
                         let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
                         if plugin.kind == "pixel" {
                             let phys_w = ((top_right_panel_w - PANE_H_INSET as f32).max(10.0) * reg.scale) as u32;
-                            let phys_h = (h.max(50.0) * reg.scale) as u32;
+                            let phys_h = ((h - 52.0).max(50.0) * reg.scale) as u32;
                             let fs_str = reg.font_size.to_string();
                             let sc_str = reg.scale.to_string();
                             if let Some(pp) = PixelPlugin::spawn(&program, &args_ref, phys_w, phys_h,
@@ -2161,7 +2245,7 @@ fn main() {
                         if tasku_open_resize.get() {
                             let pf = active_project_resize.borrow().as_ref()
                                 .and_then(|code| code_to_name_resize.get(code))
-                                .map(|name| format!(" --project {name}"))
+                                .map(|name| format!(" --project \"{name}\""))
                                 .unwrap_or_default();
                             reg.write_key(SIDEBAR_TASKU_ID,
                                 format!("\x03tasku list{pf}\n").as_bytes());
@@ -2171,12 +2255,12 @@ fn main() {
                     if let Some(ref plugin) = top_right_plugin_resize {
                         if plugin.kind == "pixel" {
                             let phys_w = ((top_right_panel_w - PANE_H_INSET as f32).max(10.0) * reg.scale) as u32;
-                            let phys_h = (h.max(50.0) * reg.scale) as u32;
+                            let phys_h = ((h - 52.0).max(50.0) * reg.scale) as u32;
                             if let Some(pp) = top_right_pixel_resize.borrow_mut().as_mut() {
                                 pp.send_resize(phys_w, phys_h);
                             }
                         } else {
-                            reg.resize(top_right_plugin_node_id(0), (top_right_panel_w - PANE_H_INSET as f32).max(10.0), h.max(50.0));
+                            reg.resize(top_right_plugin_node_id(0), (top_right_panel_w - PANE_H_INSET as f32).max(10.0), (h - 52.0).max(50.0));
                         }
                     }
                     // Resize bottom-right panel plugin
@@ -2246,6 +2330,169 @@ fn main() {
         move || {
             if let Some(ui) = ui_weak.upgrade() {
                 do_zoom(&ui, default_font_size, &font_size, &registry, &tree, &pane_model, &images, &focused_id);
+            }
+        }
+    });
+
+    // ── Menu bar callbacks ───────────────────────────────────────────────────
+    ui.on_menu_quit(|| { slint::quit_event_loop().ok(); });
+
+    ui.on_menu_toggle_sidebar({
+        let ui_weak = ui.as_weak();
+        move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_sidebar_icon_only(!ui.get_sidebar_icon_only());
+            }
+        }
+    });
+
+    ui.on_menu_new_pane({
+        let tree = Rc::clone(&tree);
+        let registry = Rc::clone(&registry);
+        let dividers_cache = Rc::clone(&dividers_cache);
+        let pane_model = Rc::clone(&pane_model);
+        let div_model = Rc::clone(&div_model);
+        let images = Rc::clone(&images);
+        let focused_id = Rc::clone(&focused_id);
+        let ui_weak = ui.as_weak();
+        move || {
+            let id = match *focused_id.borrow() {
+                Some(id) => id,
+                None => return,
+            };
+            let result = tree.borrow_mut().split(id as u32, SplitDir::Horizontal);
+            if let Some(ui) = ui_weak.upgrade() {
+                if let Some((relocated_id, new_id)) = result {
+                    let w = ui.get_window_w();
+                    let h = ui.get_window_h();
+                    let panes = tree.borrow().flatten(w, h);
+
+                    let mut reg = registry.borrow_mut();
+                    let source_cwd = reg.get_cwd(id);
+                    if let Some(sess) = reg.sessions.remove(&id) {
+                        reg.sessions.insert(relocated_id, sess);
+                    }
+                    if let Some(p) = panes.iter().find(|p| p.id == new_id) {
+                        reg.spawn(new_id, p.width, p.height, source_cwd.as_deref());
+                    }
+                    if let Some(p) = panes.iter().find(|p| p.id == relocated_id) {
+                        reg.resize(relocated_id, (p.width - PANE_H_INSET).max(10.0), (p.height - PANE_TOP_INSET).max(10.0));
+                    }
+                    drop(reg);
+
+                    let mut imgs = images.borrow_mut();
+                    if let Some(img) = imgs.remove(&id) {
+                        imgs.insert(relocated_id, img);
+                    }
+                    drop(imgs);
+
+                    *focused_id.borrow_mut() = Some(new_id);
+                }
+                full_push(&ui, &tree.borrow(), &dividers_cache, &pane_model, &div_model,
+                          &images.borrow(), *focused_id.borrow(), None);
+            }
+        }
+    });
+
+    ui.on_menu_close_pane({
+        let tree = Rc::clone(&tree);
+        let registry = Rc::clone(&registry);
+        let dividers_cache = Rc::clone(&dividers_cache);
+        let pane_model = Rc::clone(&pane_model);
+        let div_model = Rc::clone(&div_model);
+        let images = Rc::clone(&images);
+        let focused_id = Rc::clone(&focused_id);
+        let ui_weak = ui.as_weak();
+        move || {
+            let id = match *focused_id.borrow() {
+                Some(id) => id,
+                None => return,
+            };
+            registry.borrow_mut().remove(id);
+            images.borrow_mut().remove(&id);
+            let remap = tree.borrow_mut().close(id as u32);
+
+            let new_focus = if let Some((old_id, new_id)) = remap {
+                let img = images.borrow_mut().remove(&old_id);
+                if let Some(img) = img {
+                    images.borrow_mut().insert(new_id, img);
+                }
+                registry.borrow_mut().remap_id(old_id, new_id);
+                Some(new_id)
+            } else {
+                tree.borrow().leaf_ids().first().copied()
+            };
+            *focused_id.borrow_mut() = new_focus;
+
+            if let Some(ui) = ui_weak.upgrade() {
+                let w = ui.get_window_w();
+                let h = ui.get_window_h();
+                let panes = tree.borrow().flatten(w, h);
+                let mut reg = registry.borrow_mut();
+                for p in &panes {
+                    reg.resize(p.id,
+                        (p.width  - PANE_H_INSET).max(10.0),
+                        (p.height - PANE_TOP_INSET).max(10.0));
+                }
+                drop(reg);
+                full_push(&ui, &tree.borrow(), &dividers_cache, &pane_model, &div_model,
+                          &images.borrow(), *focused_id.borrow(), None);
+            }
+        }
+    });
+
+    ui.on_menu_copy({
+        let registry = Rc::clone(&registry);
+        let selection = Rc::clone(&selection);
+        let focused_id = Rc::clone(&focused_id);
+        move || {
+            let id = match *focused_id.borrow() {
+                Some(id) => id,
+                None => return,
+            };
+            let norm = {
+                let sel = selection.borrow();
+                match sel.as_ref() {
+                    Some(s) if s.pane_id == id && !s.is_empty() => s.normalized(),
+                    _ => return,
+                }
+            };
+            let text = registry.borrow().get_selection_text(id, norm);
+            if !text.is_empty() {
+                let _ = std::process::Command::new("/bin/sh")
+                    .args(["-c", &format!("printf '%s' {} | pbcopy", shell_escape(&text))])
+                    .status();
+            }
+            *selection.borrow_mut() = None;
+            registry.borrow().mark_dirty(id);
+        }
+    });
+
+    ui.on_menu_paste({
+        let focused_id = Rc::clone(&focused_id);
+        let pending_paste = Rc::clone(&pending_paste);
+        move || {
+            let id = match *focused_id.borrow() {
+                Some(id) => id,
+                None => return,
+            };
+            let result: Arc<std::sync::Mutex<Option<Vec<u8>>>> =
+                Arc::new(std::sync::Mutex::new(None));
+            let result2 = Arc::clone(&result);
+            std::thread::spawn(move || {
+                if let Ok(out) = std::process::Command::new("pbpaste").output() {
+                    *result2.lock().unwrap() = Some(out.stdout);
+                }
+            });
+            *pending_paste.borrow_mut() = Some((id, result));
+        }
+    });
+
+    ui.on_menu_toggle_right_sidebar({
+        let ui_weak = ui.as_weak();
+        move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_right_sidebar_icon_only(!ui.get_right_sidebar_icon_only());
             }
         }
     });
@@ -2363,7 +2610,7 @@ fn main() {
                         let _ = std::fs::write(TASKU_COLS_FILE, cols.to_string());
                         let pf = active_project2.borrow().as_ref()
                             .and_then(|code| code_to_name2.get(code))
-                            .map(|name| format!(" --project {name}"))
+                            .map(|name| format!(" --project \"{name}\""))
                             .unwrap_or_default();
                         registry2.borrow_mut().write_key(
                             SIDEBAR_TASKU_ID,
@@ -2441,10 +2688,9 @@ fn main() {
         let code_to_name = Rc::clone(&code_to_name);
         move |label| {
             // Resolve active project code → full name for --project flag.
-            // Unfiltered commands (Edit, Delete, SQL) ignore the project flag.
             let pf = active_project.borrow().as_ref()
                 .and_then(|code| code_to_name.get(code))
-                .map(|name| format!(" --project {name}"))
+                .map(|name| format!(" --project \"{name}\""))
                 .unwrap_or_default();
 
             // Commands that need the selected task ID: read from the selection
@@ -2611,9 +2857,11 @@ fn main() {
         let code_to_name = Rc::clone(&code_to_name);
         let project_paths = Rc::clone(&project_paths);
         let runner_tasks = Rc::clone(&runner_tasks);
+        let deploy_commands = Rc::clone(&deploy_commands);
         let top_right_pixel = Rc::clone(&top_right_pixel);
         let right_pixel_plugins_ws = Rc::clone(&right_pixel_plugins);
         let tasku_open_ws = Rc::clone(&tasku_open);
+        let pane_titles_ws = Rc::clone(&pane_titles);
         let ui_weak = ui.as_weak();
         move |code| {
             let code = code.to_string();
@@ -2626,7 +2874,9 @@ fn main() {
                 let leaf_ids = tree.borrow().leaf_ids();
                 if let Some(ref proj) = current {
                     let cwds = registry.borrow().collect_cwds(&leaf_ids);
-                    let saved_tree = tree.borrow().to_saved(&cwds);
+                    let snapshots = registry.borrow().collect_snapshots(&leaf_ids);
+                    let last_commands = registry.borrow().collect_last_commands(&leaf_ids);
+                    let saved_tree = tree.borrow().to_saved(&cwds, &snapshots, &last_commands);
                     workspace::save_workspace(proj, &workspace::SavedWorkspace {
                         project: proj.clone(),
                         tree: saved_tree,
@@ -2640,6 +2890,7 @@ fn main() {
                 }
             }
             images.borrow_mut().clear();
+            pane_titles_ws.borrow_mut().clear();
 
             // 2. Load saved layout or create a fresh single-pane workspace.
             let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
@@ -2648,19 +2899,25 @@ fn main() {
                 .cloned()
                 .unwrap_or_else(|| home.clone());
 
-            let (new_tree, mut pane_cwds) = match workspace::load_workspace(&code) {
+            let (new_tree, mut pane_cwds, pane_snapshots, pane_last_cmds) = match workspace::load_workspace(&code) {
                 Some(saved) => PaneTree::from_saved(&saved.tree),
                 None => {
                     let t = PaneTree::new();
                     let root_id = t.root;
-                    (t, [(root_id, project_root.clone())].into())
+                    (t, [(root_id, project_root.clone())].into(), HashMap::new(), HashMap::new())
                 }
             };
 
-            // Replace any pane CWD that is "/" (uninitialised) with the
-            // configured project root so the terminal opens somewhere useful.
+            // For fresh spawns (after restart, parked sessions not available),
+            // always start in the project root when one is configured. Parked
+            // sessions are restored live and never use this CWD. Only fall back
+            // to the saved CWD when the saved path is already inside the project.
             for cwd in pane_cwds.values_mut() {
-                if cwd == "/" {
+                if project_root != home
+                    && !cwd.starts_with(&project_root)
+                {
+                    *cwd = project_root.clone();
+                } else if cwd == "/" {
                     *cwd = project_root.clone();
                 }
             }
@@ -2679,10 +2936,35 @@ fn main() {
                     let pane_tuples: Vec<(NodeId, f32, f32)> =
                         panes.iter().map(|p| (p.id, p.width, p.height)).collect();
                     registry.borrow_mut()
-                        .restore_or_spawn_project(&code, &pane_tuples, &pane_cwds);
+                        .restore_or_spawn_project(&code, &pane_tuples, &pane_cwds, &pane_snapshots, &pane_last_cmds);
                 }
                 full_push(&ui, &tree.borrow(), &dividers_cache, &pane_model, &div_model,
                           &images.borrow(), *focused_id.borrow(), None);
+
+                // Route keyboard focus to the first pane now that the layout is live.
+                if let Some(fid) = *focused_id.borrow() {
+                    ui.set_force_focus_id(fid as i32);
+                    ui.set_force_focus_id(-1);
+                }
+
+                // Seed titles from saved CWD basenames so they appear immediately
+                // on restore (the poll timer fills in live process names after ~1 s).
+                {
+                    let mut titles = pane_titles_ws.borrow_mut();
+                    for (id, cwd) in &pane_cwds {
+                        if !titles.contains_key(id) {
+                            let base = std::path::Path::new(cwd)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("")
+                                .to_string();
+                            if !base.is_empty() {
+                                titles.insert(*id, base);
+                            }
+                        }
+                    }
+                }
+                push_titles(&pane_model, &pane_titles_ws.borrow());
 
                 // 4. Update active project and reflect in UI
                 *active_project.borrow_mut() = Some(code.clone());
@@ -2698,13 +2980,27 @@ fn main() {
                     pp.send_workspace(&code);
                 }
 
-                // 4b. Update runner command for the new workspace
+                // 4b. Update runner command for the new workspace and clear stale output
                 let proj_name = code_to_name.get(&code).map(|s| s.as_str());
                 let cmd = runner_tasks.get(&code)
                     .or_else(|| proj_name.and_then(|n| runner_tasks.get(n)))
                     .cloned()
                     .unwrap_or_default();
                 ui.set_runner_current_command(cmd.into());
+                let has_deploy = deploy_commands.contains_key(&code)
+                    || proj_name.map(|n| deploy_commands.contains_key(n)).unwrap_or(false);
+                ui.set_runner_has_deploy(has_deploy);
+                // Kill any running task and clear the terminal so the previous
+                // project's output doesn't bleed into the new workspace.
+                {
+                    let mut reg = registry.borrow_mut();
+                    if reg.sessions.contains_key(&RUNNER_ID) {
+                        reg.write_key(RUNNER_ID, &[3]); // Ctrl+C
+                        reg.sessions.remove(&RUNNER_ID);
+                    }
+                }
+                ui.set_runner_is_running(false);
+                ui.set_runner_terminal_image(Default::default());
 
                 // 5. If the Tasku overlay is open, refresh with project filter.
                 //    Guard on tasku_open so we don't run tasku list with a
@@ -2713,7 +3009,7 @@ fn main() {
                     && tasku_open_ws.get()
                 {
                     let name = code_to_name.get(&code).cloned().unwrap_or_else(|| code.clone());
-                    let cmd = format!("\x03tasku list --project {name}\n");
+                    let cmd = format!("\x03tasku list --project \"{name}\"\n");
                     registry.borrow_mut().write_key(SIDEBAR_TASKU_ID, cmd.as_bytes());
                 }
             }
@@ -2812,6 +3108,46 @@ fn main() {
             );
             runner_is_running.set(true);
             if let Some(ui) = ui_weak.upgrade() { ui.set_runner_is_running(true); }
+        }
+    });
+
+    // ── Runner: deploy ───────────────────────────────────────────────────────
+    ui.on_runner_deploy({
+        let registry          = Rc::clone(&registry);
+        let active_project    = Rc::clone(&active_project);
+        let deploy_commands   = Rc::clone(&deploy_commands);
+        let project_paths     = Rc::clone(&project_paths);
+        let code_to_name      = Rc::clone(&code_to_name);
+        let runner_is_running = Rc::clone(&runner_is_running);
+        let ui_weak           = ui.as_weak();
+        move || {
+            // Kill any currently running task first
+            registry.borrow_mut().write_key(RUNNER_ID, &[3]);
+            registry.borrow_mut().sessions.remove(&RUNNER_ID);
+
+            let code = active_project.borrow().clone().unwrap_or_default();
+            let name = code_to_name.get(&code).map(|s| s.as_str());
+            let cmd = deploy_commands.get(&code)
+                .or_else(|| name.and_then(|n| deploy_commands.get(n)))
+                .cloned()
+                .unwrap_or_default();
+            if cmd.is_empty() { return; }
+            let cwd = project_paths.get(&code)
+                .or_else(|| name.and_then(|n| project_paths.get(n)))
+                .map(|s| s.as_str());
+            let overlay_w = ui_weak.upgrade()
+                .map(|ui| ui.get_overlay_total_w())
+                .unwrap_or(1200.0);
+            let (term_w, term_h) = runner_size(overlay_w);
+            let shell = registry.borrow().shell.clone();
+            registry.borrow_mut().spawn_cmd(
+                RUNNER_ID, term_w, term_h,
+                &shell, &["-ilc", &cmd], cwd, &[],
+            );
+            runner_is_running.set(true);
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_runner_is_running(true);
+            }
         }
     });
 
@@ -3872,7 +4208,9 @@ fn main() {
             if let Some(ref proj) = *active_project.borrow() {
                 let leaf_ids = tree.borrow().leaf_ids();
                 let cwds = registry.borrow().collect_cwds(&leaf_ids);
-                let saved_tree = tree.borrow().to_saved(&cwds);
+                let snapshots = registry.borrow().collect_snapshots(&leaf_ids);
+                let last_commands = registry.borrow().collect_last_commands(&leaf_ids);
+                let saved_tree = tree.borrow().to_saved(&cwds, &snapshots, &last_commands);
                 workspace::save_workspace(proj, &workspace::SavedWorkspace {
                     project: proj.clone(),
                     tree: saved_tree,
@@ -3899,7 +4237,9 @@ fn main() {
                 if let Some(ref proj) = *active_project.borrow() {
                     let leaf_ids = tree.borrow().leaf_ids();
                     let cwds = registry.borrow().collect_cwds(&leaf_ids);
-                    let saved_tree = tree.borrow().to_saved(&cwds);
+                    let snapshots = registry.borrow().collect_snapshots(&leaf_ids);
+                    let last_commands = registry.borrow().collect_last_commands(&leaf_ids);
+                    let saved_tree = tree.borrow().to_saved(&cwds, &snapshots, &last_commands);
                     workspace::save_workspace(proj, &workspace::SavedWorkspace {
                         project: proj.clone(),
                         tree: saved_tree,
@@ -4428,8 +4768,8 @@ mod tasku_button_tests {
 
     #[test]
     fn list_with_project() {
-        let cmd = tasku_button_command("List", " --project Mado", "").unwrap();
-        assert_eq!(cmd, "\x02tasku list --project Mado\n");
+        let cmd = tasku_button_command("List", " --project \"Mado Browser\"", "").unwrap();
+        assert_eq!(cmd, "\x02tasku list --project \"Mado Browser\"\n");
     }
 
     #[test]
@@ -4516,11 +4856,11 @@ mod tasku_button_tests {
     // ── project filter is ignored by Add / Edit / Delete / SQL ───────────────
 
     #[test]
-    fn add_ignores_project_filter() {
-        let with    = tasku_button_command("Add", " --project Mado", "").unwrap();
+    fn add_respects_project_filter() {
+        let with    = tasku_button_command("Add", " --project \"Mado\"", "").unwrap();
         let without = tasku_button_command("Add", "", "").unwrap();
-        assert_eq!(with, without);
-        assert_eq!(with, "\x03tasku add -i; tasku list\n");
+        assert_eq!(with,    "\x03tasku add -i; tasku list --project \"Mado\"\n");
+        assert_eq!(without, "\x03tasku add -i; tasku list\n");
     }
 
     #[test]
@@ -4533,17 +4873,19 @@ mod tasku_button_tests {
     }
 
     #[test]
-    fn edit_ignores_project_filter() {
-        let with    = tasku_button_command("Edit", " --project Mado", "42").unwrap();
+    fn edit_respects_project_filter() {
+        let with    = tasku_button_command("Edit", " --project \"Mado\"", "42").unwrap();
         let without = tasku_button_command("Edit", "", "42").unwrap();
-        assert_eq!(with, without);
+        assert_eq!(with,    "\x03tasku edit 42 -i; tasku list --project \"Mado\"\n");
+        assert_eq!(without, "\x03tasku edit 42 -i; tasku list\n");
     }
 
     #[test]
-    fn delete_ignores_project_filter() {
-        let with    = tasku_button_command("Delete", " --project Mado", "42").unwrap();
+    fn delete_respects_project_filter() {
+        let with    = tasku_button_command("Delete", " --project \"Mado\"", "42").unwrap();
         let without = tasku_button_command("Delete", "", "42").unwrap();
-        assert_eq!(with, without);
+        assert_eq!(with,    "\x03tasku delete 42 -f; tasku list --project \"Mado\"\n");
+        assert_eq!(without, "\x03tasku delete 42 -f; tasku list\n");
     }
 
     // ── Edit / Delete require a selected task ID ─────────────────────────────

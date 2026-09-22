@@ -15,6 +15,7 @@ export struct FlatPane {
     is-closable: bool,
     terminal-image: image,
     is-focused: bool,
+    title: string,
 }
 
 export struct FlatDivider {
@@ -131,7 +132,9 @@ export component MainWindow inherits Window {
     in property <image> runner-terminal-image;
     in property <string> runner-current-command: "";
     in property <bool>  runner-is-running: false;
+    in property <bool>  runner-has-deploy: false;
     callback runner-panel-height-changed(float);
+    callback runner-deploy();
     callback runner-restart();
     callback runner-mouse-pressed(float, float);
     callback runner-mouse-moved(float, float);
@@ -219,6 +222,15 @@ export component MainWindow inherits Window {
     callback top-plugin-click(int, float, float);
     callback top-plugin-focus-changed(int, bool);
 
+    // Menu bar callbacks
+    callback menu-new-pane();
+    callback menu-close-pane();
+    callback menu-quit();
+    callback menu-copy();
+    callback menu-paste();
+    callback menu-toggle-sidebar();
+    callback menu-toggle-right-sidebar();
+
     // Right sidebar callbacks
     callback right-sidebar-width-changed(float);
     callback right-plugin-toggled(int);
@@ -232,6 +244,29 @@ export component MainWindow inherits Window {
     changed window-h => { root.window-resized(root.window-w, root.window-h); }
     changed show-browser-panel => { root.browser-visible-changed(root.show-browser-panel); }
     changed top-bar-expanded => { root.tasku-toggled(root.top-bar-expanded); }
+
+    // ── Menu bar ──────────────────────────────────────────────────────────────
+    MenuBar {
+        Menu {
+            title: @tr("File");
+            MenuItem { title: @tr("New Pane");   activated => { root.menu-new-pane(); } }
+            MenuItem { title: @tr("Close Pane"); activated => { root.menu-close-pane(); } }
+            MenuItem { title: @tr("Quit Mado");  activated => { root.menu-quit(); } }
+        }
+        Menu {
+            title: @tr("Edit");
+            MenuItem { title: @tr("Copy");  activated => { root.menu-copy(); } }
+            MenuItem { title: @tr("Paste"); activated => { root.menu-paste(); } }
+        }
+        Menu {
+            title: @tr("View");
+            MenuItem { title: @tr("Zoom In");       activated => { root.zoom-in(); } }
+            MenuItem { title: @tr("Zoom Out");      activated => { root.zoom-out(); } }
+            MenuItem { title: @tr("Reset Zoom");    activated => { root.zoom-reset(); } }
+            MenuItem { title: @tr("Toggle Left Sidebar");  activated => { root.menu-toggle-sidebar(); } }
+            MenuItem { title: @tr("Toggle Right Sidebar"); activated => { root.menu-toggle-right-sidebar(); } }
+        }
+    }
 
     // Top bar shows when explicitly enabled OR when the AI/browser panel is configured.
     private property <bool>   show-top-bar-effective: root.show-top-bar || root.top-right-panel-width > 0 || root.browser-panel-width > 0;
@@ -252,8 +287,8 @@ export component MainWindow inherits Window {
     private property <int> pane-refocus-counter: 0;
 
     // ── Icon-only sidebar state ───────────────────────────────────────────────
-    private property <bool>  sidebar-icon-only: false;
-    private property <bool>  right-sidebar-icon-only: false;
+    in-out property <bool>  sidebar-icon-only: false;
+    in-out property <bool>  right-sidebar-icon-only: false;
     private property <int>   left-sb-kb-counter: 0;
     private property <int>   right-sb-kb-counter: 0;
     private property <float> effective-sidebar-w:
@@ -402,6 +437,7 @@ export component MainWindow inherits Window {
                     is-closable: pane.is-closable;
                     terminal-image: pane.terminal-image;
                     is-focused: pane.is-focused;
+                    pane-title: pane.title;
                     theme-pane-bg: root.theme-pane-bg;
                     theme-pane-toolbar: root.theme-pane-toolbar;
                     theme-focus-border: root.theme-focus-border;
@@ -661,9 +697,11 @@ export component MainWindow inherits Window {
                 theme-terminal-area-bg: root.theme-terminal-area-bg;
                 current-command: root.runner-current-command;
                 is-running: root.runner-is-running;
+                has-deploy-command: root.runner-has-deploy;
                 play    => { root.runner-play(); }
                 stop    => { root.runner-stop(); }
                 restart => { root.runner-restart(); }
+                deploy  => { root.runner-deploy(); }
                 key-input(text, ctrl, meta, alt, shift) => { root.runner-key-input(text, ctrl, meta, alt, shift); }
                 scroll(delta) => { root.runner-scroll(delta); }
                 mouse-pressed(x, y) => { root.runner-mouse-pressed(x, y); }
