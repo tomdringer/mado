@@ -1308,6 +1308,8 @@ fn main() {
                             || proj_name.map(|n| deploys.contains_key(n)).unwrap_or(false)
                     };
                     ui.set_runner_has_deploy(has_deploy);
+                    // Refresh workspace and priority panels (icons, new entries)
+                    ui.invoke_workspace_refresh();
                 }
             }
 
