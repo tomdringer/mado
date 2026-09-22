@@ -838,10 +838,10 @@ fn main() {
 
     // Load config first — font size, shell, theme, etc.
     let config = Config::load();
-    let loaded_theme = Rc::new(theme::Theme::load(&config.theme));
-    apply_theme(&ui, &loaded_theme);
+    let loaded_theme = Rc::new(RefCell::new(theme::Theme::load(&config.theme)));
+    apply_theme(&ui, &loaded_theme.borrow());
     if config.theme_starship {
-        apply_starship_theme(&loaded_theme);
+        apply_starship_theme(&loaded_theme.borrow());
     }
     let default_font_size = config.font_size;
     let shell = config.resolved_shell();
@@ -1279,6 +1279,7 @@ fn main() {
         let code_to_name_timer = Rc::clone(&code_to_name);
         let tree_timer = Rc::clone(&tree);
         let font_size_timer = Rc::clone(&font_size);
+        let loaded_theme_timer = Rc::clone(&loaded_theme);
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, std::time::Duration::from_millis(16), move || {
             // ── projects.toml hot-reload ─────────────────────────────────
@@ -1311,16 +1312,22 @@ fn main() {
             }
 
             // ── config.toml hot-reload ────────────────────────────────────
-            // Reloads live-applicable settings: sidebar/bar dimensions,
-            // font size. Plugins, theme, and shell still require a restart.
+            // Reloads live-applicable settings: theme, sidebar/bar dimensions,
+            // font size. Plugins and shell still require a restart.
             if config_reload_rx_timer.try_recv().is_ok() {
                 while config_reload_rx_timer.try_recv().is_ok() {}
                 let new_cfg = config::Config::load();
                 if let Some(ui) = ui_weak.upgrade() {
+                    // Theme
+                    let new_theme = theme::Theme::load(&new_cfg.theme);
+                    apply_theme(&ui, &new_theme);
+                    *loaded_theme_timer.borrow_mut() = new_theme;
+                    // UI dimensions
                     ui.set_sidebar_width(new_cfg.sidebar_width);
                     ui.set_right_sidebar_width(new_cfg.right_sidebar_width);
                     ui.set_top_bar_height(new_cfg.top_bar_height);
                     ui.set_show_bottom_bar(new_cfg.show_bottom_bar);
+                    // Font size
                     let new_fs = new_cfg.font_size;
                     if (new_fs - *font_size_timer.borrow()).abs() > 0.01 {
                         do_zoom(
@@ -2159,7 +2166,7 @@ fn main() {
                                         fn CFRelease(cf: *const std::ffi::c_void);
                                     }
 
-                                    let [r, g, b] = loaded_theme.card_bg;
+                                    let [r, g, b] = loaded_theme.borrow().card_bg;
                                     let layer: *mut AnyObject = objc2::msg_send![cover, layer];
                                     if !layer.is_null() {
                                         let cg = CGColorCreateSRGB(
@@ -2252,7 +2259,7 @@ fn main() {
                             let pane_w = (p.width  - PANE_H_INSET).max(10.0);
                             let pane_h = (p.height - PANE_TOP_INSET).max(10.0);
                             let cols   = reg.logical_to_cols(pane_w);
-                            let banner = welcome_banner(cols, &loaded_theme);
+                            let banner = welcome_banner(cols, &loaded_theme.borrow());
                             reg.spawn_with_banner(root_id, pane_w, pane_h, None, &banner);
                         }
                     }
@@ -2344,7 +2351,7 @@ fn main() {
                         if let Some(p) = panes.iter().find(|p| p.id == root_id) {
                             let pane_w = (p.width - PANE_H_INSET).max(10.0);
                             let cols   = reg.logical_to_cols(pane_w);
-                            let banner = welcome_banner(cols, &loaded_theme);
+                            let banner = welcome_banner(cols, &loaded_theme.borrow());
                             reg.reinject_banner(root_id, &banner);
                         }
                     }
