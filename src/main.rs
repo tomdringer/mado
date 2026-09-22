@@ -1195,13 +1195,17 @@ fn main() {
     let title_poll_result: Arc<std::sync::Mutex<Option<HashMap<NodeId, String>>>> =
         Arc::new(std::sync::Mutex::new(None));
 
-    // ── projects.toml hot-reload ─────────────────────────────────────────────
-    // A background notify watcher sends () on any change; the render timer polls
-    // with try_recv() and re-loads the maps on the UI thread (no Send required).
+    // ── Config hot-reload ────────────────────────────────────────────────────
+    // Watches both config.toml and projects.toml; render timer polls with
+    // try_recv() and re-applies changed values on the UI thread.
     let (reload_tx, reload_rx) = std::sync::mpsc::channel::<()>();
+    let (config_reload_tx, config_reload_rx) = std::sync::mpsc::channel::<()>();
     {
         use notify::{RecommendedWatcher, Watcher, RecursiveMode, EventKind};
-        let projects_toml = workspace::config_dir().join("projects.toml");
+        let cfg_dir = workspace::config_dir();
+
+        // projects.toml watcher
+        let projects_toml = cfg_dir.join("projects.toml");
         let tx = reload_tx;
         match RecommendedWatcher::new(
             move |res: notify::Result<notify::Event>| {
@@ -1218,6 +1222,26 @@ fn main() {
                 std::mem::forget(w);
             }
             Err(e) => eprintln!("mado: projects.toml watcher error: {e}"),
+        }
+
+        // config.toml watcher
+        let config_toml = cfg_dir.join("config.toml");
+        let tx2 = config_reload_tx;
+        match RecommendedWatcher::new(
+            move |res: notify::Result<notify::Event>| {
+                if let Ok(ev) = res {
+                    if matches!(ev.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                        let _ = tx2.send(());
+                    }
+                }
+            },
+            notify::Config::default(),
+        ) {
+            Ok(mut w) => {
+                let _ = w.watch(&config_toml, RecursiveMode::NonRecursive);
+                std::mem::forget(w);
+            }
+            Err(e) => eprintln!("mado: config.toml watcher error: {e}"),
         }
     }
 
@@ -1247,11 +1271,14 @@ fn main() {
         let title_poll_result_timer = Arc::clone(&title_poll_result);
         let ui_weak = ui.as_weak();
         let reload_rx_timer = reload_rx;
+        let config_reload_rx_timer = config_reload_rx;
         let project_paths_timer = Rc::clone(&project_paths);
         let runner_tasks_timer = Rc::clone(&runner_tasks);
         let deploy_commands_timer = Rc::clone(&deploy_commands);
         let active_project_timer = Rc::clone(&active_project);
         let code_to_name_timer = Rc::clone(&code_to_name);
+        let tree_timer = Rc::clone(&tree);
+        let font_size_timer = Rc::clone(&font_size);
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, std::time::Duration::from_millis(16), move || {
             // ── projects.toml hot-reload ─────────────────────────────────
@@ -1280,6 +1307,32 @@ fn main() {
                             || proj_name.map(|n| deploys.contains_key(n)).unwrap_or(false)
                     };
                     ui.set_runner_has_deploy(has_deploy);
+                }
+            }
+
+            // ── config.toml hot-reload ────────────────────────────────────
+            // Reloads live-applicable settings: sidebar/bar dimensions,
+            // font size. Plugins, theme, and shell still require a restart.
+            if config_reload_rx_timer.try_recv().is_ok() {
+                while config_reload_rx_timer.try_recv().is_ok() {}
+                let new_cfg = config::Config::load();
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_sidebar_width(new_cfg.sidebar_width);
+                    ui.set_right_sidebar_width(new_cfg.right_sidebar_width);
+                    ui.set_top_bar_height(new_cfg.top_bar_height);
+                    ui.set_show_bottom_bar(new_cfg.show_bottom_bar);
+                    let new_fs = new_cfg.font_size;
+                    if (new_fs - *font_size_timer.borrow()).abs() > 0.01 {
+                        do_zoom(
+                            &ui, new_fs,
+                            &font_size_timer,
+                            &registry,
+                            &tree_timer,
+                            &pane_model,
+                            &images,
+                            &focused_id,
+                        );
+                    }
                 }
             }
 
