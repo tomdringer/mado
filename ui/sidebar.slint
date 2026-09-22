@@ -621,19 +621,15 @@ component PrioritiesContent inherits Rectangle {
     background: transparent;
     clip: true;
 
-    Flickable {
+    VerticalLayout {
         x: 0; y: 0;
         width: parent.width - 1px;
         height: parent.height;
-        viewport-height: root.projects.length * root.item-h * 1px + 8px;
+        alignment: start;
+        padding-top: 4px;
+        padding-bottom: 4px;
 
-        VerticalLayout {
-            width: parent.width;
-            alignment: start;
-            padding-top: 4px;
-            padding-bottom: 4px;
-
-            for proj[i] in root.projects: PriorityRow {
+        for proj[i] in root.projects: PriorityRow {
                 width: parent.width;
                 proj: proj;
                 row-index: i;
@@ -665,7 +661,6 @@ component PrioritiesContent inherits Rectangle {
                 background: root.theme-focus-border;
             }
         }
-    }
 
     if root.projects.length == 0: Text {
         text: "no projects";
@@ -1085,7 +1080,7 @@ export component Sidebar inherits Rectangle {
     private property <length> prio-panel-h:
         root.prio-count == 0
         ? 60px
-        : clamp(root.prio-count * 36px + 8px, 60px, 300px);
+        : root.prio-count * 36px + 8px;
 
     // Drop-before index during plugin reorder drag.
     private property <int> drop-index: {
