@@ -58,32 +58,29 @@ pub fn load_default_project() -> Option<String> {
     table.get("default")?.as_str().map(|s| s.to_string())
 }
 
-pub fn load_project_paths() -> HashMap<String, String> {
-    let file = config_dir().join("projects.toml");
-    let content = match fs::read_to_string(&file) {
-        Ok(s) => s,
-        Err(_) => return HashMap::new(),
-    };
+fn parse_project_paths(content: &str) -> HashMap<String, String> {
     let table = match content.parse::<toml::Table>() {
         Ok(t) => t,
-        Err(e) => {
-            eprintln!("mado: could not parse projects.toml: {e}");
-            return HashMap::new();
-        }
+        Err(e) => { eprintln!("mado: could not parse projects.toml: {e}"); return HashMap::new(); }
     };
-    table
-        .into_iter()
-        .filter_map(|(section, val)| {
-            let path = val.get("path")?.as_str()?.to_string();
-            // If `project` is set, use the Tasku project name as key so
-            // name-based fallback lookup works. Otherwise use the section name.
-            let key = val.get("project")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or(section);
-            Some((key, path))
-        })
-        .collect()
+    table.into_iter().filter_map(|(section, val)| {
+        let path = val.get("path")?.as_str()?.to_string();
+        // If `project` is set, use the Tasku project name as key so
+        // name-based fallback lookup works. Otherwise use the section name.
+        let key = val.get("project")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or(section);
+        Some((key, path))
+    }).collect()
+}
+
+pub fn load_project_paths() -> HashMap<String, String> {
+    let file = config_dir().join("projects.toml");
+    match fs::read_to_string(&file) {
+        Ok(s) => parse_project_paths(&s),
+        Err(_) => HashMap::new(),
+    }
 }
 
 // ── Project icons ─────────────────────────────────────────────────────────────
@@ -132,27 +129,27 @@ fn resolve_icon(raw: &str) -> String {
     raw.to_string()
 }
 
-pub fn load_project_icons() -> HashMap<String, String> {
-    let file = config_dir().join("projects.toml");
-    let content = match fs::read_to_string(&file) {
-        Ok(s) => s,
-        Err(_) => return HashMap::new(),
-    };
+fn parse_project_icons(content: &str) -> HashMap<String, String> {
     let table = match content.parse::<toml::Table>() {
         Ok(t) => t,
         Err(_) => return HashMap::new(),
     };
-    table
-        .into_iter()
-        .filter_map(|(section, val)| {
-            let raw = val.get("icon")?.as_str()?.to_string();
-            let key = val.get("project")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or(section);
-            Some((key, resolve_icon(&raw)))
-        })
-        .collect()
+    table.into_iter().filter_map(|(section, val)| {
+        let raw = val.get("icon")?.as_str()?.to_string();
+        let key = val.get("project")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or(section);
+        Some((key, resolve_icon(&raw)))
+    }).collect()
+}
+
+pub fn load_project_icons() -> HashMap<String, String> {
+    let file = config_dir().join("projects.toml");
+    match fs::read_to_string(&file) {
+        Ok(s) => parse_project_icons(&s),
+        Err(_) => HashMap::new(),
+    }
 }
 
 
@@ -171,30 +168,27 @@ pub fn load_project_icons() -> HashMap<String, String> {
 //
 // The bottom bar runner looks up the active workspace's entry on play.
 
-pub fn load_runner_tasks() -> HashMap<String, String> {
-    let file = config_dir().join("projects.toml");
-    let content = match fs::read_to_string(&file) {
-        Ok(s) => s,
-        Err(_) => return HashMap::new(),
-    };
+fn parse_runner_tasks(content: &str) -> HashMap<String, String> {
     let table = match content.parse::<toml::Table>() {
         Ok(t) => t,
-        Err(e) => {
-            eprintln!("mado: could not parse projects.toml: {e}");
-            return HashMap::new();
-        }
+        Err(e) => { eprintln!("mado: could not parse projects.toml: {e}"); return HashMap::new(); }
     };
-    table
-        .into_iter()
-        .filter_map(|(section, val)| {
-            let task = val.get("task")?.as_str()?.to_string();
-            let key = val.get("project")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or(section);
-            Some((key, task))
-        })
-        .collect()
+    table.into_iter().filter_map(|(section, val)| {
+        let task = val.get("task")?.as_str()?.to_string();
+        let key = val.get("project")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or(section);
+        Some((key, task))
+    }).collect()
+}
+
+pub fn load_runner_tasks() -> HashMap<String, String> {
+    let file = config_dir().join("projects.toml");
+    match fs::read_to_string(&file) {
+        Ok(s) => parse_runner_tasks(&s),
+        Err(_) => HashMap::new(),
+    }
 }
 
 // ── Deploy commands ────────────────────────────────────────────────────────────
@@ -208,30 +202,27 @@ pub fn load_runner_tasks() -> HashMap<String, String> {
 //
 // The runner Deploy button looks up this entry on click.
 
-pub fn load_deploy_commands() -> HashMap<String, String> {
-    let file = config_dir().join("projects.toml");
-    let content = match fs::read_to_string(&file) {
-        Ok(s) => s,
-        Err(_) => return HashMap::new(),
-    };
+fn parse_deploy_commands(content: &str) -> HashMap<String, String> {
     let table = match content.parse::<toml::Table>() {
         Ok(t) => t,
-        Err(e) => {
-            eprintln!("mado: could not parse projects.toml: {e}");
-            return HashMap::new();
-        }
+        Err(e) => { eprintln!("mado: could not parse projects.toml: {e}"); return HashMap::new(); }
     };
-    table
-        .into_iter()
-        .filter_map(|(section, val)| {
-            let deploy = val.get("deploy")?.as_str()?.to_string();
-            let key = val.get("project")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or(section);
-            Some((key, deploy))
-        })
-        .collect()
+    table.into_iter().filter_map(|(section, val)| {
+        let deploy = val.get("deploy")?.as_str()?.to_string();
+        let key = val.get("project")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or(section);
+        Some((key, deploy))
+    }).collect()
+}
+
+pub fn load_deploy_commands() -> HashMap<String, String> {
+    let file = config_dir().join("projects.toml");
+    match fs::read_to_string(&file) {
+        Ok(s) => parse_deploy_commands(&s),
+        Err(_) => HashMap::new(),
+    }
 }
 
 // ── Plugin order persistence ───────────────────────────────────────────────────
@@ -590,5 +581,120 @@ mod tests {
         // Just verify it doesn't panic when config dir doesn't exist
         // (actual HOME varies by environment, result is non-deterministic)
         let _ = load_project_paths();
+    }
+
+    // ── parse_project_paths() ────────────────────────────────────────────────
+
+    const SAMPLE_PROJECTS_TOML: &str = r#"
+[MDO]
+path = "/Users/tom/Sites/mado"
+icon = "terminal"
+task = "cargo run"
+deploy = "cargo build --release"
+
+[TCL]
+path = "/Users/tom/Sites/tasku-cloud"
+icon = "web"
+task = "./bin/dev"
+deploy = "fly deploy"
+
+[NRT]
+path = "/Users/tom/Sites/nerimasoft"
+icon = "web"
+"#;
+
+    #[test]
+    fn parse_paths_reads_all_sections() {
+        let paths = parse_project_paths(SAMPLE_PROJECTS_TOML);
+        assert_eq!(paths.get("MDO").map(|s| s.as_str()), Some("/Users/tom/Sites/mado"));
+        assert_eq!(paths.get("TCL").map(|s| s.as_str()), Some("/Users/tom/Sites/tasku-cloud"));
+        assert_eq!(paths.get("NRT").map(|s| s.as_str()), Some("/Users/tom/Sites/nerimasoft"));
+    }
+
+    #[test]
+    fn parse_paths_ignores_sections_without_path() {
+        let toml = "[MDO]\ntask = \"cargo run\"\n";
+        assert!(parse_project_paths(toml).is_empty());
+    }
+
+    #[test]
+    fn parse_paths_uses_project_key_as_lookup_name() {
+        let toml = "[APP]\npath = \"/srv/app\"\nproject = \"MyApp\"\n";
+        let paths = parse_project_paths(toml);
+        assert!(paths.contains_key("MyApp"), "should key by project name");
+        assert!(!paths.contains_key("APP"),  "section name should not appear");
+    }
+
+    #[test]
+    fn parse_paths_invalid_toml_returns_empty() {
+        assert!(parse_project_paths("not valid {{ toml").is_empty());
+    }
+
+    // ── parse_runner_tasks() ─────────────────────────────────────────────────
+
+    #[test]
+    fn parse_tasks_reads_task_fields() {
+        let tasks = parse_runner_tasks(SAMPLE_PROJECTS_TOML);
+        assert_eq!(tasks.get("MDO").map(|s| s.as_str()), Some("cargo run"));
+        assert_eq!(tasks.get("TCL").map(|s| s.as_str()), Some("./bin/dev"));
+    }
+
+    #[test]
+    fn parse_tasks_omits_sections_without_task() {
+        let tasks = parse_runner_tasks(SAMPLE_PROJECTS_TOML);
+        assert!(!tasks.contains_key("NRT"), "NRT has no task");
+    }
+
+    #[test]
+    fn parse_tasks_uses_project_key() {
+        let toml = "[APP]\npath = \"/srv/app\"\nproject = \"MyApp\"\ntask = \"npm start\"\n";
+        let tasks = parse_runner_tasks(toml);
+        assert_eq!(tasks.get("MyApp").map(|s| s.as_str()), Some("npm start"));
+        assert!(!tasks.contains_key("APP"));
+    }
+
+    // ── parse_deploy_commands() ──────────────────────────────────────────────
+
+    #[test]
+    fn parse_deploy_reads_deploy_fields() {
+        let cmds = parse_deploy_commands(SAMPLE_PROJECTS_TOML);
+        assert_eq!(cmds.get("MDO").map(|s| s.as_str()), Some("cargo build --release"));
+        assert_eq!(cmds.get("TCL").map(|s| s.as_str()), Some("fly deploy"));
+    }
+
+    #[test]
+    fn parse_deploy_omits_sections_without_deploy() {
+        let cmds = parse_deploy_commands(SAMPLE_PROJECTS_TOML);
+        assert!(!cmds.contains_key("NRT"), "NRT has no deploy command");
+    }
+
+    #[test]
+    fn parse_deploy_uses_project_key() {
+        let toml = "[APP]\npath = \"/srv\"\nproject = \"MyApp\"\ndeploy = \"./deploy.sh\"\n";
+        let cmds = parse_deploy_commands(toml);
+        assert_eq!(cmds.get("MyApp").map(|s| s.as_str()), Some("./deploy.sh"));
+        assert!(!cmds.contains_key("APP"));
+    }
+
+    // ── parse_project_icons() ────────────────────────────────────────────────
+
+    #[test]
+    fn parse_icons_resolves_named_presets() {
+        let icons = parse_project_icons(SAMPLE_PROJECTS_TOML);
+        assert_eq!(icons.get("MDO").map(|s| s.as_str()), Some("\u{f489}")); // terminal
+        assert_eq!(icons.get("TCL").map(|s| s.as_str()), Some("\u{f484}")); // web
+    }
+
+    #[test]
+    fn parse_icons_passes_through_raw_glyph() {
+        let toml = "[MDO]\npath = \"/x\"\nicon = \"\u{f000}\"\n";
+        let icons = parse_project_icons(toml);
+        assert_eq!(icons.get("MDO").map(|s| s.as_str()), Some("\u{f000}"));
+    }
+
+    #[test]
+    fn parse_icons_omits_sections_without_icon() {
+        let toml = "[MDO]\npath = \"/x\"\n";
+        assert!(parse_project_icons(toml).is_empty());
     }
 }
