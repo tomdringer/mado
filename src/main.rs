@@ -937,6 +937,8 @@ fn main() {
     let deploy_commands: Rc<RefCell<std::collections::HashMap<String, String>>> =
         Rc::new(RefCell::new(workspace::load_deploy_commands()));
     let runner_is_running: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
+    // None = idle, Some(true) = deploy running, Some(false) = task running
+    let runner_command: Rc<std::cell::Cell<Option<bool>>> = Rc::new(std::cell::Cell::new(None));
 
     // ── Workspace + priority projects ────────────────────────────────────────
     // Fetch projects once at startup.  Build:
@@ -1291,6 +1293,8 @@ fn main() {
         let tree_timer = Rc::clone(&tree);
         let font_size_timer = Rc::clone(&font_size);
         let loaded_theme_timer = Rc::clone(&loaded_theme);
+        let runner_command_timer    = Rc::clone(&runner_command);
+        let runner_is_running_timer = Rc::clone(&runner_is_running);
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, std::time::Duration::from_millis(16), move || {
             // ── projects.toml hot-reload ─────────────────────────────────
@@ -1352,6 +1356,31 @@ fn main() {
                             &images,
                             &focused_id,
                         );
+                    }
+                }
+            }
+
+            // ── Runner exit detection ─────────────────────────────────────
+            // Fire a notification when a task or deploy finishes naturally.
+            // Skipped if runner_command is None (user stopped it manually).
+            if let Some(is_deploy) = runner_command_timer.get() {
+                let exited = registry.borrow().sessions.get(&RUNNER_ID)
+                    .map(|s| s.exited.load(std::sync::atomic::Ordering::Relaxed))
+                    .unwrap_or(false);
+                if exited {
+                    let success = registry.borrow().sessions.get(&RUNNER_ID)
+                        .map(|s| s.exit_success.load(std::sync::atomic::Ordering::Relaxed))
+                        .unwrap_or(false);
+                    let msg = if is_deploy {
+                        if success { "Deploy succeeded" } else { "Deploy failed" }
+                    } else {
+                        if success { "Task finished" } else { "Task exited with errors" }
+                    };
+                    fire_notification("Mado", msg);
+                    runner_command_timer.set(None);
+                    runner_is_running_timer.set(false);
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_runner_is_running(false);
                     }
                 }
             }
@@ -3006,6 +3035,8 @@ fn main() {
         let right_pixel_plugins_ws = Rc::clone(&right_pixel_plugins);
         let tasku_open_ws = Rc::clone(&tasku_open);
         let pane_titles_ws = Rc::clone(&pane_titles);
+        let runner_is_running_ws = Rc::clone(&runner_is_running);
+        let runner_command_ws = Rc::clone(&runner_command);
         let ui_weak = ui.as_weak();
         move |code| {
             let code = code.to_string();
@@ -3152,6 +3183,8 @@ fn main() {
                         reg.sessions.remove(&RUNNER_ID);
                     }
                 }
+                runner_is_running_ws.set(false);
+                runner_command_ws.set(None);
                 ui.set_runner_is_running(false);
                 ui.set_runner_terminal_image(Default::default());
 
@@ -3177,6 +3210,7 @@ fn main() {
         let project_paths     = Rc::clone(&project_paths);
         let code_to_name      = Rc::clone(&code_to_name);
         let runner_is_running = Rc::clone(&runner_is_running);
+        let runner_command    = Rc::clone(&runner_command);
         let ui_weak           = ui.as_weak();
         move || {
             let code = active_project.borrow().clone().unwrap_or_default();
@@ -3209,6 +3243,7 @@ fn main() {
                 &shell, &["-ilc", &cmd], cwd, &[],
             );
             runner_is_running.set(true);
+            runner_command.set(Some(false)); // task
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_runner_is_running(true);
             }
@@ -3219,10 +3254,12 @@ fn main() {
     ui.on_runner_stop({
         let registry          = Rc::clone(&registry);
         let runner_is_running = Rc::clone(&runner_is_running);
+        let runner_command    = Rc::clone(&runner_command);
         let ui_weak           = ui.as_weak();
         move || {
             registry.borrow_mut().write_key(RUNNER_ID, &[3]); // Ctrl+C
             runner_is_running.set(false);
+            runner_command.set(None); // user stopped — no notification
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_runner_is_running(false);
             }
@@ -3237,6 +3274,7 @@ fn main() {
         let project_paths     = Rc::clone(&project_paths);
         let code_to_name      = Rc::clone(&code_to_name);
         let runner_is_running = Rc::clone(&runner_is_running);
+        let runner_command    = Rc::clone(&runner_command);
         let ui_weak           = ui.as_weak();
         move || {
             // Kill existing session if running
@@ -3274,6 +3312,7 @@ fn main() {
                 &shell, &["-ilc", &cmd], cwd, &[],
             );
             runner_is_running.set(true);
+            runner_command.set(Some(false)); // task
             if let Some(ui) = ui_weak.upgrade() { ui.set_runner_is_running(true); }
         }
     });
@@ -3286,6 +3325,7 @@ fn main() {
         let project_paths     = Rc::clone(&project_paths);
         let code_to_name      = Rc::clone(&code_to_name);
         let runner_is_running = Rc::clone(&runner_is_running);
+        let runner_command    = Rc::clone(&runner_command);
         let ui_weak           = ui.as_weak();
         move || {
             // Kill any currently running task first
@@ -3319,6 +3359,7 @@ fn main() {
                 &shell, &["-ilc", &cmd], cwd, &[],
             );
             runner_is_running.set(true);
+            runner_command.set(Some(true)); // deploy
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_runner_is_running(true);
             }
