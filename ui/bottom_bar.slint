@@ -127,10 +127,12 @@ export component RunnerContent inherits Rectangle {
     in property <color> theme-terminal-area-bg: #020617;
     in property <string> current-command: "";
     in property <bool> is-running: false;
+    in property <bool> has-deploy-command: false;
 
     callback play();
     callback stop();
     callback restart();
+    callback deploy();
     callback key-input(string, bool, bool, bool, bool);  // text, ctrl, meta, alt, shift
     callback scroll(float);
     callback mouse-pressed(float, float);
@@ -225,6 +227,26 @@ export component RunnerContent inherits Rectangle {
                         text: "↺";
                         color: rgba(255, 255, 255, 0.80);
                         font-size: 16px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: parent.width; height: parent.height;
+                    }
+                }
+
+                // Deploy — only shown when a deploy command is configured
+                if root.has-deploy-command: Rectangle {
+                    width: parent.width; height: 36px;
+                    border-radius: 4px;
+                    background: deploy-ta.has-hover ? #ffffff1C : #ffffff0E;
+                    deploy-ta := TouchArea {
+                        width: parent.width; height: parent.height;
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => { root.deploy(); }
+                    }
+                    Text {
+                        text: "▲";
+                        color: rgba(255, 255, 255, 0.80);
+                        font-size: 14px;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                         width: parent.width; height: parent.height;

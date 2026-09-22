@@ -1006,12 +1006,41 @@ fn key_text_to_bytes(text: &str) -> Vec<u8> {
     }
 }
 
-fn key_to_bytes(text: &str, _ctrl: bool, meta: bool, _shift: bool) -> Vec<u8> {
+fn key_to_bytes(text: &str, ctrl: bool, meta: bool, _shift: bool) -> Vec<u8> {
     // Modifier-only: return empty
     if matches!(text,
         "\u{0010}" | "\u{0015}" | "\u{0011}" | "\u{0016}" |
         "\u{0012}" | "\u{0013}" | "\u{0014}" | "\u{0017}" | "\u{0018}" | "\u{0019}"
     ) { return vec![]; }
+
+    // Ctrl combinations — Slint sends text="c" with ctrl=true (not the control character).
+    // Map to the corresponding ASCII control byte before any further processing.
+    if ctrl {
+        if let Some(ch) = text.chars().next() {
+            if text.chars().count() == 1 {
+                let ctrl_byte: Option<u8> = match ch {
+                    'a'..='z' => Some(ch as u8 - b'a' + 1),
+                    'A'..='Z' => Some(ch as u8 - b'A' + 1),
+                    '[' => Some(0x1B), // ESC
+                    '\\' => Some(0x1C),
+                    ']' => Some(0x1D),
+                    '^' => Some(0x1E),
+                    '_' => Some(0x1F),
+                    ' ' => Some(0x00),
+                    _ => None,
+                };
+                if let Some(b) = ctrl_byte {
+                    let bytes = vec![b];
+                    if meta {
+                        let mut v = vec![0x1Bu8];
+                        v.extend_from_slice(&bytes);
+                        return v;
+                    }
+                    return bytes;
+                }
+            }
+        }
+    }
 
     let bytes = key_text_to_bytes(text);
     if bytes.is_empty() { return vec![]; }

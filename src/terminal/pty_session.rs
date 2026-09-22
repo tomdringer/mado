@@ -11,6 +11,8 @@ use super::terminal_state::{TerminalState, VteHandler};
 pub struct PtySession {
     pub state: Arc<Mutex<TerminalState>>,
     pub dirty: Arc<AtomicBool>,
+    /// Set by the reader thread when the terminal rings the bell, cleared by drain_bells.
+    pub bell: Arc<AtomicBool>,
     /// PID of the shell process — used for cwd lookup when OSC 7 hasn't fired.
     pub pid: Option<u32>,
     /// Physical pixel dimensions of the pane — used to size the render buffer
@@ -82,6 +84,7 @@ impl PtySession {
 
         let state = Arc::new(Mutex::new(TerminalState::new(cols as usize, rows as usize)));
         let dirty = Arc::new(AtomicBool::new(true));
+        let bell  = Arc::new(AtomicBool::new(false));
         let writer = pair.master.take_writer().expect("take_writer failed");
 
         // Inject pre_bytes BEFORE the reader thread starts — no contention possible.
@@ -99,6 +102,7 @@ impl PtySession {
         {
             let state = Arc::clone(&state);
             let dirty = Arc::clone(&dirty);
+            let bell  = Arc::clone(&bell);
             let mut reader = pair.master.try_clone_reader().expect("clone_reader failed");
             thread::spawn(move || {
                 let mut parser = Parser::new();
@@ -113,6 +117,10 @@ impl PtySession {
                                 for &b in &buf[..n] {
                                     parser.advance(&mut handler, b);
                                 }
+                                if st.bell {
+                                    st.bell = false;
+                                    bell.store(true, Ordering::Relaxed);
+                                }
                             }
                             dirty.store(true, Ordering::Relaxed);
                         }
@@ -123,7 +131,7 @@ impl PtySession {
 
         let phys_w = cols as usize; // placeholder; registry sets real values after spawn
         let phys_h = rows as usize;
-        PtySession { state, dirty, pid, phys_w, phys_h, writer, master: pair.master }
+        PtySession { state, dirty, bell, pid, phys_w, phys_h, writer, master: pair.master }
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16, phys_w: usize, phys_h: usize) {

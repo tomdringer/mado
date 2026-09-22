@@ -8,7 +8,13 @@ pub type NodeId = u32;
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum SavedNode {
-    Leaf { cwd: String },
+    Leaf {
+        cwd: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_command: Option<String>,
+    },
     Split {
         dir: String,   // "h" = horizontal, "v" = vertical
         ratio: f32,
@@ -287,49 +293,81 @@ impl PaneTree {
 
     /// Serialise the tree. `cwds` maps leaf id → last known working directory
     /// (collected from OSC 7 tracking). Leaves without a cwd entry fall back
-    /// to $HOME so the saved file is always valid.
-    pub fn to_saved(&self, cwds: &HashMap<NodeId, String>) -> SavedNode {
+    /// to $HOME so the saved file is always valid. `snapshots` maps leaf id →
+    /// ANSI bytes (base64-encoded) for visual terminal restoration on next open.
+    pub fn to_saved(
+        &self,
+        cwds: &HashMap<NodeId, String>,
+        snapshots: &HashMap<NodeId, String>,
+        last_commands: &HashMap<NodeId, String>,
+    ) -> SavedNode {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-        self.node_to_saved(self.root, cwds, &home)
+        self.node_to_saved(self.root, cwds, snapshots, last_commands, &home)
     }
 
-    fn node_to_saved(&self, id: NodeId, cwds: &HashMap<NodeId, String>, home: &str) -> SavedNode {
+    fn node_to_saved(
+        &self,
+        id: NodeId,
+        cwds: &HashMap<NodeId, String>,
+        snapshots: &HashMap<NodeId, String>,
+        last_commands: &HashMap<NodeId, String>,
+        home: &str,
+    ) -> SavedNode {
         match self.nodes.get(&id) {
             Some(PaneNode::Leaf { .. }) => SavedNode::Leaf {
                 cwd: cwds.get(&id).cloned().unwrap_or_else(|| home.to_string()),
+                snapshot: snapshots.get(&id).cloned(),
+                last_command: last_commands.get(&id).cloned(),
             },
             Some(PaneNode::Split { dir, ratio, first, second, .. }) => SavedNode::Split {
                 dir: if *dir == SplitDir::Horizontal { "h".to_string() } else { "v".to_string() },
                 ratio: *ratio,
-                first:  Box::new(self.node_to_saved(*first,  cwds, home)),
-                second: Box::new(self.node_to_saved(*second, cwds, home)),
+                first:  Box::new(self.node_to_saved(*first,  cwds, snapshots, last_commands, home)),
+                second: Box::new(self.node_to_saved(*second, cwds, snapshots, last_commands, home)),
             },
-            None => SavedNode::Leaf { cwd: home.to_string() },
+            None => SavedNode::Leaf { cwd: home.to_string(), snapshot: None, last_command: None },
         }
     }
 
     /// Rebuild a tree from a saved snapshot.
-    /// Returns the new tree plus a map of leaf-id → cwd to use when spawning PTYs.
-    pub fn from_saved(saved: &SavedNode) -> (PaneTree, HashMap<NodeId, String>) {
+    /// Returns `(tree, cwd_map, snapshot_map, last_command_map)`.
+    /// `last_command_map` maps leaf id → command text to pre-type on restore.
+    pub fn from_saved(
+        saved: &SavedNode,
+    ) -> (PaneTree, HashMap<NodeId, String>, HashMap<NodeId, String>, HashMap<NodeId, String>) {
         let mut tree = PaneTree { nodes: HashMap::new(), root: 0, next_id: 0 };
         let mut cwds = HashMap::new();
-        let root_id = tree.build_from_saved(saved, &mut cwds);
+        let mut snapshots = HashMap::new();
+        let mut last_commands = HashMap::new();
+        let root_id = tree.build_from_saved(saved, &mut cwds, &mut snapshots, &mut last_commands);
         tree.root = root_id;
-        (tree, cwds)
+        (tree, cwds, snapshots, last_commands)
     }
 
-    fn build_from_saved(&mut self, node: &SavedNode, cwds: &mut HashMap<NodeId, String>) -> NodeId {
+    fn build_from_saved(
+        &mut self,
+        node: &SavedNode,
+        cwds: &mut HashMap<NodeId, String>,
+        snapshots: &mut HashMap<NodeId, String>,
+        last_commands: &mut HashMap<NodeId, String>,
+    ) -> NodeId {
         let id = self.new_id();
         match node {
-            SavedNode::Leaf { cwd } => {
+            SavedNode::Leaf { cwd, snapshot, last_command } => {
                 let color = COLORS[id as usize % COLORS.len()];
                 self.nodes.insert(id, PaneNode::Leaf { color });
                 cwds.insert(id, cwd.clone());
+                if let Some(s) = snapshot {
+                    snapshots.insert(id, s.clone());
+                }
+                if let Some(cmd) = last_command {
+                    last_commands.insert(id, cmd.clone());
+                }
             }
             SavedNode::Split { dir, ratio, first, second } => {
                 // Build children first so IDs are allocated in depth-first order
-                let first_id  = self.build_from_saved(first,  cwds);
-                let second_id = self.build_from_saved(second, cwds);
+                let first_id  = self.build_from_saved(first,  cwds, snapshots, last_commands);
+                let second_id = self.build_from_saved(second, cwds, snapshots, last_commands);
                 let split_dir = if dir == "h" { SplitDir::Horizontal } else { SplitDir::Vertical };
                 self.nodes.insert(id, PaneNode::Split {
                     id,
@@ -513,10 +551,11 @@ mod tests {
     fn save_restore_roundtrip_single_pane() {
         let t = PaneTree::new();
         let cwds = HashMap::from([(0u32, "/home/user".to_string())]);
-        let saved = t.to_saved(&cwds);
-        let (t2, cwds2) = PaneTree::from_saved(&saved);
+        let saved = t.to_saved(&cwds, &HashMap::new(), &HashMap::new());
+        let (t2, cwds2, snaps2, _) = PaneTree::from_saved(&saved);
         assert_eq!(t2.leaf_ids().len(), 1);
         assert_eq!(cwds2.values().next().unwrap(), "/home/user");
+        assert!(snaps2.is_empty());
     }
 
     #[test]
@@ -527,23 +566,95 @@ mod tests {
             (left_id,  "/left".to_string()),
             (right_id, "/right".to_string()),
         ]);
-        let saved = t.to_saved(&cwds);
-        let (t2, cwds2) = PaneTree::from_saved(&saved);
+        let saved = t.to_saved(&cwds, &HashMap::new(), &HashMap::new());
+        let (t2, cwds2, snaps2, _) = PaneTree::from_saved(&saved);
         assert_eq!(t2.leaf_ids().len(), 2);
         let mut paths: Vec<&String> = cwds2.values().collect();
         paths.sort();
         assert_eq!(paths, vec!["/left", "/right"]);
+        assert!(snaps2.is_empty());
     }
 
     #[test]
     fn to_saved_uses_home_for_missing_cwd() {
         let t = PaneTree::new();
-        let saved = t.to_saved(&HashMap::new()); // no cwd for root leaf
-        if let SavedNode::Leaf { cwd } = saved {
+        let saved = t.to_saved(&HashMap::new(), &HashMap::new(), &HashMap::new()); // no cwd for root leaf
+        if let SavedNode::Leaf { cwd, .. } = saved {
             // Falls back to $HOME or "/"
             assert!(!cwd.is_empty());
         } else {
             panic!("expected Leaf");
         }
+    }
+
+    #[test]
+    fn snapshot_roundtrip_single_pane() {
+        let t = PaneTree::new();
+        let id = t.root;
+        let cwds = HashMap::from([(id, "/tmp".to_string())]);
+        let snaps_in = HashMap::from([(id, "ANSI_DATA".to_string())]);
+        let saved = t.to_saved(&cwds, &snaps_in, &HashMap::new());
+        let (_, _, snaps_out, _) = PaneTree::from_saved(&saved);
+        assert_eq!(snaps_out.values().next().map(String::as_str), Some("ANSI_DATA"));
+    }
+
+    #[test]
+    fn snapshot_roundtrip_split_two_panes() {
+        let mut t = PaneTree::new();
+        let (left_id, right_id) = t.split(0, SplitDir::Horizontal).unwrap();
+        let cwds = HashMap::from([
+            (left_id,  "/left".to_string()),
+            (right_id, "/right".to_string()),
+        ]);
+        let snaps_in = HashMap::from([
+            (left_id,  "LEFT_SNAP".to_string()),
+            (right_id, "RIGHT_SNAP".to_string()),
+        ]);
+        let saved = t.to_saved(&cwds, &snaps_in, &HashMap::new());
+        let (_, _, snaps_out, _) = PaneTree::from_saved(&saved);
+        assert_eq!(snaps_out.len(), 2);
+        let mut vals: Vec<&String> = snaps_out.values().collect();
+        vals.sort();
+        assert_eq!(vals, vec!["LEFT_SNAP", "RIGHT_SNAP"]);
+    }
+
+    #[test]
+    fn snapshot_absent_when_not_provided() {
+        let mut t = PaneTree::new();
+        let (left_id, right_id) = t.split(0, SplitDir::Horizontal).unwrap();
+        let cwds = HashMap::from([
+            (left_id,  "/l".to_string()),
+            (right_id, "/r".to_string()),
+        ]);
+        // Only provide snapshot for left pane.
+        let snaps_in = HashMap::from([(left_id, "LEFT_ONLY".to_string())]);
+        let saved = t.to_saved(&cwds, &snaps_in, &HashMap::new());
+        let (_, _, snaps_out, _) = PaneTree::from_saved(&saved);
+        assert_eq!(snaps_out.len(), 1);
+        assert!(snaps_out.values().any(|v| v == "LEFT_ONLY"));
+    }
+
+    #[test]
+    fn snapshot_serde_skips_none() {
+        // Leaves with no snapshot should not include the key in JSON.
+        let t = PaneTree::new();
+        let cwds = HashMap::from([(t.root, "/x".to_string())]);
+        let saved = t.to_saved(&cwds, &HashMap::new(), &HashMap::new());
+        let json = serde_json::to_string(&saved).unwrap();
+        assert!(!json.contains("snapshot"), "snapshot key should be absent when None: {}", json);
+    }
+
+    #[test]
+    fn snapshot_serde_roundtrip_json() {
+        // Snapshot is preserved through JSON serialization/deserialization.
+        let t = PaneTree::new();
+        let id = t.root;
+        let cwds = HashMap::from([(id, "/y".to_string())]);
+        let snaps_in = HashMap::from([(id, "PAYLOAD".to_string())]);
+        let saved = t.to_saved(&cwds, &snaps_in, &HashMap::new());
+        let json = serde_json::to_string(&saved).unwrap();
+        let restored: SavedNode = serde_json::from_str(&json).unwrap();
+        let (_, _, snaps_out, _) = PaneTree::from_saved(&restored);
+        assert_eq!(snaps_out.values().next().map(String::as_str), Some("PAYLOAD"));
     }
 }
