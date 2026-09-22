@@ -23,6 +23,7 @@ arboard = "3"
 ureq = { version = "2", features = ["native-tls"] }
 png = "0.17"
 base64 = { version = "0.22", features = ["alloc"] }
+notify = "6"
 
 [[bin]]
 name = "mado-claude"

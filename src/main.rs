@@ -921,10 +921,10 @@ fn main() {
     ui.set_top_bar_height(config.top_bar_height);
 
     // ── Task runner ──────────────────────────────────────────────────────────
-    let runner_tasks: Rc<std::collections::HashMap<String, String>> =
-        Rc::new(workspace::load_runner_tasks());
-    let deploy_commands: Rc<std::collections::HashMap<String, String>> =
-        Rc::new(workspace::load_deploy_commands());
+    let runner_tasks: Rc<RefCell<std::collections::HashMap<String, String>>> =
+        Rc::new(RefCell::new(workspace::load_runner_tasks()));
+    let deploy_commands: Rc<RefCell<std::collections::HashMap<String, String>>> =
+        Rc::new(RefCell::new(workspace::load_deploy_commands()));
     let runner_is_running: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
 
     // ── Workspace + priority projects ────────────────────────────────────────
@@ -953,7 +953,7 @@ fn main() {
     );
 
     // Project root paths from ~/.config/mado/projects.toml
-    let project_paths: Rc<HashMap<String, String>> = Rc::new(workspace::load_project_paths());
+    let project_paths: Rc<RefCell<HashMap<String, String>>> = Rc::new(RefCell::new(workspace::load_project_paths()));
 
     // Optional default project to activate on launch (projects.toml `default` key)
     let default_project: Option<String> = workspace::load_default_project();
@@ -1195,6 +1195,32 @@ fn main() {
     let title_poll_result: Arc<std::sync::Mutex<Option<HashMap<NodeId, String>>>> =
         Arc::new(std::sync::Mutex::new(None));
 
+    // ── projects.toml hot-reload ─────────────────────────────────────────────
+    // A background notify watcher sends () on any change; the render timer polls
+    // with try_recv() and re-loads the maps on the UI thread (no Send required).
+    let (reload_tx, reload_rx) = std::sync::mpsc::channel::<()>();
+    {
+        use notify::{RecommendedWatcher, Watcher, RecursiveMode, EventKind};
+        let projects_toml = workspace::config_dir().join("projects.toml");
+        let tx = reload_tx;
+        match RecommendedWatcher::new(
+            move |res: notify::Result<notify::Event>| {
+                if let Ok(ev) = res {
+                    if matches!(ev.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                        let _ = tx.send(());
+                    }
+                }
+            },
+            notify::Config::default(),
+        ) {
+            Ok(mut w) => {
+                let _ = w.watch(&projects_toml, RecursiveMode::NonRecursive);
+                std::mem::forget(w);
+            }
+            Err(e) => eprintln!("mado: projects.toml watcher error: {e}"),
+        }
+    }
+
     // ── 60fps render timer ──────────────────────────────────────────────────
     // Uses set_row_data so PaneView instances (and their FocusScopes) are never
     // recreated — keyboard focus survives across frame updates.
@@ -1220,8 +1246,43 @@ fn main() {
         let top_right_paste_result = Rc::clone(&top_right_paste_result);
         let title_poll_result_timer = Arc::clone(&title_poll_result);
         let ui_weak = ui.as_weak();
+        let reload_rx_timer = reload_rx;
+        let project_paths_timer = Rc::clone(&project_paths);
+        let runner_tasks_timer = Rc::clone(&runner_tasks);
+        let deploy_commands_timer = Rc::clone(&deploy_commands);
+        let active_project_timer = Rc::clone(&active_project);
+        let code_to_name_timer = Rc::clone(&code_to_name);
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, std::time::Duration::from_millis(16), move || {
+            // ── projects.toml hot-reload ─────────────────────────────────
+            if reload_rx_timer.try_recv().is_ok() {
+                // Drain any queued signals (debounce multiple save events)
+                while reload_rx_timer.try_recv().is_ok() {}
+                *project_paths_timer.borrow_mut() = workspace::load_project_paths();
+                *runner_tasks_timer.borrow_mut()  = workspace::load_runner_tasks();
+                *deploy_commands_timer.borrow_mut() = workspace::load_deploy_commands();
+                if let (Some(ui), Some(code)) = (
+                    ui_weak.upgrade(),
+                    active_project_timer.borrow().clone(),
+                ) {
+                    let proj_name = code_to_name_timer.get(&code).map(|s| s.as_str());
+                    let cmd = {
+                        let tasks = runner_tasks_timer.borrow();
+                        tasks.get(&code)
+                            .or_else(|| proj_name.and_then(|n| tasks.get(n)))
+                            .cloned()
+                            .unwrap_or_default()
+                    };
+                    ui.set_runner_current_command(cmd.into());
+                    let has_deploy = {
+                        let deploys = deploy_commands_timer.borrow();
+                        deploys.contains_key(&code)
+                            || proj_name.map(|n| deploys.contains_key(n)).unwrap_or(false)
+                    };
+                    ui.set_runner_has_deploy(has_deploy);
+                }
+            }
+
             let sel = {
                 let s = selection.borrow();
                 s.as_ref().map(|s| (s.pane_id, s.normalized()))
@@ -2894,10 +2955,13 @@ fn main() {
 
             // 2. Load saved layout or create a fresh single-pane workspace.
             let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
-            let project_root = project_paths.get(&code)
-                .or_else(|| code_to_name.get(&code).and_then(|n| project_paths.get(n.as_str())))
-                .cloned()
-                .unwrap_or_else(|| home.clone());
+            let project_root = {
+                let paths = project_paths.borrow();
+                paths.get(&code)
+                    .or_else(|| code_to_name.get(&code).and_then(|n| paths.get(n.as_str())))
+                    .cloned()
+                    .unwrap_or_else(|| home.clone())
+            };
 
             let (new_tree, mut pane_cwds, pane_snapshots, pane_last_cmds) = match workspace::load_workspace(&code) {
                 Some(saved) => PaneTree::from_saved(&saved.tree),
@@ -2982,13 +3046,19 @@ fn main() {
 
                 // 4b. Update runner command for the new workspace and clear stale output
                 let proj_name = code_to_name.get(&code).map(|s| s.as_str());
-                let cmd = runner_tasks.get(&code)
-                    .or_else(|| proj_name.and_then(|n| runner_tasks.get(n)))
-                    .cloned()
-                    .unwrap_or_default();
+                let cmd = {
+                    let tasks = runner_tasks.borrow();
+                    tasks.get(&code)
+                        .or_else(|| proj_name.and_then(|n| tasks.get(n)))
+                        .cloned()
+                        .unwrap_or_default()
+                };
                 ui.set_runner_current_command(cmd.into());
-                let has_deploy = deploy_commands.contains_key(&code)
-                    || proj_name.map(|n| deploy_commands.contains_key(n)).unwrap_or(false);
+                let has_deploy = {
+                    let deploys = deploy_commands.borrow();
+                    deploys.contains_key(&code)
+                        || proj_name.map(|n| deploys.contains_key(n)).unwrap_or(false)
+                };
                 ui.set_runner_has_deploy(has_deploy);
                 // Kill any running task and clear the terminal so the previous
                 // project's output doesn't bleed into the new workspace.
@@ -3029,14 +3099,21 @@ fn main() {
             let code = active_project.borrow().clone().unwrap_or_default();
             // Look up by code, fall back to project name for entries that use `project =`
             let name = code_to_name.get(&code).map(|s| s.as_str());
-            let cmd = runner_tasks.get(&code)
-                .or_else(|| name.and_then(|n| runner_tasks.get(n)))
-                .cloned()
-                .unwrap_or_default();
+            let cmd = {
+                let tasks = runner_tasks.borrow();
+                tasks.get(&code)
+                    .or_else(|| name.and_then(|n| tasks.get(n)))
+                    .cloned()
+                    .unwrap_or_default()
+            };
             if cmd.is_empty() { return; }
-            let cwd = project_paths.get(&code)
-                .or_else(|| name.and_then(|n| project_paths.get(n)))
-                .map(|s| s.as_str());
+            let cwd_owned = {
+                let paths = project_paths.borrow();
+                paths.get(&code)
+                    .or_else(|| name.and_then(|n| paths.get(n)))
+                    .cloned()
+            };
+            let cwd = cwd_owned.as_deref();
             let overlay_w = ui_weak.upgrade()
                 .map(|ui| ui.get_overlay_total_w())
                 .unwrap_or(1200.0);
@@ -3085,18 +3162,25 @@ fn main() {
 
             let code = active_project.borrow().clone().unwrap_or_default();
             let name = code_to_name.get(&code).map(|s| s.as_str());
-            let cmd = runner_tasks.get(&code)
-                .or_else(|| name.and_then(|n| runner_tasks.get(n)))
-                .cloned()
-                .unwrap_or_default();
+            let cmd = {
+                let tasks = runner_tasks.borrow();
+                tasks.get(&code)
+                    .or_else(|| name.and_then(|n| tasks.get(n)))
+                    .cloned()
+                    .unwrap_or_default()
+            };
             if cmd.is_empty() {
                 runner_is_running.set(false);
                 if let Some(ui) = ui_weak.upgrade() { ui.set_runner_is_running(false); }
                 return;
             }
-            let cwd = project_paths.get(&code)
-                .or_else(|| name.and_then(|n| project_paths.get(n)))
-                .map(|s| s.as_str());
+            let cwd_owned = {
+                let paths = project_paths.borrow();
+                paths.get(&code)
+                    .or_else(|| name.and_then(|n| paths.get(n)))
+                    .cloned()
+            };
+            let cwd = cwd_owned.as_deref();
             let overlay_w = ui_weak.upgrade()
                 .map(|ui| ui.get_overlay_total_w())
                 .unwrap_or(1200.0);
@@ -3127,14 +3211,21 @@ fn main() {
 
             let code = active_project.borrow().clone().unwrap_or_default();
             let name = code_to_name.get(&code).map(|s| s.as_str());
-            let cmd = deploy_commands.get(&code)
-                .or_else(|| name.and_then(|n| deploy_commands.get(n)))
-                .cloned()
-                .unwrap_or_default();
+            let cmd = {
+                let deploys = deploy_commands.borrow();
+                deploys.get(&code)
+                    .or_else(|| name.and_then(|n| deploys.get(n)))
+                    .cloned()
+                    .unwrap_or_default()
+            };
             if cmd.is_empty() { return; }
-            let cwd = project_paths.get(&code)
-                .or_else(|| name.and_then(|n| project_paths.get(n)))
-                .map(|s| s.as_str());
+            let cwd_owned = {
+                let paths = project_paths.borrow();
+                paths.get(&code)
+                    .or_else(|| name.and_then(|n| paths.get(n)))
+                    .cloned()
+            };
+            let cwd = cwd_owned.as_deref();
             let overlay_w = ui_weak.upgrade()
                 .map(|ui| ui.get_overlay_total_w())
                 .unwrap_or(1200.0);
