@@ -10,7 +10,7 @@ A macOS terminal multiplexer with a sidebar plugin architecture, built in Rust.
 - **Sidebar plugins** — left and right sidebars with a growing plugin ecosystem and support for custom plugins
 - **22 themes** — built on Tailwind CSS palettes with Starship integration
 - **Workspace persistence** — pane layouts and working directories survive project switches
-- **Task management** — integrated [Tasku](https://github.com/nerimasoft/tasku) panel
+- **Task management** — integrated [Tasku](https://github.com/tomdringer/tasku) panel
 - **AI panel** — built-in Claude integration
 - **Plugin protocol** — build custom sidebar panels using PTY (ANSI/TUI) or pixel (RGBA frame) protocols
 
@@ -23,46 +23,52 @@ A macOS terminal multiplexer with a sidebar plugin architecture, built in Rust.
 ### Homebrew
 
 ```bash
-brew tap nerimasoft/mado && brew install --cask mado
+brew tap tomdringer/tap
+brew install --cask tomdringer/tap/mado
 ```
 
 ### Manual
 
-Download `Mado.dmg` from the [latest release](https://github.com/nerimasoft/mado/releases/latest), open it, and drag Mado to your Applications folder.
+Download `Mado.dmg` from the [latest release](https://github.com/tomdringer/mado/releases/latest), open it, and drag Mado to your Applications folder.
 
 ## Building from source
 
 Requires Rust and a macOS system with Xcode command line tools.
 
 ```bash
-git clone https://github.com/nerimasoft/mado
+git clone https://github.com/tomdringer/mado
 cd mado
 cargo run
 ```
 
 ## Configuration
 
-Mado is configured via `~/.config/mado/config.toml`. Run `mado config` to open it.
+Mado is configured via `~/.config/mado/config.toml`. Run `mado config` to open it. Most settings reload live — no restart needed.
 
 ### Projects
 
-If you use [Tasku](https://github.com/tomdringer/tasku), your projects will appear automatically in the sidebar. You can also map project codes to paths manually in `~/.config/mado/projects.toml`:
+Define workspaces in `~/.config/mado/projects.toml`:
 
 ```toml
-[projects.mado]
-path = "/Users/you/projects/mado"
+default = "API"
 
-[projects.api]
-path = "/Users/you/projects/api"
-command = "npm run dev"
+[API]
+path   = "~/Projects/my-api"
+task   = "cargo run"
+deploy = "cargo build --release"
+
+[WEB]
+path   = "~/Projects/my-frontend"
+task   = "npm run dev"
 ```
+
+If you use [Tasku](https://github.com/tomdringer/tasku), the workspace code must match your Tasku project name for automatic task filtering.
 
 ### Themes
 
 Set the active theme in `config.toml`:
 
 ```toml
-[ui]
 theme = "slate"
 ```
 
@@ -76,23 +82,13 @@ Community plugins are available at [github.com/tomdringer/mado-plugins](https://
 
 ```toml
 [[plugins]]
-id = "clock"
-command = "/path/to/mado-clock"
+id       = "clock"
+command  = "/path/to/mado-clock"
+kind     = "pixel"
 position = "right"
 ```
 
-A plugin browser is planned for a future release.
-
-## Plugin protocol
-
-Mado supports two plugin rendering modes:
-
-| Mode | Protocol | When to use |
-|------|----------|-------------|
-| `terminal` | PTY + ANSI escapes | TUI apps, shell scripts |
-| `pixel` | RGBA frame protocol | Custom UIs |
-
-See [docs/ecosystem.md](docs/ecosystem.md) for the full protocol specification.
+See the [Plugins wiki page](https://github.com/tomdringer/mado/wiki/Plugins) for the full protocol specification.
 
 ## License
 
