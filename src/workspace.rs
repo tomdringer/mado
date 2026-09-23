@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use slint::Color;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -222,6 +222,47 @@ pub fn load_deploy_commands() -> HashMap<String, String> {
     match fs::read_to_string(&file) {
         Ok(s) => parse_deploy_commands(&s),
         Err(_) => HashMap::new(),
+    }
+}
+
+// ── Hidden projects ────────────────────────────────────────────────────────────
+//
+// A project can be hidden from the Workspaces and Priorities panels by adding
+// `show = false` to its section in projects.toml:
+//
+//   [ARCHIVE]
+//   path   = "~/Projects/old-app"
+//   show   = false
+//
+// Hidden projects are still fully functional — they can be activated via
+// keyboard shortcut and their workspaces are saved/restored normally.
+// They simply don't appear as tiles in the sidebar panels.
+
+fn parse_hidden_projects(content: &str) -> HashSet<String> {
+    let table = match content.parse::<toml::Table>() {
+        Ok(t) => t,
+        Err(_) => return HashSet::new(),
+    };
+    table.into_iter().filter_map(|(section, val)| {
+        let show = val.get("show")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        if show { return None; }
+        // Mirror the same key logic as the other parse fns: prefer `project`
+        // so lookups are consistent with name-based filtering elsewhere.
+        let key = val.get("project")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or(section);
+        Some(key)
+    }).collect()
+}
+
+pub fn load_hidden_projects() -> HashSet<String> {
+    let file = config_dir().join("projects.toml");
+    match fs::read_to_string(&file) {
+        Ok(s) => parse_hidden_projects(&s),
+        Err(_) => HashSet::new(),
     }
 }
 
@@ -696,5 +737,41 @@ icon = "web"
     fn parse_icons_omits_sections_without_icon() {
         let toml = "[MDO]\npath = \"/x\"\n";
         assert!(parse_project_icons(toml).is_empty());
+    }
+
+    // ── parse_hidden_projects() ──────────────────────────────────────────────
+
+    #[test]
+    fn parse_hidden_returns_sections_with_show_false() {
+        let toml = "[ARCH]\npath = \"/old\"\nshow = false\n\n[MDO]\npath = \"/mado\"\n";
+        let hidden = parse_hidden_projects(toml);
+        assert!(hidden.contains("ARCH"), "ARCH has show=false");
+        assert!(!hidden.contains("MDO"), "MDO has no show key (defaults true)");
+    }
+
+    #[test]
+    fn parse_hidden_show_true_not_included() {
+        let toml = "[API]\npath = \"/api\"\nshow = true\n";
+        let hidden = parse_hidden_projects(toml);
+        assert!(hidden.is_empty());
+    }
+
+    #[test]
+    fn parse_hidden_uses_project_key_when_present() {
+        let toml = "[APP]\npath = \"/app\"\nproject = \"My App\"\nshow = false\n";
+        let hidden = parse_hidden_projects(toml);
+        assert!(hidden.contains("My App"), "should key by project name");
+        assert!(!hidden.contains("APP"), "section name should not appear");
+    }
+
+    #[test]
+    fn parse_hidden_no_show_false_entries_returns_empty() {
+        let hidden = parse_hidden_projects(SAMPLE_PROJECTS_TOML);
+        assert!(hidden.is_empty());
+    }
+
+    #[test]
+    fn parse_hidden_invalid_toml_returns_empty() {
+        assert!(parse_hidden_projects("not valid {{ toml").is_empty());
     }
 }

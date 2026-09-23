@@ -19,6 +19,20 @@ fn shlex_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Write a MACT action message to stdout.
+fn write_mact(json: &str) {
+    let bytes = json.as_bytes();
+    let len = bytes.len() as u32;
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let _ = out.write_all(b"MACT");
+    let _ = out.write_all(&len.to_le_bytes());
+    let _ = out.write_all(bytes);
+    let _ = out.flush();
+}
+
+const IDLE_NOTIFY_SECS: u64 = 600; // 10 minutes
+
 // ── ANSI colour table ─────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1313,6 +1327,10 @@ fn main() {
     let mut blink_ticks: u32 = 0;
     const BLINK_PERIOD: u32 = 31;
 
+    // Idle notification: fire once after IDLE_NOTIFY_SECS of quiet following activity.
+    let mut last_pty_activity: Option<std::time::Instant> = None;
+    let mut idle_notified = false;
+
     loop {
         match rx.recv_timeout(std::time::Duration::from_millis(16)) {
             Ok(Msg::PtyData(bytes)) => {
@@ -1324,6 +1342,9 @@ fn main() {
                 blink_ticks = 0;
                 state.cursor_blink_on = true;
                 state.dirty = true;
+                // Track activity; reset notification flag so a new response can notify again
+                last_pty_activity = Some(std::time::Instant::now());
+                idle_notified = false;
             }
             Ok(Msg::Line(json)) => {
                 if handle_event(&mut state, &json, &mut *pty_writer, &fm, &*master) {
@@ -1345,6 +1366,15 @@ fn main() {
                     blink_ticks = 0;
                     state.cursor_blink_on = !state.cursor_blink_on;
                     state.dirty = true;
+                }
+                // Idle notification: fire once after 10 minutes of quiet following activity
+                if !idle_notified {
+                    if let Some(t) = last_pty_activity {
+                        if t.elapsed().as_secs() >= IDLE_NOTIFY_SECS {
+                            write_mact(r#"{"action":"notify","title":"Claude","message":"Response complete"}"#);
+                            idle_notified = true;
+                        }
+                    }
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
