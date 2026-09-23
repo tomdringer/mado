@@ -172,31 +172,36 @@ fn read_tasku_sel() -> String {
 ///               required for Edit and Delete; ignored by all other commands
 ///
 /// Returns `None` for unknown labels or when Edit/Delete have no selection.
-fn tasku_button_command(label: &str, pf: &str, sel_id: &str) -> Option<String> {
+fn tasku_button_command(label: &str, pf: &str, sf: &str, sel_id: &str) -> Option<String> {
     match label {
         // Interactive commands: interrupt MadoList with Ctrl+C so the shell
         // can run the interactive program, then restart the list via semicolon.
+        // `sf` is the currently active status/view filter — return to the same
+        // view the user was on before adding or editing.
         "Edit" => {
             if sel_id.is_empty() { return None; }
-            Some(format!("\x03tasku edit {sel_id} -i; tasku list{pf}\n"))
+            Some(format!("\x03tasku edit {sel_id} -i; tasku list{sf}{pf}\n"))
         }
         "Delete" => {
             if sel_id.is_empty() { return None; }
-            Some(format!("\x03tasku delete {sel_id} -f; tasku list{pf}\n"))
+            Some(format!("\x03tasku delete {sel_id} -f; tasku list{sf}{pf}\n"))
         }
-        "Add" => Some(format!("\x03tasku add -i; tasku list{pf}\n")),
+        "Add" => Some(format!("\x03tasku add -i; tasku list{sf}{pf}\n")),
 
         // Filter / display commands: use the STX inline-exec protocol (\x02).
         // MadoList reads the command string and calls exec() itself, so we
         // never rely on the shell picking up buffered PTY input after exit.
-        "List"     => Some(format!("\x02tasku list{pf}\n")),
-        "List all" => Some("\x02tasku list\n".to_string()),
-        "Today"    => Some(format!("\x02tasku list --today{pf}\n")),
-        "Tmrw"     => Some(format!("\x02tasku list --tomorrow{pf}\n")),
-        "Overdue"  => Some(format!("\x02tasku list --overdue{pf}\n")),
-        "Todo"     => Some(format!("\x02tasku list --status todo{pf}\n")),
-        "Started"  => Some(format!("\x02tasku list --status in_progress{pf}\n")),
-        "Done"     => Some(format!("\x02tasku list --status done{pf}\n")),
+        "List"        => Some(format!("\x02tasku list{pf}\n")),
+        "List all"    => Some("\x02tasku list\n".to_string()),
+        "Today"       => Some(format!("\x02tasku list --today{pf}\n")),
+        "Tmrw"        => Some(format!("\x02tasku list --tomorrow{pf}\n")),
+        "Overdue"     => Some(format!("\x02tasku list --overdue{pf}\n")),
+        "Backlog"     => Some(format!("\x02tasku list --status backlog{pf}\n")),
+        "Todo"        => Some(format!("\x02tasku list --status todo{pf}\n")),
+        "In Progress" => Some(format!("\x02tasku list --status in_progress{pf}\n")),
+        "Done"        => Some(format!("\x02tasku list --status done{pf}\n")),
+        "Cancelled"   => Some(format!("\x02tasku list --status cancelled{pf}\n")),
+        "Archived"    => Some(format!("\x02tasku list --status archived{pf}\n")),
 
         // SQL: tell MadoList to show a query prompt internally.
         "SQL" => Some("\x02SQL\n".to_string()),
@@ -974,20 +979,25 @@ fn main() {
     // Per-project icons from projects.toml `icon` field
     let project_icons: HashMap<String, String> = workspace::load_project_icons();
 
+    // Projects with `show = false` in projects.toml — hidden from sidebar panels
+    let hidden_projects = workspace::load_hidden_projects();
+
     // Workspace tiles (code + colour + icon)
     let ws_model: Rc<VecModel<WorkspaceProject>> = {
-        let ws_projects: Vec<WorkspaceProject> = fetched.iter().map(|fp| {
-            let icon = project_icons.get(&fp.code)
-                .or_else(|| project_icons.get(&fp.name))
-                .cloned()
-                .unwrap_or_default();
-            WorkspaceProject {
-                code:       fp.code.clone().into(),
-                color:      fp.color,
-                text_color: fp.text_color,
-                icon:       icon.into(),
-            }
-        }).collect();
+        let ws_projects: Vec<WorkspaceProject> = fetched.iter()
+            .filter(|fp| !hidden_projects.contains(&fp.code) && !hidden_projects.contains(&fp.name))
+            .map(|fp| {
+                let icon = project_icons.get(&fp.code)
+                    .or_else(|| project_icons.get(&fp.name))
+                    .cloned()
+                    .unwrap_or_default();
+                WorkspaceProject {
+                    code:       fp.code.clone().into(),
+                    color:      fp.color,
+                    text_color: fp.text_color,
+                    icon:       icon.into(),
+                }
+            }).collect();
         Rc::new(VecModel::<WorkspaceProject>::from(ws_projects))
     };
     ui.set_ws_projects(ModelRc::new(Rc::clone(&ws_model)));
@@ -996,7 +1006,9 @@ fn main() {
     // Priority list — apply saved order, append unknown projects at the end
     let prio_model: Rc<VecModel<PriorityProject>> = {
         let saved_order = workspace::load_priority_order();
-        let mut remaining: Vec<&workspace::FetchedProject> = fetched.iter().collect();
+        let mut remaining: Vec<&workspace::FetchedProject> = fetched.iter()
+            .filter(|fp| !hidden_projects.contains(&fp.code) && !hidden_projects.contains(&fp.name))
+            .collect();
         let mut ordered: Vec<&workspace::FetchedProject> = Vec::new();
         for code in &saved_order {
             if let Some(pos) = remaining.iter().position(|fp| &fp.code == code) {
@@ -1194,6 +1206,10 @@ fn main() {
     // Tracks whether the top-bar tasku overlay is currently open.
     // Used by on_window_resized to re-run tasku list after a resize.
     let tasku_open: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
+    // The currently active Tasku view filter (e.g. " --status todo", " --today").
+    // Updated whenever the user clicks a filter button; used by Add/Edit/Delete
+    // to return to the same view after the interactive command exits.
+    let tasku_active_filter: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
     // True until the user types anything in the root pane. While true, window
     // resize events re-center the welcome banner to match the new column count.
     let banner_active: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(true));
@@ -1209,52 +1225,43 @@ fn main() {
         Arc::new(std::sync::Mutex::new(None));
 
     // ── Config hot-reload ────────────────────────────────────────────────────
-    // Watches both config.toml and projects.toml; render timer polls with
-    // try_recv() and re-applies changed values on the UI thread.
+    // Watches ~/.config/mado/ for changes to config.toml and projects.toml.
+    // Watching the directory (not individual files) is required because most
+    // editors write atomically: they write a temp file then rename it into
+    // place, which removes the original inode. A file-specific watcher stops
+    // firing after the first atomic save. A directory watcher sees all events
+    // regardless of how the file was written.
     let (reload_tx, reload_rx) = std::sync::mpsc::channel::<()>();
     let (config_reload_tx, config_reload_rx) = std::sync::mpsc::channel::<()>();
     {
         use notify::{RecommendedWatcher, Watcher, RecursiveMode, EventKind};
         let cfg_dir = workspace::config_dir();
-
-        // projects.toml watcher
-        let projects_toml = cfg_dir.join("projects.toml");
-        let tx = reload_tx;
+        let tx_projects = reload_tx;
+        let tx_config   = config_reload_tx;
         match RecommendedWatcher::new(
             move |res: notify::Result<notify::Event>| {
                 if let Ok(ev) = res {
-                    if matches!(ev.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                        let _ = tx.send(());
+                    if !matches!(ev.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                        return;
+                    }
+                    for path in &ev.paths {
+                        match path.file_name().and_then(|n| n.to_str()) {
+                            Some("projects.toml") => { let _ = tx_projects.send(()); }
+                            Some("config.toml")   => { let _ = tx_config.send(()); }
+                            _ => {}
+                        }
                     }
                 }
             },
             notify::Config::default(),
         ) {
             Ok(mut w) => {
-                let _ = w.watch(&projects_toml, RecursiveMode::NonRecursive);
-                std::mem::forget(w);
-            }
-            Err(e) => eprintln!("mado: projects.toml watcher error: {e}"),
-        }
-
-        // config.toml watcher
-        let config_toml = cfg_dir.join("config.toml");
-        let tx2 = config_reload_tx;
-        match RecommendedWatcher::new(
-            move |res: notify::Result<notify::Event>| {
-                if let Ok(ev) = res {
-                    if matches!(ev.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                        let _ = tx2.send(());
-                    }
+                if let Err(e) = w.watch(&cfg_dir, RecursiveMode::NonRecursive) {
+                    eprintln!("mado: config dir watcher error: {e}");
                 }
-            },
-            notify::Config::default(),
-        ) {
-            Ok(mut w) => {
-                let _ = w.watch(&config_toml, RecursiveMode::NonRecursive);
                 std::mem::forget(w);
             }
-            Err(e) => eprintln!("mado: config.toml watcher error: {e}"),
+            Err(e) => eprintln!("mado: config dir watcher error: {e}"),
         }
     }
 
@@ -1329,20 +1336,26 @@ fn main() {
             }
 
             // ── config.toml hot-reload ────────────────────────────────────
-            // Reloads live-applicable settings: theme, sidebar/bar dimensions,
-            // font size. Plugins and shell still require a restart.
+            // Reloads live-applicable settings. Plugins, shell, and tasku
+            // position still require a restart.
             if config_reload_rx_timer.try_recv().is_ok() {
                 while config_reload_rx_timer.try_recv().is_ok() {}
                 let new_cfg = config::Config::load();
                 if let Some(ui) = ui_weak.upgrade() {
                     // Theme
                     let new_theme = theme::Theme::load(&new_cfg.theme);
+                    if new_cfg.theme_starship {
+                        apply_starship_theme(&new_theme);
+                    }
                     apply_theme(&ui, &new_theme);
                     *loaded_theme_timer.borrow_mut() = new_theme;
-                    // UI dimensions
+                    // Sidebar / panel dimensions
                     ui.set_sidebar_width(new_cfg.sidebar_width);
                     ui.set_right_sidebar_width(new_cfg.right_sidebar_width);
                     ui.set_top_bar_height(new_cfg.top_bar_height);
+                    ui.set_top_right_panel_width(new_cfg.top_right_panel_width);
+                    ui.set_bottom_right_panel_width(new_cfg.bottom_right_panel_width);
+                    ui.set_browser_panel_width(new_cfg.browser_panel_width);
                     ui.set_show_bottom_bar(new_cfg.show_bottom_bar);
                     // Font size
                     let new_fs = new_cfg.font_size;
@@ -2101,6 +2114,7 @@ fn main() {
         let loaded_theme = Rc::clone(&loaded_theme);
         let active_project_resize = Rc::clone(&active_project);
         let code_to_name_resize = Rc::clone(&code_to_name);
+        let tasku_active_filter_resize = Rc::clone(&tasku_active_filter);
         let top_right_plugin_resize = top_right_plugin.clone();
         let bottom_right_plugin_resize = bottom_right_plugin.clone();
         let top_right_pixel_resize = Rc::clone(&top_right_pixel);
@@ -2420,8 +2434,9 @@ fn main() {
                                 .and_then(|code| code_to_name_resize.get(code))
                                 .map(|name| format!(" --project \"{name}\""))
                                 .unwrap_or_default();
+                            let sf = tasku_active_filter_resize.borrow().clone();
                             reg.write_key(SIDEBAR_TASKU_ID,
-                                format!("\x03tasku list{pf}\n").as_bytes());
+                                format!("\x03tasku list{sf}{pf}\n").as_bytes());
                         }
                     }
                     // Resize top-right panel plugin
@@ -2766,10 +2781,18 @@ fn main() {
         let active_project = Rc::clone(&active_project);
         let code_to_name = Rc::clone(&code_to_name);
         let tasku_open_toggle = Rc::clone(&tasku_open);
+        let tasku_active_filter_toggle = Rc::clone(&tasku_active_filter);
         move |expanded| {
+            // Track open state for all positions so on_workspace_selected can
+            // refresh the filter when the user switches projects.
+            tasku_open_toggle.set(expanded);
+            // Reset to the default (no status filter) on each open so the
+            // panel always starts fresh showing the project's default view.
+            if expanded {
+                *tasku_active_filter_toggle.borrow_mut() = String::new();
+            }
             let tasku_pos = sidebar.borrow().tasku_position.clone();
             if tasku_pos == "top" {
-                tasku_open_toggle.set(expanded);
                 if expanded {
                     // Defer tasku list by 500ms so the window finishes any
                     // resize animation before we read the PTY column count.
@@ -2785,10 +2808,17 @@ fn main() {
                             .and_then(|code| code_to_name2.get(code))
                             .map(|name| format!(" --project \"{name}\""))
                             .unwrap_or_default();
-                        registry2.borrow_mut().write_key(
-                            SIDEBAR_TASKU_ID,
-                            format!("\x03tasku list{pf}\n").as_bytes(),
-                        );
+                        // Send Ctrl+C to interrupt any running MadoList, then
+                        // wait 200 ms for it to clean up before writing the new
+                        // command.  Sending both in one write risks the new command
+                        // being discarded by Ruby's terminal restore (TCSAFLUSH).
+                        registry2.borrow_mut().write_key(SIDEBAR_TASKU_ID, b"\x03");
+                        let registry3 = Rc::clone(&registry2);
+                        let cmd = format!("tasku list{pf}\n");
+                        tasku_log(&format!("panel open (top, deferred): cmd={:?}", cmd));
+                        Timer::single_shot(std::time::Duration::from_millis(50), move || {
+                            registry3.borrow_mut().write_key(SIDEBAR_TASKU_ID, cmd.as_bytes());
+                        });
                     });
                 }
                 return;
@@ -2804,7 +2834,13 @@ fn main() {
                 let _ = std::fs::write(TASKU_COLS_FILE, cols.to_string());
                 reg.write_key(SIDEBAR_TASKU_ID,
                     format!("export MADO=1; export TASKU_SEL_FILE={TASKU_SEL_FILE}\n").as_bytes());
-                reg.write_key(SIDEBAR_TASKU_ID, b"tasku list\n");
+                let pf = active_project.borrow().as_ref()
+                    .and_then(|code| code_to_name.get(code))
+                    .map(|name| format!(" --project \"{name}\""))
+                    .unwrap_or_default();
+                let cmd = format!("tasku list{pf}\n");
+                tasku_log(&format!("panel open (sidebar): cmd={:?}", cmd));
+                reg.write_key(SIDEBAR_TASKU_ID, cmd.as_bytes());
             } else {
                 reg.remove(SIDEBAR_TASKU_ID);
             }
@@ -2859,6 +2895,7 @@ fn main() {
         let registry = Rc::clone(&registry);
         let active_project = Rc::clone(&active_project);
         let code_to_name = Rc::clone(&code_to_name);
+        let tasku_active_filter = Rc::clone(&tasku_active_filter);
         move |label| {
             // Resolve active project code → full name for --project flag.
             let pf = active_project.borrow().as_ref()
@@ -2866,17 +2903,40 @@ fn main() {
                 .map(|name| format!(" --project \"{name}\""))
                 .unwrap_or_default();
 
+            // When a filter button is pressed, record the new active filter so
+            // that Add/Edit/Delete can return to the same view afterwards.
+            let new_filter: Option<&str> = match label.as_str() {
+                "List"        => Some(""),
+                "List all"    => Some(""),
+                "Today"       => Some(" --today"),
+                "Tmrw"        => Some(" --tomorrow"),
+                "Overdue"     => Some(" --overdue"),
+                "Backlog"     => Some(" --status backlog"),
+                "Todo"        => Some(" --status todo"),
+                "In Progress" => Some(" --status in_progress"),
+                "Done"        => Some(" --status done"),
+                "Cancelled"   => Some(" --status cancelled"),
+                "Archived"    => Some(" --status archived"),
+                _ => None,  // Add / Edit / Delete / SQL don't change the filter
+            };
+            if let Some(f) = new_filter {
+                tasku_log(&format!("filter update: {:?} → {:?}", tasku_active_filter.borrow().as_str(), f));
+                *tasku_active_filter.borrow_mut() = f.to_string();
+            }
+            let sf = tasku_active_filter.borrow().clone();
+            tasku_log(&format!("on_tasku_command: label={:?} pf={:?} sf={:?}", label.as_str(), pf, sf));
+
             // Commands that need the selected task ID: read from the selection
             // file written by `tasku list` in Mado mode.
             let sel_id = match label.as_str() {
                 "Edit" | "Delete" => read_tasku_sel(),
                 _ => String::new(),
             };
-            match tasku_button_command(label.as_str(), &pf, &sel_id) {
+            match tasku_button_command(label.as_str(), &pf, &sf, &sel_id) {
                 Some(cmd) => {
                     tasku_log(&format!(
-                        "button={:?} pf={:?} sel={:?} cmd={:?}",
-                        label.as_str(), pf, sel_id, cmd
+                        "button={:?} pf={:?} sf={:?} sel={:?} cmd={:?}",
+                        label.as_str(), pf, sf, sel_id, cmd
                     ));
                     registry.borrow_mut().write_key(SIDEBAR_TASKU_ID, cmd.as_bytes());
                 }
@@ -2980,9 +3040,12 @@ fn main() {
             }
 
             // Repopulate workspace tiles
-            let refreshed_icons = workspace::load_project_icons();
+            let refreshed_icons  = workspace::load_project_icons();
+            let refreshed_hidden = workspace::load_hidden_projects();
             while ws_model.row_count() > 0 { ws_model.remove(ws_model.row_count() - 1); }
-            for fp in &fetched {
+            for fp in fetched.iter()
+                .filter(|fp| !refreshed_hidden.contains(&fp.code) && !refreshed_hidden.contains(&fp.name))
+            {
                 let icon = refreshed_icons.get(&fp.code)
                     .or_else(|| refreshed_icons.get(&fp.name))
                     .cloned()
@@ -2997,7 +3060,9 @@ fn main() {
 
             // Repopulate priority list, preserving saved order
             let saved_order = workspace::load_priority_order();
-            let mut remaining: Vec<&workspace::FetchedProject> = fetched.iter().collect();
+            let mut remaining: Vec<&workspace::FetchedProject> = fetched.iter()
+                .filter(|fp| !refreshed_hidden.contains(&fp.code) && !refreshed_hidden.contains(&fp.name))
+                .collect();
             let mut ordered:   Vec<&workspace::FetchedProject> = Vec::new();
             for code in &saved_order {
                 if let Some(pos) = remaining.iter().position(|fp| &fp.code == code) {
@@ -3024,6 +3089,7 @@ fn main() {
         let pane_model = Rc::clone(&pane_model);
         let div_model = Rc::clone(&div_model);
         let dividers_cache = Rc::clone(&dividers_cache);
+        let sidebar_ws = Rc::clone(&sidebar);
         let images = Rc::clone(&images);
         let focused_id = Rc::clone(&focused_id);
         let active_project = Rc::clone(&active_project);
@@ -3034,6 +3100,7 @@ fn main() {
         let top_right_pixel = Rc::clone(&top_right_pixel);
         let right_pixel_plugins_ws = Rc::clone(&right_pixel_plugins);
         let tasku_open_ws = Rc::clone(&tasku_open);
+        let tasku_active_filter_ws = Rc::clone(&tasku_active_filter);
         let pane_titles_ws = Rc::clone(&pane_titles);
         let runner_is_running_ws = Rc::clone(&runner_is_running);
         let runner_command_ws = Rc::clone(&runner_command);
@@ -3188,15 +3255,37 @@ fn main() {
                 ui.set_runner_is_running(false);
                 ui.set_runner_terminal_image(Default::default());
 
-                // 5. If the Tasku overlay is open, refresh with project filter.
-                //    Guard on tasku_open so we don't run tasku list with a
-                //    stale TASKU_COLS_FILE before the user has opened the panel.
-                if registry.borrow().sessions.contains_key(&SIDEBAR_TASKU_ID)
-                    && tasku_open_ws.get()
-                {
+                // 5. Refresh Tasku panel with the new project filter.
+                //    For the top-bar overlay: guard on tasku_open to avoid
+                //    running tasku list with a stale TASKU_COLS_FILE before
+                //    the user has opened the panel for the first time.
+                //    For sidebar positions: session existence implies the panel
+                //    is expanded (it's spawned on expand, removed on collapse),
+                //    so session-exists is sufficient — tasku_open may never be
+                //    set if the panel was already expanded at startup.
+                let tasku_session_exists = registry.borrow().sessions.contains_key(&SIDEBAR_TASKU_ID);
+                let tasku_is_top = sidebar_ws.borrow().tasku_position == "top";
+                if tasku_session_exists && (!tasku_is_top || tasku_open_ws.get()) {
                     let name = code_to_name.get(&code).cloned().unwrap_or_else(|| code.clone());
-                    let cmd = format!("\x03tasku list --project \"{name}\"\n");
-                    registry.borrow_mut().write_key(SIDEBAR_TASKU_ID, cmd.as_bytes());
+                    // Kill any running MadoList first, then send the new list
+                    // command after a short delay.  Ruby's terminal restore on
+                    // MadoList exit uses TCSAFLUSH which discards buffered input,
+                    // so sending both bytes in one write loses the new command.
+                    // Reset to the default view when switching projects.
+                    *tasku_active_filter_ws.borrow_mut() = String::new();
+                    registry.borrow_mut().write_key(SIDEBAR_TASKU_ID, b"\x03");
+                    if let Some(ui) = ui_weak.upgrade() {
+                        let registry_ws2 = Rc::clone(&registry);
+                        let cmd = format!("tasku list --project \"{name}\"\n");
+                        tasku_log(&format!("workspace switch: cmd={:?}", cmd));
+                        let t = slint::Timer::default();
+                        t.start(slint::TimerMode::SingleShot,
+                            std::time::Duration::from_millis(50),
+                            move || {
+                                registry_ws2.borrow_mut().write_key(SIDEBAR_TASKU_ID, cmd.as_bytes());
+                                let _ = &ui; // keep ui alive
+                            });
+                    }
                 }
             }
         }
@@ -4964,124 +5053,174 @@ mod tasku_button_tests {
     /// Buttons whose command is `\x02tasku <subcmd>{pf}\n` — inline-exec
     /// protocol, project filter appended before the newline.
     const FILTERED_BUTTONS: &[(&str, &str)] = &[
-        ("List",    "\x02tasku list"),
-        ("Today",   "\x02tasku list --today"),
-        ("Tmrw",    "\x02tasku list --tomorrow"),
-        ("Overdue", "\x02tasku list --overdue"),
-        ("Todo",    "\x02tasku list --status todo"),
-        ("Started", "\x02tasku list --status in_progress"),
-        ("Done",    "\x02tasku list --status done"),
+        ("List",        "\x02tasku list"),
+        ("Today",       "\x02tasku list --today"),
+        ("Tmrw",        "\x02tasku list --tomorrow"),
+        ("Overdue",     "\x02tasku list --overdue"),
+        ("Backlog",     "\x02tasku list --status backlog"),
+        ("Todo",        "\x02tasku list --status todo"),
+        ("In Progress", "\x02tasku list --status in_progress"),
+        ("Done",        "\x02tasku list --status done"),
+        ("Cancelled",   "\x02tasku list --status cancelled"),
+        ("Archived",    "\x02tasku list --status archived"),
     ];
 
     // ── list / filter buttons ────────────────────────────────────────────────
 
     #[test]
     fn list_no_project() {
-        let cmd = tasku_button_command("List", "", "").unwrap();
+        let cmd = tasku_button_command("List", "", "", "").unwrap();
         assert_eq!(cmd, "\x02tasku list\n");
     }
 
     #[test]
     fn list_with_project() {
-        let cmd = tasku_button_command("List", " --project \"Mado Browser\"", "").unwrap();
+        let cmd = tasku_button_command("List", " --project \"Mado Browser\"", "", "").unwrap();
         assert_eq!(cmd, "\x02tasku list --project \"Mado Browser\"\n");
     }
 
     #[test]
     fn list_all_ignores_project_filter() {
         // "List all" always shows every task regardless of active project.
-        let with    = tasku_button_command("List all", " --project Mado", "").unwrap();
-        let without = tasku_button_command("List all", "", "").unwrap();
+        let with    = tasku_button_command("List all", " --project Mado", "", "").unwrap();
+        let without = tasku_button_command("List all", "", "", "").unwrap();
         assert_eq!(with, without);
         assert_eq!(with, "\x02tasku list\n");
     }
 
     #[test]
     fn today_no_project() {
-        let cmd = tasku_button_command("Today", "", "").unwrap();
+        let cmd = tasku_button_command("Today", "", "", "").unwrap();
         assert_eq!(cmd, "\x02tasku list --today\n");
     }
 
     #[test]
     fn today_with_project() {
-        let cmd = tasku_button_command("Today", " --project Mado", "").unwrap();
+        let cmd = tasku_button_command("Today", " --project Mado", "", "").unwrap();
         assert_eq!(cmd, "\x02tasku list --today --project Mado\n");
     }
 
     #[test]
     fn tmrw_no_project() {
-        let cmd = tasku_button_command("Tmrw", "", "").unwrap();
+        let cmd = tasku_button_command("Tmrw", "", "", "").unwrap();
         assert_eq!(cmd, "\x02tasku list --tomorrow\n");
     }
 
     #[test]
     fn tmrw_with_project() {
-        let cmd = tasku_button_command("Tmrw", " --project Mado", "").unwrap();
+        let cmd = tasku_button_command("Tmrw", " --project Mado", "", "").unwrap();
         assert_eq!(cmd, "\x02tasku list --tomorrow --project Mado\n");
     }
 
     #[test]
     fn overdue_no_project() {
-        let cmd = tasku_button_command("Overdue", "", "").unwrap();
+        let cmd = tasku_button_command("Overdue", "", "", "").unwrap();
         assert_eq!(cmd, "\x02tasku list --overdue\n");
     }
 
     #[test]
     fn overdue_with_project() {
-        let cmd = tasku_button_command("Overdue", " --project Mado", "").unwrap();
+        let cmd = tasku_button_command("Overdue", " --project Mado", "", "").unwrap();
         assert_eq!(cmd, "\x02tasku list --overdue --project Mado\n");
     }
 
     #[test]
     fn todo_no_project() {
-        let cmd = tasku_button_command("Todo", "", "").unwrap();
+        let cmd = tasku_button_command("Todo", "", "", "").unwrap();
         assert_eq!(cmd, "\x02tasku list --status todo\n");
     }
 
     #[test]
     fn todo_with_project() {
-        let cmd = tasku_button_command("Todo", " --project Mado", "").unwrap();
+        let cmd = tasku_button_command("Todo", " --project Mado", "", "").unwrap();
         assert_eq!(cmd, "\x02tasku list --status todo --project Mado\n");
     }
 
     #[test]
-    fn started_no_project() {
-        let cmd = tasku_button_command("Started", "", "").unwrap();
+    fn in_progress_no_project() {
+        let cmd = tasku_button_command("In Progress", "", "", "").unwrap();
         assert_eq!(cmd, "\x02tasku list --status in_progress\n");
     }
 
     #[test]
-    fn started_with_project() {
-        let cmd = tasku_button_command("Started", " --project Mado", "").unwrap();
+    fn in_progress_with_project() {
+        let cmd = tasku_button_command("In Progress", " --project Mado", "", "").unwrap();
         assert_eq!(cmd, "\x02tasku list --status in_progress --project Mado\n");
     }
 
     #[test]
+    fn backlog_no_project() {
+        let cmd = tasku_button_command("Backlog", "", "", "").unwrap();
+        assert_eq!(cmd, "\x02tasku list --status backlog\n");
+    }
+
+    #[test]
+    fn cancelled_no_project() {
+        let cmd = tasku_button_command("Cancelled", "", "", "").unwrap();
+        assert_eq!(cmd, "\x02tasku list --status cancelled\n");
+    }
+
+    #[test]
+    fn archived_no_project() {
+        let cmd = tasku_button_command("Archived", "", "", "").unwrap();
+        assert_eq!(cmd, "\x02tasku list --status archived\n");
+    }
+
+    #[test]
     fn done_no_project() {
-        let cmd = tasku_button_command("Done", "", "").unwrap();
+        let cmd = tasku_button_command("Done", "", "", "").unwrap();
         assert_eq!(cmd, "\x02tasku list --status done\n");
     }
 
     #[test]
     fn done_with_project() {
-        let cmd = tasku_button_command("Done", " --project Mado", "").unwrap();
+        let cmd = tasku_button_command("Done", " --project Mado", "", "").unwrap();
         assert_eq!(cmd, "\x02tasku list --status done --project Mado\n");
+    }
+
+    // ── Add/Edit/Delete return to the active status filter ───────────────────
+
+    #[test]
+    fn add_returns_to_active_filter() {
+        // No filter (e.g. "List" view)
+        let cmd = tasku_button_command("Add", "", "", "").unwrap();
+        assert_eq!(cmd, "\x03tasku add -i; tasku list\n");
+        // Todo filter
+        let cmd = tasku_button_command("Add", "", " --status todo", "").unwrap();
+        assert_eq!(cmd, "\x03tasku add -i; tasku list --status todo\n");
+        // Done filter with project
+        let cmd = tasku_button_command("Add", " --project \"Mado\"", " --status done", "").unwrap();
+        assert_eq!(cmd, "\x03tasku add -i; tasku list --status done --project \"Mado\"\n");
+    }
+
+    #[test]
+    fn edit_returns_to_active_filter() {
+        let cmd = tasku_button_command("Edit", " --project \"Mado\"", " --status todo", "42").unwrap();
+        assert_eq!(cmd, "\x03tasku edit 42 -i; tasku list --status todo --project \"Mado\"\n");
+        let cmd = tasku_button_command("Edit", "", " --today", "42").unwrap();
+        assert_eq!(cmd, "\x03tasku edit 42 -i; tasku list --today\n");
+    }
+
+    #[test]
+    fn delete_returns_to_active_filter() {
+        let cmd = tasku_button_command("Delete", " --project \"Mado\"", " --status done", "42").unwrap();
+        assert_eq!(cmd, "\x03tasku delete 42 -f; tasku list --status done --project \"Mado\"\n");
     }
 
     // ── project filter is ignored by Add / Edit / Delete / SQL ───────────────
 
     #[test]
     fn add_respects_project_filter() {
-        let with    = tasku_button_command("Add", " --project \"Mado\"", "").unwrap();
-        let without = tasku_button_command("Add", "", "").unwrap();
+        let with    = tasku_button_command("Add", " --project \"Mado\"", "", "").unwrap();
+        let without = tasku_button_command("Add", "", "", "").unwrap();
         assert_eq!(with,    "\x03tasku add -i; tasku list --project \"Mado\"\n");
         assert_eq!(without, "\x03tasku add -i; tasku list\n");
     }
 
     #[test]
     fn sql_ignores_project_filter() {
-        let with    = tasku_button_command("SQL", " --project Mado", "").unwrap();
-        let without = tasku_button_command("SQL", "", "").unwrap();
+        let with    = tasku_button_command("SQL", " --project Mado", "", "").unwrap();
+        let without = tasku_button_command("SQL", "", "", "").unwrap();
         assert_eq!(with, without);
         // SQL uses the inline-exec protocol to open a query prompt in MadoList.
         assert_eq!(with, "\x02SQL\n");
@@ -5089,16 +5228,16 @@ mod tasku_button_tests {
 
     #[test]
     fn edit_respects_project_filter() {
-        let with    = tasku_button_command("Edit", " --project \"Mado\"", "42").unwrap();
-        let without = tasku_button_command("Edit", "", "42").unwrap();
+        let with    = tasku_button_command("Edit", " --project \"Mado\"", "", "42").unwrap();
+        let without = tasku_button_command("Edit", "", "", "42").unwrap();
         assert_eq!(with,    "\x03tasku edit 42 -i; tasku list --project \"Mado\"\n");
         assert_eq!(without, "\x03tasku edit 42 -i; tasku list\n");
     }
 
     #[test]
     fn delete_respects_project_filter() {
-        let with    = tasku_button_command("Delete", " --project \"Mado\"", "42").unwrap();
-        let without = tasku_button_command("Delete", "", "42").unwrap();
+        let with    = tasku_button_command("Delete", " --project \"Mado\"", "", "42").unwrap();
+        let without = tasku_button_command("Delete", "", "", "42").unwrap();
         assert_eq!(with,    "\x03tasku delete 42 -f; tasku list --project \"Mado\"\n");
         assert_eq!(without, "\x03tasku delete 42 -f; tasku list\n");
     }
@@ -5107,24 +5246,24 @@ mod tasku_button_tests {
 
     #[test]
     fn edit_with_selection() {
-        let cmd = tasku_button_command("Edit", "", "42").unwrap();
+        let cmd = tasku_button_command("Edit", "", "", "42").unwrap();
         assert_eq!(cmd, "\x03tasku edit 42 -i; tasku list\n");
     }
 
     #[test]
     fn edit_without_selection_returns_none() {
-        assert!(tasku_button_command("Edit", "", "").is_none());
+        assert!(tasku_button_command("Edit", "", "", "").is_none());
     }
 
     #[test]
     fn delete_with_selection() {
-        let cmd = tasku_button_command("Delete", "", "42").unwrap();
+        let cmd = tasku_button_command("Delete", "", "", "42").unwrap();
         assert_eq!(cmd, "\x03tasku delete 42 -f; tasku list\n");
     }
 
     #[test]
     fn delete_without_selection_returns_none() {
-        assert!(tasku_button_command("Delete", "", "").is_none());
+        assert!(tasku_button_command("Delete", "", "", "").is_none());
     }
 
     // ── interactive commands start with Ctrl-C; filter commands use STX ────────
@@ -5132,8 +5271,8 @@ mod tasku_button_tests {
     #[test]
     fn interactive_commands_start_with_ctrl_c() {
         // Add / Edit / Delete interrupt MadoList and hand off to the shell.
-        for (label, pf, sel) in [("Add", "", ""), ("Edit", "", "1"), ("Delete", "", "1")] {
-            let cmd = tasku_button_command(label, pf, sel)
+        for (label, pf, sf, sel) in [("Add", "", "", ""), ("Edit", "", "", "1"), ("Delete", "", "", "1")] {
+            let cmd = tasku_button_command(label, pf, sf, sel)
                 .unwrap_or_else(|| panic!("{label} returned None"));
             assert!(cmd.starts_with('\x03'), "{label}: expected \\x03 prefix, got {cmd:?}");
         }
@@ -5143,18 +5282,21 @@ mod tasku_button_tests {
     fn filter_commands_start_with_stx() {
         // Filter / display commands use the STX inline-exec protocol.
         let filter_cases = [
-            ("List",     "",  ""),
-            ("List all", "",  ""),
-            ("Today",    "",  ""),
-            ("Tmrw",     "",  ""),
-            ("Overdue",  "",  ""),
-            ("Todo",     "",  ""),
-            ("Started",  "",  ""),
-            ("Done",     "",  ""),
-            ("SQL",      "",  ""),
+            ("List",        "",  "",  ""),
+            ("List all",    "",  "",  ""),
+            ("Today",       "",  "",  ""),
+            ("Tmrw",        "",  "",  ""),
+            ("Overdue",     "",  "",  ""),
+            ("Backlog",     "",  "",  ""),
+            ("Todo",        "",  "",  ""),
+            ("In Progress", "",  "",  ""),
+            ("Done",        "",  "",  ""),
+            ("Cancelled",   "",  "",  ""),
+            ("Archived",    "",  "",  ""),
+            ("SQL",         "",  "",  ""),
         ];
-        for (label, pf, sel) in filter_cases {
-            let cmd = tasku_button_command(label, pf, sel)
+        for (label, pf, sf, sel) in filter_cases {
+            let cmd = tasku_button_command(label, pf, sf, sel)
                 .unwrap_or_else(|| panic!("{label} returned None"));
             assert!(cmd.starts_with('\x02'), "{label}: expected \\x02 prefix, got {cmd:?}");
         }
@@ -5165,21 +5307,24 @@ mod tasku_button_tests {
     #[test]
     fn all_commands_end_with_newline() {
         let cases = [
-            ("Add",      "",  ""),
-            ("List",     "",  ""),
-            ("List all", "",  ""),
-            ("Today",    "",  ""),
-            ("Tmrw",    "",  ""),
-            ("Overdue", "",  ""),
-            ("Todo",    "",  ""),
-            ("Started", "",  ""),
-            ("Done",    "",  ""),
-            ("SQL",     "",  ""),
-            ("Edit",    "",  "1"),
-            ("Delete",  "",  "1"),
+            ("Add",         "",  "",  ""),
+            ("List",        "",  "",  ""),
+            ("List all",    "",  "",  ""),
+            ("Today",       "",  "",  ""),
+            ("Tmrw",        "",  "",  ""),
+            ("Overdue",     "",  "",  ""),
+            ("Backlog",     "",  "",  ""),
+            ("Todo",        "",  "",  ""),
+            ("In Progress", "",  "",  ""),
+            ("Done",        "",  "",  ""),
+            ("Cancelled",   "",  "",  ""),
+            ("Archived",    "",  "",  ""),
+            ("SQL",         "",  "",  ""),
+            ("Edit",        "",  "",  "1"),
+            ("Delete",      "",  "",  "1"),
         ];
-        for (label, pf, sel) in cases {
-            let cmd = tasku_button_command(label, pf, sel)
+        for (label, pf, sf, sel) in cases {
+            let cmd = tasku_button_command(label, pf, sf, sel)
                 .unwrap_or_else(|| panic!("{label} returned None"));
             assert!(
                 cmd.ends_with('\n'),
@@ -5192,8 +5337,8 @@ mod tasku_button_tests {
 
     #[test]
     fn unknown_label_returns_none() {
-        assert!(tasku_button_command("Foo", "", "").is_none());
-        assert!(tasku_button_command("", "", "").is_none());
+        assert!(tasku_button_command("Foo", "", "", "").is_none());
+        assert!(tasku_button_command("", "", "", "").is_none());
     }
 
     // ── project filter is appended at the right position ─────────────────────
@@ -5202,7 +5347,7 @@ mod tasku_button_tests {
     fn project_filter_position_for_all_filtered_buttons() {
         let pf = " --project MyApp";
         for (label, prefix) in FILTERED_BUTTONS {
-            let cmd = tasku_button_command(label, pf, "").unwrap();
+            let cmd = tasku_button_command(label, pf, "", "").unwrap();
             let expected = format!("{prefix}{pf}\n");
             assert_eq!(cmd, expected, "button: {label}");
         }

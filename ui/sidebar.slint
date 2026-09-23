@@ -127,9 +127,14 @@ export component TaskuContent inherits Rectangle {
                 CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "Overdue"; command(l) => { root.command(l); fs.focus(); } }
             }
             Rectangle { width: parent.width; height: 32px;
-                CmdButton { x: 0;                              width: root.btn-w; label: "Todo";    command(l) => { root.command(l); fs.focus(); } }
-                CmdButton { x: root.btn-w + root.btn-gap;      width: root.btn-w; label: "Started"; command(l) => { root.command(l); fs.focus(); } }
-                CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "Done";    command(l) => { root.command(l); fs.focus(); } }
+                CmdButton { x: 0;                              width: root.btn-w; label: "Todo";       command(l) => { root.command(l); fs.focus(); } }
+                CmdButton { x: root.btn-w + root.btn-gap;      width: root.btn-w; label: "In Progress"; command(l) => { root.command(l); fs.focus(); } }
+                CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "Done";        command(l) => { root.command(l); fs.focus(); } }
+            }
+            Rectangle { width: parent.width; height: 32px;
+                CmdButton { x: 0;                              width: root.btn-w; label: "Backlog";    command(l) => { root.command(l); fs.focus(); } }
+                CmdButton { x: root.btn-w + root.btn-gap;      width: root.btn-w; label: "Cancelled";  command(l) => { root.command(l); fs.focus(); } }
+                CmdButton { x: 2*(root.btn-w + root.btn-gap);  width: root.btn-w; label: "Archived";   command(l) => { root.command(l); fs.focus(); } }
             }
         }
 
@@ -251,9 +256,14 @@ export component TaskuContent inherits Rectangle {
                     CmdButton { x: 168px; width: 80px; label: "Overdue"; command(l) => { root.command(l); fs.focus(); } }
                 }
                 Rectangle { width: parent.width; height: 32px;
-                    CmdButton { x: 0;     width: 80px; label: "Todo";    command(l) => { root.command(l); fs.focus(); } }
-                    CmdButton { x: 84px;  width: 80px; label: "Started"; command(l) => { root.command(l); fs.focus(); } }
-                    CmdButton { x: 168px; width: 80px; label: "Done";    command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 0;     width: 80px; label: "Todo";        command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 84px;  width: 80px; label: "In Progress"; command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 168px; width: 80px; label: "Done";        command(l) => { root.command(l); fs.focus(); } }
+                }
+                Rectangle { width: parent.width; height: 32px;
+                    CmdButton { x: 0;     width: 80px; label: "Backlog";   command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 84px;  width: 80px; label: "Cancelled"; command(l) => { root.command(l); fs.focus(); } }
+                    CmdButton { x: 168px; width: 80px; label: "Archived";  command(l) => { root.command(l); fs.focus(); } }
                 }
             }
         }
