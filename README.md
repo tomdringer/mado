@@ -1,5 +1,3 @@
-# Mado
-
 A macOS terminal multiplexer with a sidebar plugin architecture, built in Rust.
 
 ![Mado](assets/mado-1200.png)
@@ -93,3 +91,7 @@ See the [Plugins wiki page](https://github.com/tomdringer/mado/wiki/Plugins) for
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Get in touch
+
+For a quick response, please find me on X - @tomdringer
