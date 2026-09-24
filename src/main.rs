@@ -862,15 +862,7 @@ fn main() {
     #[cfg(target_os = "macos")]
     ui.set_window_transparent(true);
 
-    // On Linux (no system title bar), let the TopBar act as a drag handle.
-    #[cfg(not(target_os = "macos"))]
-    ui.on_start_window_drag({
-        let ui_weak = ui.as_weak();
-        move || {
-            let Some(ui) = ui_weak.upgrade() else { return };
-            ui.window().with_winit_window(|w| { let _ = w.drag_window(); });
-        }
-    });
+
 
     if config.theme_starship {
         apply_starship_theme(&loaded_theme.borrow());
