@@ -859,6 +859,8 @@ fn main() {
     let config = Config::load();
     let loaded_theme = Rc::new(RefCell::new(theme::Theme::load(&config.theme)));
     apply_theme(&ui, &loaded_theme.borrow());
+    #[cfg(target_os = "macos")]
+    ui.set_window_transparent(true);
     if config.theme_starship {
         apply_starship_theme(&loaded_theme.borrow());
     }

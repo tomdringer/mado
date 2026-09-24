@@ -32,7 +32,8 @@ export component MainWindow inherits Window {
     title: "Mado";
     preferred-width: 1200px;
     preferred-height: 800px;
-    background: transparent;
+    in property <bool> window-transparent: false;
+    background: root.window-transparent ? transparent : root.theme-window-bg;
 
     // ── Terminal pane data ────────────────────────────────────────────────────
     in property <[FlatPane]>    panes;
