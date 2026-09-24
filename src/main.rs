@@ -26,7 +26,6 @@ use terminal::TerminalRegistry;
 use slint::{Image, Model, ModelRc, Timer, TimerMode, VecModel};
 
 /// Encode raw RGBA pixel data as a base64-encoded PNG string.
-#[cfg(target_os = "macos")]
 fn encode_png_base64(width: u32, height: u32, rgba: &[u8]) -> Option<String> {
     let mut buf = Vec::new();
     {

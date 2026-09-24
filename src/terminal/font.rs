@@ -1,11 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use font_kit::family_name::FamilyName;
-use font_kit::handle::Handle;
-use font_kit::properties::Properties;
-use font_kit::source::SystemSource;
-
 use fontdue::{Font as FdFont, FontSettings};
 
 static NERD_FONT_BYTES: &[u8] =
@@ -13,18 +8,36 @@ static NERD_FONT_BYTES: &[u8] =
 
 // ── System font loading ───────────────────────────────────────────────────────
 
-/// Returns raw font bytes for a system font family via font-kit.
+/// Returns raw font bytes for a system font family.
 fn system_font_bytes(family: &str) -> Option<Vec<u8>> {
-    let handle = SystemSource::new()
-        .select_best_match(
-            &[FamilyName::Title(family.to_string())],
-            &Properties::new(),
-        )
-        .ok()?;
-    match handle {
-        // Memory variant already contains the extracted font bytes (handles TTCs correctly)
-        Handle::Memory { bytes, .. } => Some(bytes.to_vec()),
-        Handle::Path   { path, .. }  => std::fs::read(path).ok(),
+    #[cfg(target_os = "macos")]
+    {
+        use font_kit::family_name::FamilyName;
+        use font_kit::handle::Handle;
+        use font_kit::properties::Properties;
+        use font_kit::source::SystemSource;
+        let handle = SystemSource::new()
+            .select_best_match(
+                &[FamilyName::Title(family.to_string())],
+                &Properties::new(),
+            )
+            .ok()?;
+        return match handle {
+            Handle::Memory { bytes, .. } => Some(bytes.to_vec()),
+            Handle::Path   { path, .. }  => std::fs::read(path).ok(),
+        };
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Use fc-match to find the font file path on Linux
+        let output = std::process::Command::new("fc-match")
+            .args(["--format", "%{file}", family])
+            .output()
+            .ok()?;
+        let path = String::from_utf8(output.stdout).ok()?;
+        let path = path.trim();
+        if path.is_empty() { return None; }
+        std::fs::read(path).ok()
     }
 }
 
@@ -66,9 +79,12 @@ impl FontRaster {
             .expect("mado: bundled Nerd Font load failed");
 
         // System fallback — loaded once at startup, used only for characters missing from
-        // both primary and Nerd Font. Menlo is Apple's standard terminal font and has
-        // broad Unicode symbol coverage via its BMP cmap (✓ ✗ ▶ and similar).
-        let system = ["Menlo", "Monaco"]
+        // both primary and Nerd Font.
+        #[cfg(target_os = "macos")]
+        let fallback_names: &[&str] = &["Menlo", "Monaco"];
+        #[cfg(not(target_os = "macos"))]
+        let fallback_names: &[&str] = &["DejaVu Sans Mono", "Liberation Mono"];
+        let system = fallback_names
             .iter()
             .find_map(|name| {
                 system_font_bytes(name)
