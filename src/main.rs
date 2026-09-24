@@ -833,12 +833,16 @@ fn main() {
         return;
     }
 
-    // Configure the winit backend so blur is set at window-creation time.
-    // This is the only point where winit actually calls CGSSetWindowBackgroundBlurRadius;
+    // Configure the winit backend. On macOS, set blur at window-creation time —
     // calling set_blur() post-creation is too late on some macOS versions.
     {
+        #[cfg(target_os = "macos")]
         let backend = i_slint_backend_winit::Backend::builder()
             .with_window_attributes_hook(|attrs| attrs.with_blur(true))
+            .build()
+            .unwrap();
+        #[cfg(not(target_os = "macos"))]
+        let backend = i_slint_backend_winit::Backend::builder()
             .build()
             .unwrap();
         slint::platform::set_platform(Box::new(backend)).unwrap();
