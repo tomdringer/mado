@@ -843,6 +843,9 @@ fn main() {
             .unwrap();
         #[cfg(not(target_os = "macos"))]
         let backend = i_slint_backend_winit::Backend::builder()
+            .with_window_attributes_hook(|attrs| {
+                attrs.with_theme(Some(winit::window::Theme::Dark))
+            })
             .build()
             .unwrap();
         slint::platform::set_platform(Box::new(backend)).unwrap();
