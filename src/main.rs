@@ -843,11 +843,6 @@ fn main() {
             .unwrap();
         #[cfg(not(target_os = "macos"))]
         let backend = i_slint_backend_winit::Backend::builder()
-            .with_window_attributes_hook(|attrs| {
-                attrs
-                    .with_decorations(false)
-                    .with_inner_size(winit::dpi::LogicalSize::new(1200u32, 800u32))
-            })
             .build()
             .unwrap();
         slint::platform::set_platform(Box::new(backend)).unwrap();
@@ -2274,6 +2269,15 @@ fn main() {
                     if did_setup.is_some() {
                         titlebar_setup_done.set(true);
                     }
+                }
+            }
+
+            // Linux: remove system title bar on first resize (earliest safe point).
+            #[cfg(not(target_os = "macos"))]
+            if !titlebar_setup_done.get() {
+                if let Some(ui_tb) = ui_weak.upgrade() {
+                    ui_tb.window().with_winit_window(|w| { w.set_decorations(false); });
+                    titlebar_setup_done.set(true);
                 }
             }
 

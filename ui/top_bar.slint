@@ -23,18 +23,8 @@ export component TopBar inherits Rectangle {
     callback browser-toggled();
 
     callback expanded-changed(bool);
-    callback start-window-drag();
 
     background: root.theme-card-bg;
-
-    // Bottom z-layer drag handle — covers the whole bar. Plugin headers declared
-    // after this intercept their own clicks; empty space triggers window drag.
-    TouchArea {
-        mouse-cursor: MouseCursor.move;
-        moved => {
-            if (self.pressed) { root.start-window-drag(); }
-        }
-    }
 
     private property <int>    n: root.top-plugins.length;
     private property <length> plugins-area-w: root.width

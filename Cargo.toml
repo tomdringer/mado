@@ -18,7 +18,6 @@ arboard = "3"
 png = "0.17"
 base64 = { version = "0.22", features = ["alloc"] }
 notify = "6"
-winit = { version = "0.30", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 raw-window-handle = "0.6"
