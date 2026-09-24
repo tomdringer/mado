@@ -4605,13 +4605,16 @@ fn main() {
 
                 // Re-apply immediately (catches the style-mask change),
                 // then again after the animation finishes (~1.5 s).
+                #[cfg(target_os = "macos")]
                 let ui2 = ui.as_weak();
+                #[cfg(target_os = "macos")]
                 Timer::single_shot(std::time::Duration::from_millis(1500), move || {
                     let Some(ui) = ui2.upgrade() else { return };
                     ui.window().with_winit_window(|w| { w.set_blur(true); });
                 });
 
                 ui.window().with_winit_window(|w| {
+                    #[cfg(target_os = "macos")]
                     w.set_blur(true);
 
                     #[cfg(target_os = "macos")]
