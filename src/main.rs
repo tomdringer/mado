@@ -843,9 +843,7 @@ fn main() {
             .unwrap();
         #[cfg(not(target_os = "macos"))]
         let backend = i_slint_backend_winit::Backend::builder()
-            .with_window_attributes_hook(|attrs| {
-                attrs.with_theme(Some(winit::window::Theme::Dark))
-            })
+            .with_window_attributes_hook(|attrs| attrs.with_decorations(false))
             .build()
             .unwrap();
         slint::platform::set_platform(Box::new(backend)).unwrap();
@@ -864,6 +862,17 @@ fn main() {
     apply_theme(&ui, &loaded_theme.borrow());
     #[cfg(target_os = "macos")]
     ui.set_window_transparent(true);
+
+    // On Linux (no system title bar), let the TopBar act as a drag handle.
+    #[cfg(not(target_os = "macos"))]
+    ui.on_start_window_drag({
+        let ui_weak = ui.as_weak();
+        move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            ui.window().with_winit_window(|w| { let _ = w.drag_window(); });
+        }
+    });
+
     if config.theme_starship {
         apply_starship_theme(&loaded_theme.borrow());
     }

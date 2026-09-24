@@ -223,6 +223,8 @@ export component MainWindow inherits Window {
     callback top-plugin-click(int, float, float);
     callback top-plugin-focus-changed(int, bool);
 
+    callback start-window-drag();
+
     // Menu bar callbacks
     callback menu-new-pane();
     callback menu-close-pane();
@@ -336,6 +338,7 @@ export component MainWindow inherits Window {
             browser-active: root.show-browser-panel;
             browser-toggled => { root.show-browser-panel = !root.show-browser-panel; }
             expanded-changed(exp) => { root.top-bar-expanded = exp; }
+            start-window-drag => { root.start-window-drag(); }
         }
 
         // ── Main area: sidebars + terminal ────────────────────────────────────
