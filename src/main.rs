@@ -863,6 +863,10 @@ fn main() {
     #[cfg(target_os = "macos")]
     ui.set_window_transparent(true);
 
+    // Linux diagnostic: force bright red background to confirm this code path runs.
+    #[cfg(not(target_os = "macos"))]
+    ui.set_theme_window_bg(slint::Color::from_rgb_u8(255, 0, 0));
+
     // On Linux (no system title bar), let the TopBar act as a drag handle.
     #[cfg(not(target_os = "macos"))]
     ui.on_start_window_drag({
