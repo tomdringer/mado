@@ -4761,6 +4761,46 @@ fn curl_download(url: &str, dest: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Quit the running Mado app and relaunch it so a freshly installed/updated
+/// plugin takes effect without the user having to do anything manually.
+///
+/// On macOS we derive the Mado.app path from the current executable (which
+/// lives at `Mado.app/Contents/MacOS/mado`), spawn a tiny background shell
+/// that waits briefly, kills the running process, then reopens the bundle.
+/// The sleep before `pkill` gives the current process time to exit cleanly
+/// first; the sleep after `pkill` avoids a race where `open` finds the old
+/// process still alive and just re-focuses it.
+///
+/// On Linux there is no `open` equivalent, so we just print the old message.
+fn restart_mado() {
+    #[cfg(target_os = "macos")]
+    {
+        // Walk up from .../Mado.app/Contents/MacOS/mado → Mado.app
+        let app_path = std::env::current_exe().ok()
+            .and_then(|p| p.parent()  // MacOS/
+                .and_then(|p| p.parent())  // Contents/
+                .and_then(|p| p.parent())  // Mado.app
+                .map(|p| p.to_path_buf()));
+
+        if let Some(app) = app_path {
+            let app_str = app.to_string_lossy();
+            let script = format!(
+                "sleep 0.4 && pkill -x mado 2>/dev/null; sleep 0.3 && open '{app_str}'"
+            );
+            let _ = std::process::Command::new("sh")
+                .args(["-c", &script])
+                .spawn();
+            println!("restarting Mado…");
+        } else {
+            println!("restart Mado to activate");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        println!("restart Mado to activate");
+    }
+}
+
 /// Resolve a short name ("clock") to an org/repo ("mado-plugins/mado-clock")
 /// via the registry. If `name` already contains '/' it is returned as-is.
 fn resolve_repo(name: &str) -> Result<String, String> {
@@ -4875,7 +4915,8 @@ fn plugin_install(name: &str) {
     let command = dest.to_string_lossy();
     plugin_register(id, &command, &kind, &icon);
 
-    println!("installed '{id}' — restart Mado to activate");
+    println!("installed '{id}'");
+    restart_mado();
 }
 
 /// `mado plugin update <name>` — download the latest release binary for an
@@ -4957,7 +4998,8 @@ fn plugin_update(name: &str) {
         }
     }
 
-    println!("updated '{id}' to {tag} — restart Mado to activate");
+    println!("updated '{id}' to {tag}");
+    restart_mado();
 }
 
 /// Low-level: append a [[plugins]] entry to config.toml.

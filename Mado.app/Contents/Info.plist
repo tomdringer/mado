@@ -10,5 +10,6 @@
   <key>CFBundleIconFile</key>      <string>mado</string>
   <key>CFBundlePackageType</key>   <string>APPL</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>LSMultipleInstancesProhibited</key><true/>
 </dict>
 </plist>
