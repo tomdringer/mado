@@ -1310,6 +1310,7 @@ fn main() {
         let loaded_theme_timer = Rc::clone(&loaded_theme);
         let runner_command_timer    = Rc::clone(&runner_command);
         let runner_is_running_timer = Rc::clone(&runner_is_running);
+        let native_browser_timer    = Rc::clone(&native_browser);
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, std::time::Duration::from_millis(16), move || {
             // ── projects.toml hot-reload ─────────────────────────────────
@@ -1515,6 +1516,21 @@ fn main() {
                             fire_notification(&title, &msg);
                         }
                     }
+                    if let Ok(mut g) = plugin.navigate_pending.lock() {
+                        if let Some(url) = g.take() {
+                            if let Some(nb) = native_browser_timer.borrow().as_ref() {
+                                nb.load_url(&url);
+                            }
+                            if let Some(ui) = ui_weak.upgrade() {
+                                ui.set_show_browser_panel(true);
+                            }
+                        }
+                    }
+                    if plugin.browser_back_pending.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_show_browser_panel(false);
+                        }
+                    }
                 }
             }
 
@@ -1534,6 +1550,21 @@ fn main() {
                             fire_notification(&title, &msg);
                         }
                     }
+                    if let Ok(mut g) = plugin.navigate_pending.lock() {
+                        if let Some(url) = g.take() {
+                            if let Some(nb) = native_browser_timer.borrow().as_ref() {
+                                nb.load_url(&url);
+                            }
+                            if let Some(ui) = ui_weak.upgrade() {
+                                ui.set_show_browser_panel(true);
+                            }
+                        }
+                    }
+                    if plugin.browser_back_pending.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_show_browser_panel(false);
+                        }
+                    }
                 }
             }
 
@@ -1546,6 +1577,26 @@ fn main() {
                             if let Some(ref buf) = *guard {
                                 top_right_buf = Some(buf.clone());
                             }
+                        }
+                    }
+                    if let Ok(mut g) = pp.notify_pending.lock() {
+                        if let Some((title, msg)) = g.take() {
+                            fire_notification(&title, &msg);
+                        }
+                    }
+                    if let Ok(mut g) = pp.navigate_pending.lock() {
+                        if let Some(url) = g.take() {
+                            if let Some(nb) = native_browser_timer.borrow().as_ref() {
+                                nb.load_url(&url);
+                            }
+                            if let Some(ui) = ui_weak.upgrade() {
+                                ui.set_show_browser_panel(true);
+                            }
+                        }
+                    }
+                    if pp.browser_back_pending.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        if let Some(nb) = native_browser_timer.borrow().as_ref() {
+                            nb.go_back();
                         }
                     }
                 }
@@ -3812,10 +3863,12 @@ fn main() {
     // ── External plugin click ────────────────────────────────────────────────
     ui.on_plugin_click({
         let pixel_plugins = Rc::clone(&pixel_plugins);
+        let registry = Rc::clone(&registry);
         move |idx, x, y| {
             let idx = idx as usize;
             if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
-                plugin.send_click(x, y);
+                let scale = registry.borrow().scale;
+                plugin.send_click(x * scale, y * scale);
                 // Paste is handled in the render timer by watching paste_pending.
             }
         }
@@ -4006,10 +4059,12 @@ fn main() {
     // ── Right sidebar plugin click ────────────────────────────────────────────
     ui.on_right_plugin_click({
         let right_pixel_plugins = Rc::clone(&right_pixel_plugins);
+        let registry = Rc::clone(&registry);
         move |idx, x, y| {
             let idx = idx as usize;
             if let Some(plugin) = right_pixel_plugins.borrow_mut().get_mut(&idx) {
-                plugin.send_click(x, y);
+                let scale = registry.borrow().scale;
+                plugin.send_click(x * scale, y * scale);
             }
         }
     });

@@ -1160,6 +1160,21 @@ export component Sidebar inherits Rectangle {
             }
 
             // ── Panel navigation mode ─────────────────────────────────────────
+            // If an expanded pixel plugin is focused, Up/Down/Left/Right go to it, not sidebar nav.
+            if ((e.text == "\u{F700}" || e.text == "\u{F701}" || e.text == "\u{F702}" || e.text == "\u{F703}")
+                    && root.kb-index >= 0
+                    && root.kb-index < root.plugins.length
+                    && root.plugins[root.kb-index].plugin-index >= 0
+                    && root.plugin-expanded[root.plugins[root.kb-index].plugin-index]
+                    && root.plugin-pixel[root.plugins[root.kb-index].plugin-index]) {
+                root.plugin-key-input(root.plugins[root.kb-index].plugin-index,
+                    e.text == "\u{F700}" ? "ArrowUp"
+                        : e.text == "\u{F701}" ? "ArrowDown"
+                        : e.text == "\u{F702}" ? "ArrowLeft"
+                        : "ArrowRight",
+                    e.modifiers.control, e.modifiers.meta, e.modifiers.alt, e.modifiers.shift);
+                return accept;
+            }
             if (e.text == "\u{F700}") {  // Up
                 root.kb-index = root.kb-index <= 0
                     ? root.plugins.length - 1

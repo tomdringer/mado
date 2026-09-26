@@ -32,16 +32,21 @@ use std::thread;
 use slint::SharedPixelBuffer;
 
 pub struct PixelPlugin {
-    pub dirty:          Arc<AtomicBool>,
-    pub image:          Arc<Mutex<Option<SharedPixelBuffer<slint::Rgba8Pixel>>>>,
+    pub dirty:             Arc<AtomicBool>,
+    pub image:             Arc<Mutex<Option<SharedPixelBuffer<slint::Rgba8Pixel>>>>,
     /// Set by the reader thread when the plugin sends a MACT paste action.
     /// Cleared by the render timer after acting on it.
-    pub paste_pending:  Arc<AtomicBool>,
+    pub paste_pending:     Arc<AtomicBool>,
     /// Set by the reader thread when the plugin sends a MACT notify action.
     /// Holds (title, message). Cleared by the render timer after firing.
-    pub notify_pending: Arc<Mutex<Option<(String, String)>>>,
-    stdin:              std::process::ChildStdin,
-    _child:             std::process::Child,
+    pub notify_pending:    Arc<Mutex<Option<(String, String)>>>,
+    /// Set by the reader thread when the plugin sends a MACT navigate action.
+    /// Holds the URL to load in the browser panel.
+    pub navigate_pending:     Arc<Mutex<Option<String>>>,
+    /// Set by the reader thread when the plugin sends a MACT browser_back action.
+    pub browser_back_pending: Arc<AtomicBool>,
+    stdin:                 std::process::ChildStdin,
+    _child:                std::process::Child,
 }
 
 // ── Pure event-format helpers ─────────────────────────────────────────────────
@@ -121,6 +126,27 @@ pub(crate) fn mact_extract_notify(json: &[u8]) -> Option<(String, String)> {
     Some((title, parsed.message))
 }
 
+/// Returns `true` if `json` is a `{"action":"browser_back"}` payload.
+pub(crate) fn mact_is_browser_back(json: &[u8]) -> bool {
+    json.windows(14).any(|w| w == b"\"browser_back\"")
+}
+
+/// If `json` is a `{"action":"navigate","url":"..."}` payload, returns the URL.
+/// Only `http://` and `https://` URLs are accepted. Returns `None` otherwise.
+pub(crate) fn mact_extract_navigate(json: &[u8]) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct NavigateAction {
+        action: String,
+        url:    String,
+    }
+    let parsed: NavigateAction = serde_json::from_slice(json).ok()?;
+    if parsed.action != "navigate" { return None; }
+    if !parsed.url.starts_with("http://") && !parsed.url.starts_with("https://") {
+        return None;
+    }
+    Some(parsed.url)
+}
+
 /// Validate MADO frame dimensions.  Returns `(width, height)` only when
 /// both are non-zero and within the 8192-pixel cap.
 pub(crate) fn validate_frame_dims(w: u32, h: u32) -> Option<(u32, u32)> {
@@ -143,20 +169,26 @@ impl PixelPlugin {
         let mut stdin  = child.stdin.take()?;
         let     stdout = child.stdout.take()?;
 
-        let dirty:          Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-        let image:          Arc<Mutex<Option<SharedPixelBuffer<slint::Rgba8Pixel>>>> =
+        let dirty:            Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+        let image:            Arc<Mutex<Option<SharedPixelBuffer<slint::Rgba8Pixel>>>> =
             Arc::new(Mutex::new(None));
-        let paste_pending:  Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-        let notify_pending: Arc<Mutex<Option<(String, String)>>> =
+        let paste_pending:    Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+        let notify_pending:   Arc<Mutex<Option<(String, String)>>> =
             Arc::new(Mutex::new(None));
+        let navigate_pending:     Arc<Mutex<Option<String>>> =
+            Arc::new(Mutex::new(None));
+        let browser_back_pending: Arc<AtomicBool> =
+            Arc::new(AtomicBool::new(false));
 
         let _ = writeln!(stdin, "{}", fmt_resize(width, height));
 
         {
-            let dirty          = Arc::clone(&dirty);
-            let image          = Arc::clone(&image);
-            let paste_pending  = Arc::clone(&paste_pending);
-            let notify_pending = Arc::clone(&notify_pending);
+            let dirty            = Arc::clone(&dirty);
+            let image            = Arc::clone(&image);
+            let paste_pending    = Arc::clone(&paste_pending);
+            let notify_pending   = Arc::clone(&notify_pending);
+            let navigate_pending     = Arc::clone(&navigate_pending);
+            let browser_back_pending = Arc::clone(&browser_back_pending);
             thread::spawn(move || {
                 let mut reader = BufReader::new(stdout);
                 loop {
@@ -193,6 +225,12 @@ impl PixelPlugin {
                                 if let Ok(mut g) = notify_pending.lock() {
                                     *g = Some(notif);
                                 }
+                            } else if let Some(url) = mact_extract_navigate(&json) {
+                                if let Ok(mut g) = navigate_pending.lock() {
+                                    *g = Some(url);
+                                }
+                            } else if mact_is_browser_back(&json) {
+                                browser_back_pending.store(true, Ordering::Relaxed);
                             }
                         }
                         _ => {
@@ -204,7 +242,7 @@ impl PixelPlugin {
             });
         }
 
-        Some(PixelPlugin { dirty, image, paste_pending, notify_pending, stdin, _child: child })
+        Some(PixelPlugin { dirty, image, paste_pending, notify_pending, navigate_pending, browser_back_pending, stdin, _child: child })
     }
 
     pub fn send_resize(&mut self, width: u32, height: u32) {
