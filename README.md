@@ -25,6 +25,12 @@ brew tap tomdringer/tap
 brew install --cask tomdringer/tap/mado
 ```
 
+To update to a new release:
+
+```bash
+brew upgrade --cask mado
+```
+
 ### Manual
 
 Download `Mado.dmg` from the [latest release](https://github.com/tomdringer/mado/releases/latest), open it, and drag Mado to your Applications folder.
