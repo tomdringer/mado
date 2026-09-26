@@ -271,6 +271,13 @@ pub mod macos_impl {
             }
         }
 
+        /// Navigate back in browser history.
+        pub fn go_back(&self) {
+            unsafe {
+                let _: () = objc2::msg_send![self.wk_view, goBack];
+            }
+        }
+
         /// Navigate to `url`.
         pub fn load_url(&self, url: &str) {
             unsafe {
@@ -300,5 +307,6 @@ impl NativeBrowser {
     }
     pub fn update_frame(&self, _: f64, _: f64, _: f64, _: f64) {}
     pub fn set_visible(&self, _: bool) {}
+    pub fn go_back(&self) {}
     pub fn load_url(&self, _: &str) {}
 }
