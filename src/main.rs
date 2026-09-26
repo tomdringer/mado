@@ -4775,17 +4775,38 @@ fn curl_download(url: &str, dest: &std::path::Path) -> Result<(), String> {
 fn restart_mado() {
     #[cfg(target_os = "macos")]
     {
-        // Walk up from .../Mado.app/Contents/MacOS/mado → Mado.app
-        let app_path = std::env::current_exe().ok()
-            .and_then(|p| p.parent()  // MacOS/
-                .and_then(|p| p.parent())  // Contents/
-                .and_then(|p| p.parent())  // Mado.app
-                .map(|p| p.to_path_buf()));
+        // Walk up from current exe looking for a .app bundle (works whether
+        // running inside Mado.app or as a standalone CLI symlink).
+        let app_path = std::env::current_exe().ok().and_then(|exe| {
+            let mut path = exe.as_path();
+            loop {
+                if path.extension().map_or(false, |e| e == "app") {
+                    return Some(path.to_path_buf());
+                }
+                match path.parent() {
+                    Some(p) => path = p,
+                    None    => break,
+                }
+            }
+            None
+        }).or_else(|| {
+            // CLI binary not inside an .app — check standard install locations.
+            let home = std::env::var("HOME").unwrap_or_default();
+            [
+                "/Applications/Mado.app".to_string(),
+                format!("{home}/Applications/Mado.app"),
+            ]
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .find(|p| p.exists())
+        });
 
         if let Some(app) = app_path {
             let app_str = app.to_string_lossy();
             let script = format!(
-                "sleep 0.4 && pkill -x mado 2>/dev/null; sleep 0.3 && open '{app_str}'"
+                "sleep 0.4 && osascript -e 'tell application \"Mado\" to quit' 2>/dev/null; \
+                 sleep 0.5 && pkill -9 -x mado 2>/dev/null; \
+                 sleep 0.2 && open '{app_str}'"
             );
             let _ = std::process::Command::new("sh")
                 .args(["-c", &script])
