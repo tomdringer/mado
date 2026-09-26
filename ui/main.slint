@@ -278,19 +278,19 @@ export component MainWindow inherits Window {
     callback sidebar-escaped();
 
     // ── Help overlay ──────────────────────────────────────────────────────────
-    private property <bool> show-help: false;
+    in-out property <bool> show-help: false;
 
     // ── Pane refocus counter — incremented when a sidebar/overlay yields focus ──
     // Slint can batch the Rust set_force_focus_id(fid)/set_force_focus_id(-1)
     // pair so changed force-focus never fires with true. This counter fires
     // entirely inside Slint, guaranteeing scope.focus() is called.
-    private property <int> pane-refocus-counter: 0;
+    in-out property <int> pane-refocus-counter: 0;
 
     // ── Icon-only sidebar state ───────────────────────────────────────────────
     in-out property <bool>  sidebar-icon-only: false;
     in-out property <bool>  right-sidebar-icon-only: false;
-    private property <int>   left-sb-kb-counter: 0;
-    private property <int>   right-sb-kb-counter: 0;
+    in-out property <int>   left-sb-kb-counter: 0;
+    in-out property <int>   right-sb-kb-counter: 0;
     private property <float> effective-sidebar-w:
         root.sidebar-icon-only ? 52.0 : root.sidebar-width;
     private property <float> effective-right-w:

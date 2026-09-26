@@ -3,6 +3,19 @@
 All notable changes to Mado are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.3] - 2026-09-26
+
+### Fixed
+- App now launches with keyboard focus — no longer requires clicking the window
+  before typing (WKWebView was loading a URL at startup and stealing macOS first
+  responder from Slint)
+- Global shortcuts (Cmd+[/]/T/B//) now work when a pixel plugin panel has keyboard
+  focus — previously clicking any plugin (e.g. the sync button in the news panel)
+  stole Slint focus and swallowed all modifier shortcuts until the user clicked a pane
+- Keyboard navigation (ArrowLeft) reliably returns from the browser back to the news
+  plugin — WKWebView's first responder is now restored each frame while the browser
+  panel is visible, preventing WebKit from intercepting keys during page loads
+
 ## [0.0.2] - 2026-09-26
 
 ### Fixed

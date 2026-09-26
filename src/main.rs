@@ -1647,6 +1647,18 @@ fn main() {
                 });
             }
 
+            // While the browser panel is visible, WebKit can steal macOS first
+            // responder during page loads, which cuts off Slint keyboard events
+            // (e.g. ArrowLeft to close the browser). Restore it every tick so
+            // the sidebar FocusScope always receives keys while browsing.
+            if let Some(nb) = native_browser_timer.borrow().as_ref() {
+                if let Some(ui) = ui_weak.upgrade() {
+                    if ui.get_show_browser_panel() {
+                        nb.restore_first_responder();
+                    }
+                }
+            }
+
             if pane_dirty_ids.is_empty() && tasku_buf.is_none() && runner_buf.is_none()
                 && plugin_bufs.is_empty() && right_plugin_bufs.is_empty()
                 && top_right_buf.is_none() && bottom_right_buf.is_none()
@@ -2431,11 +2443,6 @@ fn main() {
                     // Create native browser WKWebView (hidden; shown on first toggle)
                     if browser_plugin_resize.is_some() {
                         if let Some(ui) = ui_weak.upgrade() {
-                            let initial_url = browser_plugin_resize.as_ref()
-                                .map(|p| p.command.as_str())
-                                .filter(|s| s.starts_with("http"))
-                                .unwrap_or(browser::DEFAULT_BROWSER_URL)
-                                .to_string();
                             #[cfg(target_os = "macos")]
                             ui.window().with_winit_window(|win| {
                                 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -2445,10 +2452,11 @@ fn main() {
                                             as *mut objc2::runtime::AnyObject;
                                         // Start with a placeholder frame; real frame is set
                                         // the first time the panel becomes visible.
+                                        // NativeBrowser::new no longer pre-loads a URL —
+                                        // load_url is called via MACT navigate actions only.
                                         if let Some(nb) = browser::NativeBrowser::new(
                                             ns_view, 0.0, 0.0,
                                             browser_panel_w as f64, h as f64,
-                                            &initial_url,
                                         ) {
                                             *native_browser_resize.borrow_mut() = Some(nb);
                                         }
@@ -3238,10 +3246,7 @@ fn main() {
                           &images.borrow(), *focused_id.borrow(), None);
 
                 // Route keyboard focus to the first pane now that the layout is live.
-                if let Some(fid) = *focused_id.borrow() {
-                    ui.set_force_focus_id(fid as i32);
-                    ui.set_force_focus_id(-1);
-                }
+                ui.set_pane_refocus_counter(ui.get_pane_refocus_counter() + 1);
 
                 // Seed titles from saved CWD basenames so they appear immediately
                 // on restore (the poll timer fills in live process names after ~1 s).
@@ -3798,11 +3803,15 @@ fn main() {
     ui.on_plugin_key_input({
         let registry = Rc::clone(&registry);
         let pixel_plugins = Rc::clone(&pixel_plugins);
+        let ui_weak = ui.as_weak();
         move |idx, text, ctrl, meta, alt, shift| {
             let idx = idx as usize;
             if idx >= num_left_ext { return; }
             if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
                 if keys::is_modifier_only(text.as_str()) { return; }
+                if let Some(ui) = ui_weak.upgrade() {
+                    if handle_plugin_global_shortcut(&ui, text.as_str(), ctrl, meta, shift) { return; }
+                }
                 plugin.send_key(text.as_str(), ctrl, meta, alt, shift);
             } else {
                 let zoom_mod = ctrl || meta;
@@ -3999,11 +4008,15 @@ fn main() {
     ui.on_right_plugin_key_input({
         let registry = Rc::clone(&registry);
         let right_pixel_plugins = Rc::clone(&right_pixel_plugins);
+        let ui_weak = ui.as_weak();
         move |idx, text, ctrl, meta, alt, shift| {
             let idx = idx as usize;
             if idx >= num_right_ext { return; }
             if let Some(plugin) = right_pixel_plugins.borrow_mut().get_mut(&idx) {
                 if keys::is_modifier_only(text.as_str()) { return; }
+                if let Some(ui) = ui_weak.upgrade() {
+                    if handle_plugin_global_shortcut(&ui, text.as_str(), ctrl, meta, shift) { return; }
+                }
                 plugin.send_key(text.as_str(), ctrl, meta, alt, shift);
             } else {
                 let zoom_mod = ctrl || meta;
@@ -4194,11 +4207,15 @@ fn main() {
         let has_top_right = top_right_plugin.is_some();
         let top_right_pixel = Rc::clone(&top_right_pixel);
         let top_right_paste_result = Rc::clone(&top_right_paste_result);
+        let ui_weak = ui.as_weak();
         move |text, ctrl, meta, alt, shift| {
             // Route to pixel plugin if present
             if top_right_pixel.borrow().is_some() {
                 let t = text.as_str();
                 if keys::is_modifier_only(t) { return; }
+                if let Some(ui) = ui_weak.upgrade() {
+                    if handle_plugin_global_shortcut(&ui, t, ctrl, meta, shift) { return; }
+                }
                 let is_paste = (meta || ctrl) && t == "v";
                 if is_paste {
                     // Try clipboard image first (synchronous — fast)
@@ -4445,6 +4462,9 @@ fn main() {
                         let w = ui.get_browser_panel_width() as f64;
                         nb.update_frame(x, y, w, h);
                     }
+                    // WKWebView steals first responder when shown — give it back to
+                    // Slint so Mado keyboard shortcuts keep working over the browser.
+                    nb.restore_first_responder();
                 }
             }
         }
@@ -4489,13 +4509,9 @@ fn main() {
 
     ui.on_sidebar_escaped({
         let ui_weak = ui.as_weak();
-        let focused_id = Rc::clone(&focused_id);
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
-            if let Some(fid) = *focused_id.borrow() {
-                ui.set_force_focus_id(fid as i32);
-                ui.set_force_focus_id(-1);
-            }
+            ui.set_pane_refocus_counter(ui.get_pane_refocus_counter() + 1);
         }
     });
 
@@ -4509,7 +4525,6 @@ fn main() {
     // since Slint batches property updates and the toggle would be a no-op.
     {
         let ui_weak = ui.as_weak();
-        let focused_id = Rc::clone(&focused_id);
         let startup_focus = Timer::default();
         startup_focus.start(
             TimerMode::SingleShot,
@@ -4547,10 +4562,7 @@ fn main() {
                     }
                 });
 
-                if let Some(fid) = *focused_id.borrow() {
-                    ui.set_force_focus_id(fid as i32);
-                    ui.set_force_focus_id(-1);
-                }
+                ui.set_pane_refocus_counter(ui.get_pane_refocus_counter() + 1);
             },
         );
         std::mem::forget(startup_focus);
@@ -4744,6 +4756,44 @@ fn curl_get(url: &str) -> Result<String, String> {
         return Err(format!("request failed (HTTP error) for {url}"));
     }
     String::from_utf8(out.stdout).map_err(|e| e.to_string())
+}
+
+/// Handle global Mado shortcuts (Cmd+[/]/T/B//) when a plugin panel has Slint
+/// focus instead of a terminal pane.  Returns `true` if the shortcut was
+/// consumed (caller must NOT forward to the plugin).
+fn handle_plugin_global_shortcut(ui: &MainWindow, text: &str, ctrl: bool, meta: bool, shift: bool) -> bool {
+    if !(meta || ctrl) { return false; }
+    match text {
+        "[" => {
+            ui.set_sidebar_icon_only(false);
+            ui.set_left_sb_kb_counter(ui.get_left_sb_kb_counter() + 1);
+            true
+        }
+        "]" => {
+            ui.set_right_sidebar_icon_only(false);
+            ui.set_right_sb_kb_counter(ui.get_right_sb_kb_counter() + 1);
+            true
+        }
+        "t" if !shift => {
+            let new = !ui.get_show_top_bar();
+            ui.set_show_top_bar(new);
+            if new { ui.set_top_bar_expanded(true); }
+            ui.set_pane_refocus_counter(ui.get_pane_refocus_counter() + 1);
+            true
+        }
+        "b" if !shift => {
+            let new = !ui.get_show_bottom_bar();
+            ui.set_show_bottom_bar(new);
+            if new { ui.set_bottom_bar_expanded(true); }
+            ui.set_pane_refocus_counter(ui.get_pane_refocus_counter() + 1);
+            true
+        }
+        "/" => {
+            ui.set_show_help(!ui.get_show_help());
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Download a URL to a file on disk.

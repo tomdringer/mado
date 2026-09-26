@@ -196,7 +196,6 @@ pub mod macos_impl {
             parent_ns_view: *mut AnyObject,
             x: f64, y: f64,
             w: f64, h: f64,
-            initial_url: &str,
         ) -> Option<Self> {
             if parent_ns_view.is_null() { return None; }
 
@@ -249,10 +248,18 @@ pub mod macos_impl {
                 // Start hidden; frame is corrected on first show.
                 let _: () = objc2::msg_send![wk, setHidden: true];
 
-                let browser = NativeBrowser { wk_view: wk };
-                browser.load_url(initial_url);
+                // Reclaim first responder for Slint's view — WKWebView can steal it
+                // during addSubview even when hidden.
+                let ns_window: *mut AnyObject = objc2::msg_send![parent_ns_view, window];
+                if !ns_window.is_null() {
+                    let _: () = objc2::msg_send![ns_window, makeFirstResponder: parent_ns_view];
+                }
 
-                Some(browser)
+                // Don't pre-load a URL here — WebKit steals first responder focus
+                // during page load even on a hidden view.  The URL is loaded the
+                // first time load_url() is called via a MACT navigate action.
+
+                Some(NativeBrowser { wk_view: wk })
             }
         }
 
@@ -268,6 +275,20 @@ pub mod macos_impl {
         pub fn set_visible(&self, visible: bool) {
             unsafe {
                 let _: () = objc2::msg_send![self.wk_view, setHidden: !visible];
+            }
+        }
+
+        /// Return first responder to Slint's content view (the WKWebView's superview).
+        /// Call this after making the WKWebView visible so macOS keyboard events
+        /// continue reaching Slint rather than being swallowed by WebKit.
+        pub fn restore_first_responder(&self) {
+            unsafe {
+                use objc2::runtime::AnyObject;
+                let parent: *mut AnyObject = objc2::msg_send![self.wk_view, superview];
+                if parent.is_null() { return; }
+                let ns_window: *mut AnyObject = objc2::msg_send![parent, window];
+                if ns_window.is_null() { return; }
+                let _: () = objc2::msg_send![ns_window, makeFirstResponder: parent];
             }
         }
 
