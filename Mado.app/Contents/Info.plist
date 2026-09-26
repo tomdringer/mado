@@ -6,7 +6,8 @@
   <key>CFBundleName</key>          <string>Mado</string>
   <key>CFBundleExecutable</key>    <string>mado</string>
   <key>CFBundleIdentifier</key>    <string>com.yourname.mado</string>
-  <key>CFBundleVersion</key>       <string>0.1.0</string>
+  <key>CFBundleShortVersionString</key> <string>0.0.3</string>
+  <key>CFBundleVersion</key>       <string>0.0.3</string>
   <key>CFBundleIconFile</key>      <string>mado</string>
   <key>CFBundlePackageType</key>   <string>APPL</string>
   <key>NSHighResolutionCapable</key><true/>
