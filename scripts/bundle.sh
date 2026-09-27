@@ -2,6 +2,12 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# Inject version from Cargo.toml into Info.plist
+VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+sed -i '' \
+    -e "s|<string>[0-9]*\.[0-9]*\.[0-9]*</string>|<string>${VERSION}</string>|g" \
+    Mado.app/Contents/Info.plist
+
 cargo build --release
 
 # Kill any running Mado BEFORE overwriting the binary — writing to a running

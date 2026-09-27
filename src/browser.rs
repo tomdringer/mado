@@ -252,7 +252,7 @@ pub mod macos_impl {
                 // during addSubview even when hidden.
                 let ns_window: *mut AnyObject = objc2::msg_send![parent_ns_view, window];
                 if !ns_window.is_null() {
-                    let _: () = objc2::msg_send![ns_window, makeFirstResponder: parent_ns_view];
+                    let _: bool = objc2::msg_send![ns_window, makeFirstResponder: parent_ns_view];
                 }
 
                 // Don't pre-load a URL here — WebKit steals first responder focus
@@ -288,7 +288,7 @@ pub mod macos_impl {
                 if parent.is_null() { return; }
                 let ns_window: *mut AnyObject = objc2::msg_send![parent, window];
                 if ns_window.is_null() { return; }
-                let _: () = objc2::msg_send![ns_window, makeFirstResponder: parent];
+                let _: bool = objc2::msg_send![ns_window, makeFirstResponder: parent];
             }
         }
 

@@ -476,14 +476,18 @@ fn parse(bytes: &[u8]) -> Vec<FetchedProject> {
             continue;
         }
 
-        // Locate the colour — everything from the last '#' for 7 chars (#RRGGBB)
-        let Some(hash) = trimmed.rfind('#') else { continue };
-        let name = trimmed[..hash].trim();
-        let rest = &trimmed[hash..];
-        if rest.len() < 7 { continue; }
-
-        let hex   = &rest[..7];   // "#RRGGBB"
-        let code_raw = rest[7..].trim();
+        // Locate the colour — everything from the last '#' for 7 chars (#RRGGBB).
+        // Projects synced from Tasku Cloud may have no colour set; fall back to
+        // a neutral grey so the tile still appears in the workspace panel.
+        let (name, hex, code_raw) = if let Some(hash) = trimmed.rfind('#') {
+            let name = trimmed[..hash].trim();
+            let rest = &trimmed[hash..];
+            if rest.len() < 7 { continue; }
+            (name, &rest[..7], rest[7..].trim())
+        } else {
+            // No colour — treat whole trimmed line as name, use default grey
+            (trimmed, "#6B7280", "")
+        };
 
         if name.is_empty() { continue; }
 
