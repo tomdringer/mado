@@ -110,7 +110,16 @@ export component HelpOverlay inherits Rectangle {
                     SectionTitle { label: "CLI COMMANDS"; }
                     ShortcutRow { keys: "mado config";   desc: "Edit config file"; }
                     ShortcutRow { keys: "mado projects"; desc: "Edit projects file"; }
-                    ShortcutRow { keys: "mado plugin";   desc: "install | list | remove"; }
+                    ShortcutRow { keys: "mado plugin";   desc: "install | list | update | remove"; }
+                    ShortcutRow { keys: "mado help";     desc: "All commands"; }
+
+                    SectionTitle { label: "BROWSER  (Linux)"; }
+                    ShortcutRow { keys: "Cmd + Opt + →";   desc: "Select (from rightmost pane)"; }
+                    ShortcutRow { keys: "Enter";           desc: "Go into the page"; }
+                    ShortcutRow { keys: "Tab / Shift+Tab"; desc: "Next / previous input"; }
+                    ShortcutRow { keys: "Cmd + [";         desc: "Back out of the page"; }
+                    ShortcutRow { keys: "←";               desc: "Back to news"; }
+                    ShortcutRow { keys: "Esc";             desc: "Return to pane"; }
                 }
 
                 // ── Right column ──────────────────────────────────────────────
@@ -148,7 +157,8 @@ export component HelpOverlay inherits Rectangle {
 
                     SectionTitle { label: "NEWS PANEL"; }
                     ShortcutRow { keys: "↑ / ↓";   desc: "Navigate headlines"; }
-                    ShortcutRow { keys: "→";        desc: "Open story in browser"; }
+                    ShortcutRow { keys: "Enter";    desc: "Open story in browser"; }
+                    ShortcutRow { keys: "→";        desc: "Open story & select browser"; }
                     ShortcutRow { keys: "←";        desc: "Close browser"; }
                 }
             }

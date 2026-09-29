@@ -41,8 +41,9 @@ pub struct PixelPlugin {
     /// Holds (title, message). Cleared by the render timer after firing.
     pub notify_pending:    Arc<Mutex<Option<(String, String)>>>,
     /// Set by the reader thread when the plugin sends a MACT navigate action.
-    /// Holds the URL to load in the browser panel.
-    pub navigate_pending:     Arc<Mutex<Option<String>>>,
+    /// Holds the URL to load in the browser panel, and whether the plugin asked
+    /// for keyboard focus to move to the browser (`"select": true`).
+    pub navigate_pending:     Arc<Mutex<Option<(String, bool)>>>,
     /// Set by the reader thread when the plugin sends a MACT browser_back action.
     pub browser_back_pending: Arc<AtomicBool>,
     stdin:                 std::process::ChildStdin,
@@ -148,20 +149,23 @@ pub(crate) fn mact_is_browser_back(json: &[u8]) -> bool {
     json.windows(14).any(|w| w == b"\"browser_back\"")
 }
 
-/// If `json` is a `{"action":"navigate","url":"..."}` payload, returns the URL.
-/// Only `http://` and `https://` URLs are accepted. Returns `None` otherwise.
-pub(crate) fn mact_extract_navigate(json: &[u8]) -> Option<String> {
+/// If `json` is a `{"action":"navigate","url":"...","select":bool}` payload,
+/// returns the URL and `select` (default false: keyboard focus stays in the
+/// plugin). Only `http://` and `https://` URLs are accepted.
+pub(crate) fn mact_extract_navigate(json: &[u8]) -> Option<(String, bool)> {
     #[derive(serde::Deserialize)]
     struct NavigateAction {
         action: String,
         url:    String,
+        #[serde(default)]
+        select: bool,
     }
     let parsed: NavigateAction = serde_json::from_slice(json).ok()?;
     if parsed.action != "navigate" { return None; }
     if !parsed.url.starts_with("http://") && !parsed.url.starts_with("https://") {
         return None;
     }
-    Some(parsed.url)
+    Some((parsed.url, parsed.select))
 }
 
 /// Validate MADO frame dimensions.  Returns `(width, height)` only when
@@ -192,7 +196,7 @@ impl PixelPlugin {
         let paste_pending:    Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let notify_pending:   Arc<Mutex<Option<(String, String)>>> =
             Arc::new(Mutex::new(None));
-        let navigate_pending:     Arc<Mutex<Option<String>>> =
+        let navigate_pending:     Arc<Mutex<Option<(String, bool)>>> =
             Arc::new(Mutex::new(None));
         let browser_back_pending: Arc<AtomicBool> =
             Arc::new(AtomicBool::new(false));
@@ -242,9 +246,9 @@ impl PixelPlugin {
                                 if let Ok(mut g) = notify_pending.lock() {
                                     *g = Some(notif);
                                 }
-                            } else if let Some(url) = mact_extract_navigate(&json) {
+                            } else if let Some(nav) = mact_extract_navigate(&json) {
                                 if let Ok(mut g) = navigate_pending.lock() {
-                                    *g = Some(url);
+                                    *g = Some(nav);
                                 }
                             } else if mact_is_browser_back(&json) {
                                 browser_back_pending.store(true, Ordering::Relaxed);
@@ -342,6 +346,16 @@ impl Drop for PixelPlugin {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn navigate_action_select_defaults_to_false() {
+        use super::mact_extract_navigate as nav;
+        assert_eq!(nav(br#"{"action":"navigate","url":"https://a.b"}"#),
+                   Some(("https://a.b".into(), false)));
+        assert_eq!(nav(br#"{"action":"navigate","url":"https://a.b","select":true}"#),
+                   Some(("https://a.b".into(), true)));
+        assert_eq!(nav(br#"{"action":"navigate","url":"file:///etc/passwd"}"#), None);
+    }
+
     use super::*;
     use crate::keys;
 

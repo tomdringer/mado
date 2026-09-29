@@ -653,9 +653,13 @@ fn main() {
     // Handle CLI subcommands before launching the UI.
     // macOS injects a `-psn_XXXXXXXX` Process Serial Number arg when launching
     // binaries inside .app bundles — strip it so subcommand matching works.
-    let args: Vec<String> = std::env::args()
+    let mut args: Vec<String> = std::env::args()
         .filter(|a| !a.starts_with("-psn_"))
         .collect();
+    // `mado plugins …` is an easy slip for `mado plugin …`.
+    if args.get(1).map(|s| s.as_str()) == Some("plugins") {
+        args[1] = "plugin".into();
+    }
     if args.get(1).map(|s| s.as_str()) == Some("config") {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
 
@@ -836,6 +840,18 @@ fn main() {
             }
         }
         return;
+    }
+
+    // Any other word is a mistyped subcommand, not a request for a second
+    // window. Leading-dash args are left alone: macOS can pass its own at launch.
+    if let Some(cmd) = args.get(1).filter(|a| !a.starts_with('-') || is_help_flag(a)) {
+        if cmd == "help" || is_help_flag(cmd) {
+            print!("{USAGE}");
+            return;
+        }
+        eprintln!("mado: unknown command '{cmd}'\n");
+        eprint!("{USAGE}");
+        std::process::exit(1);
     }
 
     // Configure the winit backend. On macOS, set blur at window-creation time —
@@ -1542,12 +1558,10 @@ fn main() {
                         }
                     }
                     if let Ok(mut g) = plugin.navigate_pending.lock() {
-                        if let Some(url) = g.take() {
-                            if let Some(nb) = native_browser_timer.borrow().as_ref() {
-                                nb.load_url(&url);
-                            }
+                        if let Some((url, select)) = g.take() {
                             if let Some(ui) = ui_weak.upgrade() {
-                                ui.set_show_browser_panel(true);
+                                open_in_browser(&ui, native_browser_timer.borrow().as_ref(),
+                                                &url, select.then_some((0, *i as i32)));
                             }
                         }
                     }
@@ -1576,12 +1590,10 @@ fn main() {
                         }
                     }
                     if let Ok(mut g) = plugin.navigate_pending.lock() {
-                        if let Some(url) = g.take() {
-                            if let Some(nb) = native_browser_timer.borrow().as_ref() {
-                                nb.load_url(&url);
-                            }
+                        if let Some((url, select)) = g.take() {
                             if let Some(ui) = ui_weak.upgrade() {
-                                ui.set_show_browser_panel(true);
+                                open_in_browser(&ui, native_browser_timer.borrow().as_ref(),
+                                                &url, select.then_some((1, *i as i32)));
                             }
                         }
                     }
@@ -1610,12 +1622,10 @@ fn main() {
                         }
                     }
                     if let Ok(mut g) = pp.navigate_pending.lock() {
-                        if let Some(url) = g.take() {
-                            if let Some(nb) = native_browser_timer.borrow().as_ref() {
-                                nb.load_url(&url);
-                            }
+                        if let Some((url, select)) = g.take() {
                             if let Some(ui) = ui_weak.upgrade() {
-                                ui.set_show_browser_panel(true);
+                                open_in_browser(&ui, native_browser_timer.borrow().as_ref(),
+                                                &url, select.then_some((-1, -1)));
                             }
                         }
                     }
@@ -2121,6 +2131,9 @@ fn main() {
                 if let Some(neighbor) = tree.borrow().neighbor(id as NodeId, nav, w, h) {
                     *focused_id.borrow_mut() = Some(neighbor);
                     push_images(&pane_model, &images.borrow(), Some(neighbor), None);
+                } else if dir == 1 && ui.get_show_browser_panel() {
+                    // Rightmost pane → the browser panel sits to its right.
+                    select_browser(&ui, -1, -1);
                 }
             }
         }
@@ -4954,6 +4967,43 @@ fn curl_download(url: &str, dest: &std::path::Path) -> Result<(), String> {
 /// process still alive and just re-focuses it.
 ///
 /// On Linux there is no `open` equivalent, so we just print the old message.
+/// Show `url` in the browser panel. With `select = Some((side, plugin))` the
+/// panel also takes keyboard focus in its "selected" state (offscreen browser
+/// only); ← from there re-enters that sidebar plugin (side 0 = left, 1 = right,
+/// -1 = none, go back to the panes).
+fn open_in_browser(ui: &MainWindow, nb: Option<&browser::NativeBrowser>,
+                   url: &str, select: Option<(i32, i32)>) {
+    if let Some(nb) = nb { nb.load_url(url); }
+    ui.set_show_browser_panel(true);
+    if let Some((side, plugin)) = select {
+        select_browser(ui, side, plugin);
+    }
+}
+
+/// Move keyboard focus to the browser panel in its "selected" state.
+fn select_browser(ui: &MainWindow, return_side: i32, return_plugin: i32) {
+    if !ui.get_browser_offscreen() { return; }
+    ui.set_browser_return_side(return_side);
+    ui.set_browser_return_plugin(return_plugin);
+    ui.set_browser_focus_request(ui.get_browser_focus_request() + 1);
+}
+
+const USAGE: &str = "\
+usage: mado                            open Mado
+       mado config [plugin-id]         edit config.toml, or a plugin's config
+       mado projects                   edit projects.toml
+       mado plugin list                list installed plugins
+       mado plugin install <name>      install a plugin from its GitHub release
+       mado plugin update <name>       update an installed plugin
+       mado plugin add <id> <command>  register a local plugin
+       mado plugin remove <id>         unregister a plugin
+       mado help                       show this help
+";
+
+fn is_help_flag(arg: &str) -> bool {
+    matches!(arg, "-h" | "--help")
+}
+
 fn restart_mado() {
     #[cfg(target_os = "macos")]
     {

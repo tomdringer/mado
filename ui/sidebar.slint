@@ -1075,6 +1075,18 @@ export component Sidebar inherits Rectangle {
     // Pending "move keyboard focus into this plugin panel" request (see PluginContent).
     private property <int> enter-plugin-index: -1;
     private property <int> enter-counter: 0;
+    // Re-enter a plugin panel from outside the sidebar (← from the browser):
+    // set enter-plugin-target to its plugin index and bump enter-plugin-count.
+    in property <int> enter-plugin-target: -1;
+    in property <int> enter-plugin-count: 0;
+    changed enter-plugin-count => {
+        let idx = root.enter-plugin-target;
+        if (idx >= 0 && idx < root.plugin-expanded.length) {
+            if (!root.plugin-expanded[idx]) { root.plugin-toggled(idx); }
+            root.enter-plugin-index = idx;
+            root.enter-counter += 1;
+        }
+    }
     private property <int> ws-tile-index: -1;  // -1 = panel mode, >=0 = tile nav mode
     callback focus-escaped();
     callback focus-collapsed();
