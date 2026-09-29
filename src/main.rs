@@ -4979,6 +4979,22 @@ fn plugin_install(name: &str) {
         }
     }
 
+    // 5b. Codesign on macOS so the binary can be spawned by the signed app
+    #[cfg(target_os = "macos")]
+    {
+        print!("signing... ");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let status = std::process::Command::new("codesign")
+            .args(["--force", "--sign", "Developer ID Application: Tom Dringer (FAG2987V9S)"])
+            .arg(&dest)
+            .status();
+        match status {
+            Ok(s) if s.success() => println!("done"),
+            Ok(s) => eprintln!("warning: codesign exited with {s} — plugin may be blocked by macOS"),
+            Err(e) => eprintln!("warning: codesign failed: {e} — plugin may be blocked by macOS"),
+        }
+    }
+
     // 6. Fetch mado-plugin.json to determine kind and icon
     let meta_url = format!("https://raw.githubusercontent.com/{repo}/HEAD/mado-plugin.json");
     let (kind, icon) = curl_get(&meta_url)
@@ -5074,6 +5090,21 @@ fn plugin_update(name: &str) {
             let mut perms = meta.permissions();
             perms.set_mode(0o755);
             let _ = std::fs::set_permissions(dest, perms);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        print!("signing... ");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let status = std::process::Command::new("codesign")
+            .args(["--force", "--sign", "Developer ID Application: Tom Dringer (FAG2987V9S)"])
+            .arg(dest)
+            .status();
+        match status {
+            Ok(s) if s.success() => println!("done"),
+            Ok(s) => eprintln!("warning: codesign exited with {s} — plugin may be blocked by macOS"),
+            Err(e) => eprintln!("warning: codesign failed: {e} — plugin may be blocked by macOS"),
         }
     }
 
