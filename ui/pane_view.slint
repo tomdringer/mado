@@ -184,7 +184,7 @@ export component PaneView inherits Rectangle {
             Text {
                 text: "●";
                 color: root.is-focused ? root.theme-active-dot : #3a3a4a;
-                font-family: "Hack Nerd Font";
+                font-family: "Hack Nerd Font Mono";
                 font-size: 18px;
                 vertical-alignment: center;
                 width: 22px;
@@ -194,7 +194,7 @@ export component PaneView inherits Rectangle {
             if root.pane-title != "": Text {
                 text: root.pane-title;
                 color: root.is-focused ? #aaaaaa : #555555;
-                font-family: "Hack Nerd Font";
+                font-family: "Hack Nerd Font Mono";
                 font-size: 11px;
                 vertical-alignment: center;
                 overflow: elide;

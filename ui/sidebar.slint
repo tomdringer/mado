@@ -458,7 +458,7 @@ component WorkspacesContent inherits Rectangle {
                     text: proj.icon;
                     color: proj.text-color;
                     font-size: 20px;
-                    font-family: "Hack Nerd Font";
+                    font-family: "Hack Nerd Font Mono";
                     horizontal-alignment: center;
                     vertical-alignment: center;
                     x: -4px;
@@ -929,7 +929,7 @@ component PluginRowHeader inherits Rectangle {
                 Text {
                     text: root.item.icon;
                     color: rgba(255,255,255,0.45);
-                    font-family: "Hack Nerd Font";
+                    font-family: "Hack Nerd Font Mono";
                     font-size: 22px;
                     horizontal-alignment: center; vertical-alignment: center;
                     width: parent.width; height: parent.height;
@@ -947,7 +947,7 @@ component PluginRowHeader inherits Rectangle {
                 Text {
                     text: "●";
                     color: root.expanded ? #22c55e : #3a3a4a;
-                    font-family: "Hack Nerd Font";
+                    font-family: "Hack Nerd Font Mono";
                     font-size: 14px;
                     vertical-alignment: center;
                     x: 4px;
@@ -1445,7 +1445,7 @@ export component Sidebar inherits Rectangle {
                 color: icon-ta.has-hover
                     ? rgba(255, 255, 255, 0.75)
                     : rgba(255, 255, 255, 0.45);
-                font-family: "Hack Nerd Font";
+                font-family: "Hack Nerd Font Mono";
                 font-size: 22px;
                 horizontal-alignment: center;
                 vertical-alignment: center;
