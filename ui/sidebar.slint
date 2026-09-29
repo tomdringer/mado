@@ -698,11 +698,25 @@ export component PluginContent inherits Rectangle {
     callback scroll(float);                  // scroll-wheel delta-y in logical px
     callback click(float, float);            // x, y in logical px
     callback focus-changed(bool);            // true = gained, false = lost
+    // Keyboard entry from the sidebar list: a non-zero focus-request (re)focuses
+    // this panel, including when it is created by the same keypress that opened
+    // it; focus-taken lets the sidebar clear the request. Cmd/Ctrl+[ inside the
+    // panel fires exit-to-list to hand focus back to the list on this row.
+    in property <int> focus-request: 0;
+    callback focus-taken();
+    callback exit-to-list();
 
     private property <float> press-abs-y: 0;
     background: transparent;
 
     public function take-focus() { fs.focus(); }
+
+    init => {
+        if (root.focus-request > 0) { fs.focus(); root.focus-taken(); }
+    }
+    changed focus-request => {
+        if (root.focus-request > 0) { fs.focus(); root.focus-taken(); }
+    }
 
     // ── Keyboard focus scope ──────────────────────────────────────────────────
     fs := FocusScope {
@@ -711,6 +725,10 @@ export component PluginContent inherits Rectangle {
         height: parent.height - 8px;
 
         key-pressed(e) => {
+            if ((e.modifiers.meta || e.modifiers.control) && !e.modifiers.alt && e.text == "[") {
+                root.exit-to-list();
+                return accept;
+            }
             root.key-input(e.text, e.modifiers.control, e.modifiers.meta, e.modifiers.alt, e.modifiers.shift);
             accept
         }
@@ -1046,9 +1064,17 @@ export component Sidebar inherits Rectangle {
     in property <int> kb-focus-count: 0;
     changed kb-focus-count => {
         kb-scope.focus();
-        root.kb-index = 0;
+        // Return to the row last used, so jumping back from a pane or the
+        // browser lands where you were rather than at the top.
+        root.kb-index = root.last-kb-index >= 0 && root.last-kb-index < root.plugins.length
+            ? root.last-kb-index : 0;
     }
     private property <int> kb-index: -1;
+    private property <int> last-kb-index: -1;
+    changed kb-index => { if (root.kb-index >= 0) { root.last-kb-index = root.kb-index; } }
+    // Pending "move keyboard focus into this plugin panel" request (see PluginContent).
+    private property <int> enter-plugin-index: -1;
+    private property <int> enter-counter: 0;
     private property <int> ws-tile-index: -1;  // -1 = panel mode, >=0 = tile nav mode
     callback focus-escaped();
     callback focus-collapsed();
@@ -1160,21 +1186,9 @@ export component Sidebar inherits Rectangle {
             }
 
             // ── Panel navigation mode ─────────────────────────────────────────
-            // If an expanded pixel plugin is focused, Up/Down/Left/Right go to it, not sidebar nav.
-            if ((e.text == "\u{F700}" || e.text == "\u{F701}" || e.text == "\u{F702}" || e.text == "\u{F703}")
-                    && root.kb-index >= 0
-                    && root.kb-index < root.plugins.length
-                    && root.plugins[root.kb-index].plugin-index >= 0
-                    && root.plugin-expanded[root.plugins[root.kb-index].plugin-index]
-                    && root.plugin-pixel[root.plugins[root.kb-index].plugin-index]) {
-                root.plugin-key-input(root.plugins[root.kb-index].plugin-index,
-                    e.text == "\u{F700}" ? "ArrowUp"
-                        : e.text == "\u{F701}" ? "ArrowDown"
-                        : e.text == "\u{F702}" ? "ArrowLeft"
-                        : "ArrowRight",
-                    e.modifiers.control, e.modifiers.meta, e.modifiers.alt, e.modifiers.shift);
-                return accept;
-            }
+            // Arrows always move between rows. Enter opens the highlighted panel
+            // if needed and moves keyboard focus into it (never closes it); Space
+            // opens or closes it. Inside a panel, Cmd/Ctrl+[ comes back here.
             if (e.text == "\u{F700}") {  // Up
                 root.kb-index = root.kb-index <= 0
                     ? root.plugins.length - 1
@@ -1187,12 +1201,32 @@ export component Sidebar inherits Rectangle {
                     : root.kb-index + 1;
                 return accept;
             }
-            if (e.text == "\u{000D}" || e.text == "\u{000A}") {  // Enter — toggle or enter tile mode
+            if (e.text == "\u{000D}" || e.text == "\u{000A}") {  // Enter — open and go in
                 if (root.kb-index >= 0 && root.kb-index < root.plugins.length) {
                     if (root.plugins[root.kb-index].id == "workspaces") {
                         // Always expand then enter tile navigation
                         root.workspaces-expanded = true;
                         root.ws-tile-index = 0;
+                    } else if (root.plugins[root.kb-index].id == "tasku") {
+                        if (!root.tasku-expanded) {
+                            root.tasku-expanded = true;
+                            root.tasku-toggled(true);
+                        }
+                    } else if (root.plugins[root.kb-index].id == "priorities") {
+                        root.priorities-expanded = true;
+                    } else if (root.plugins[root.kb-index].plugin-index >= 0) {
+                        let idx = root.plugins[root.kb-index].plugin-index;
+                        if (!root.plugin-expanded[idx]) { root.plugin-toggled(idx); }
+                        root.enter-plugin-index = idx;
+                        root.enter-counter += 1;
+                    }
+                }
+                return accept;
+            }
+            if (e.text == " ") {  // Space — open / close the highlighted panel
+                if (root.kb-index >= 0 && root.kb-index < root.plugins.length) {
+                    if (root.plugins[root.kb-index].id == "workspaces") {
+                        root.workspaces-expanded = !root.workspaces-expanded;
                     } else if (root.plugins[root.kb-index].id == "tasku") {
                         root.tasku-expanded = !root.tasku-expanded;
                         root.tasku-toggled(root.tasku-expanded);
@@ -1202,16 +1236,6 @@ export component Sidebar inherits Rectangle {
                         root.plugin-toggled(root.plugins[root.kb-index].plugin-index);
                     }
                 }
-                return accept;
-            }
-            // Forward to expanded pixel plugin (e.g. space → pomodoro toggle)
-            if (root.kb-index >= 0
-                    && root.kb-index < root.plugins.length
-                    && root.plugins[root.kb-index].plugin-index >= 0
-                    && root.plugin-expanded[root.plugins[root.kb-index].plugin-index]
-                    && root.plugin-pixel[root.plugins[root.kb-index].plugin-index]) {
-                root.plugin-key-input(root.plugins[root.kb-index].plugin-index,
-                    e.text, e.modifiers.control, e.modifiers.meta, e.modifiers.alt, e.modifiers.shift);
                 return accept;
             }
             return reject;
@@ -1363,6 +1387,12 @@ export component Sidebar inherits Rectangle {
                     scroll(delta) => { root.plugin-scroll(item.plugin-index, delta); }
                     click(x, y) => { root.plugin-click(item.plugin-index, x, y); }
                     focus-changed(focused) => { root.plugin-focus-changed(item.plugin-index, focused); }
+                    focus-request: root.enter-plugin-index == item.plugin-index ? root.enter-counter : 0;
+                    focus-taken => { root.enter-plugin-index = -1; }
+                    exit-to-list => {
+                        root.kb-index = i;
+                        kb-scope.focus();
+                    }
                     resize-start => {
                         root.plugin-resize-index   = item.plugin-index;
                         root.plugin-resize-press-h = root.plugin-panel-h[item.plugin-index];
