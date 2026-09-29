@@ -1,4 +1,5 @@
 mod browser;
+mod clipboard;
 mod config;
 mod keys;
 mod pane_tree;
@@ -1248,7 +1249,7 @@ fn main() {
     let banner_active: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(true));
     *focused_id.borrow_mut() = Some(tree.borrow().root);
 
-    // Shared pending paste: key handler runs pbpaste on a background thread,
+    // Shared pending paste: key handler reads the clipboard on a background thread,
     // timer drains the result via try_lock. Avoids blocking the UI thread.
     let pending_paste: Rc<RefCell<Option<(NodeId, Arc<std::sync::Mutex<Option<Vec<u8>>>>)>>> =
         Rc::new(RefCell::new(None));
@@ -1452,7 +1453,7 @@ fn main() {
                 let s = selection.borrow();
                 s.as_ref().map(|s| (s.pane_id, s.normalized()))
             };
-            // Drain async paste (background thread runs pbpaste, stores result here).
+            // Drain async paste (background thread reads the clipboard, stores result here).
             {
                 let paste_ready: Option<(NodeId, Vec<u8>)> = {
                     let guard = pending_paste.borrow();
@@ -1545,8 +1546,8 @@ fn main() {
                                 Arc::new(std::sync::Mutex::new(None));
                             let result2 = Arc::clone(&result);
                             std::thread::spawn(move || {
-                                if let Ok(out) = std::process::Command::new("pbpaste").output() {
-                                    *result2.lock().unwrap() = Some(out.stdout);
+                                if let Some(out) = clipboard::get_text() {
+                                    *result2.lock().unwrap() = Some(out);
                                 }
                             });
                             *pending_paste.borrow_mut() = Some((paste_id, result));
@@ -1994,10 +1995,7 @@ fn main() {
                     };
                     let copied = registry.borrow().get_selection_text(id as NodeId, norm);
                     if !copied.is_empty() {
-                        let _ = std::process::Command::new("/bin/sh")
-                            .args(["-c", &format!("printf '%s' {} | pbcopy",
-                                shell_escape(&copied))])
-                            .status();
+                        clipboard::set_text(&copied);
                     }
                     let prev_id = selection.borrow().as_ref().map(|s| s.pane_id);
                     *selection.borrow_mut() = None;
@@ -2011,8 +2009,8 @@ fn main() {
                         Arc::new(std::sync::Mutex::new(None));
                     let result2 = Arc::clone(&result);
                     std::thread::spawn(move || {
-                        if let Ok(out) = std::process::Command::new("pbpaste").output() {
-                            *result2.lock().unwrap() = Some(out.stdout);
+                        if let Some(out) = clipboard::get_text() {
+                            *result2.lock().unwrap() = Some(out);
                         }
                     });
                     *pending_paste.borrow_mut() = Some((id as NodeId, result));
@@ -2195,13 +2193,22 @@ fn main() {
         move |pane_id| {
             let id = pane_id as NodeId;
             let mut sel = selection.borrow_mut();
+            let mut drag_end = None;
             if let Some(ref s) = *sel {
                 if s.pane_id == id && s.is_empty() {
                     // Plain click — no drag, clear the zero-width selection.
                     *sel = None;
                     drop(sel);
                     registry.borrow().mark_dirty(id);
+                    return;
                 }
+                if s.pane_id == id {
+                    drag_end = Some(s.normalized());
+                }
+            }
+            drop(sel);
+            if let Some(norm) = drag_end {
+                copy_on_select(&registry.borrow(), id, norm);
             }
         }
     });
@@ -2809,9 +2816,7 @@ fn main() {
             };
             let text = registry.borrow().get_selection_text(id, norm);
             if !text.is_empty() {
-                let _ = std::process::Command::new("/bin/sh")
-                    .args(["-c", &format!("printf '%s' {} | pbcopy", shell_escape(&text))])
-                    .status();
+                clipboard::set_text(&text);
             }
             *selection.borrow_mut() = None;
             registry.borrow().mark_dirty(id);
@@ -2830,8 +2835,8 @@ fn main() {
                 Arc::new(std::sync::Mutex::new(None));
             let result2 = Arc::clone(&result);
             std::thread::spawn(move || {
-                if let Ok(out) = std::process::Command::new("pbpaste").output() {
-                    *result2.lock().unwrap() = Some(out.stdout);
+                if let Some(out) = clipboard::get_text() {
+                    *result2.lock().unwrap() = Some(out);
                 }
             });
             *pending_paste.borrow_mut() = Some((id, result));
@@ -3042,12 +3047,21 @@ fn main() {
         let selection = Rc::clone(&selection);
         move || {
             let mut sel = selection.borrow_mut();
+            let mut drag_end = None;
             if let Some(ref s) = *sel {
                 if s.pane_id == SIDEBAR_TASKU_ID && s.is_empty() {
                     *sel = None;
                     drop(sel);
                     registry.borrow().mark_dirty(SIDEBAR_TASKU_ID);
+                    return;
                 }
+                if s.pane_id == SIDEBAR_TASKU_ID {
+                    drag_end = Some(s.normalized());
+                }
+            }
+            drop(sel);
+            if let Some(norm) = drag_end {
+                copy_on_select(&registry.borrow(), SIDEBAR_TASKU_ID, norm);
             }
         }
     });
@@ -3142,10 +3156,7 @@ fn main() {
                     };
                     let copied = registry.borrow().get_selection_text(SIDEBAR_TASKU_ID, norm);
                     if !copied.is_empty() {
-                        let _ = std::process::Command::new("/bin/sh")
-                            .args(["-c", &format!("printf '%s' {} | pbcopy",
-                                shell_escape(&copied))])
-                            .status();
+                        clipboard::set_text(&copied);
                     }
                     let prev_id = selection.borrow().as_ref().map(|s| s.pane_id);
                     *selection.borrow_mut() = None;
@@ -3159,8 +3170,8 @@ fn main() {
                         Arc::new(std::sync::Mutex::new(None));
                     let result2 = Arc::clone(&result);
                     std::thread::spawn(move || {
-                        if let Ok(out) = std::process::Command::new("pbpaste").output() {
-                            *result2.lock().unwrap() = Some(out.stdout);
+                        if let Some(out) = clipboard::get_text() {
+                            *result2.lock().unwrap() = Some(out);
                         }
                     });
                     *pending_paste.borrow_mut() = Some((SIDEBAR_TASKU_ID, result));
@@ -3629,10 +3640,7 @@ fn main() {
                         drop(sel);
                         let text = registry.borrow().get_selection_text(RUNNER_ID, norm);
                         if !text.is_empty() {
-                            let _ = std::process::Command::new("/bin/sh")
-                                .args(["-c", &format!("printf '%s' {} | pbcopy",
-                                    shell_escape(&text))])
-                                .status();
+                            clipboard::set_text(&text);
                         }
                         *selection.borrow_mut() = None;
                         registry.borrow().mark_dirty(RUNNER_ID);
@@ -3720,12 +3728,21 @@ fn main() {
         let selection = Rc::clone(&selection);
         move || {
             let mut sel = selection.borrow_mut();
+            let mut drag_end = None;
             if let Some(ref s) = *sel {
                 if s.pane_id == RUNNER_ID && s.is_empty() {
                     *sel = None;
                     drop(sel);
                     registry.borrow().mark_dirty(RUNNER_ID);
+                    return;
                 }
+                if s.pane_id == RUNNER_ID {
+                    drag_end = Some(s.normalized());
+                }
+            }
+            drop(sel);
+            if let Some(norm) = drag_end {
+                copy_on_select(&registry.borrow(), RUNNER_ID, norm);
             }
         }
     });
@@ -4336,13 +4353,13 @@ fn main() {
                         }
                     }
                     if !sent_image {
-                        // Fall back to text paste (existing pbpaste approach)
+                        // Fall back to text paste
                         let result: Arc<std::sync::Mutex<Option<Vec<u8>>>> =
                             Arc::new(std::sync::Mutex::new(None));
                         let result2 = Arc::clone(&result);
                         std::thread::spawn(move || {
-                            if let Ok(out) = std::process::Command::new("pbpaste").output() {
-                                *result2.lock().unwrap() = Some(out.stdout);
+                            if let Some(out) = clipboard::get_text() {
+                                *result2.lock().unwrap() = Some(out);
                             }
                         });
                         *top_right_paste_result.borrow_mut() = Some(result);
@@ -4377,10 +4394,7 @@ fn main() {
                     };
                     let copied = registry.borrow().get_selection_text(node, norm);
                     if !copied.is_empty() {
-                        let _ = std::process::Command::new("/bin/sh")
-                            .args(["-c", &format!("printf '%s' {} | pbcopy",
-                                shell_escape(&copied))])
-                            .status();
+                        clipboard::set_text(&copied);
                     }
                     let prev_id = selection.borrow().as_ref().map(|s| s.pane_id);
                     *selection.borrow_mut() = None;
@@ -4394,8 +4408,8 @@ fn main() {
                         Arc::new(std::sync::Mutex::new(None));
                     let result2 = Arc::clone(&result);
                     std::thread::spawn(move || {
-                        if let Ok(out) = std::process::Command::new("pbpaste").output() {
-                            *result2.lock().unwrap() = Some(out.stdout);
+                        if let Some(out) = clipboard::get_text() {
+                            *result2.lock().unwrap() = Some(out);
                         }
                     });
                     *pending_paste.borrow_mut() = Some((node, result));
@@ -5449,16 +5463,13 @@ fn remove_plugin_block(content: &str, target_id: &str) -> String {
     s
 }
 
-// ── Key translation ──────────────────────────────────────────────────────────
-
-/// Translate Slint key text to terminal byte sequences.
-///
-/// Slint key codes (from i-slint-common/key_codes.rs):
-///   Modifier keys live in the C0 control range (U+0010–U+0019) and MUST be
-///   filtered — they alias Ctrl+P, Ctrl+U, Ctrl+Q etc. and cause visible damage.
-///   Navigation/function keys are in the Specials range (U+F700+).
-fn shell_escape(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
+/// Finishing a mouse drag puts the selected text on the clipboard, like most
+/// terminals. The selection stays highlighted until the next keystroke or click.
+fn copy_on_select(registry: &TerminalRegistry, id: NodeId, norm: ((usize, usize), (usize, usize))) {
+    let text = registry.get_selection_text(id, norm);
+    if !text.is_empty() {
+        clipboard::set_text(&text);
+    }
 }
 
 #[cfg(test)]
