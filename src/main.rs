@@ -1680,6 +1680,18 @@ fn main() {
                 });
             }
 
+            // While the browser panel is visible, WebKit can steal macOS first
+            // responder during page loads, which cuts off Slint keyboard events
+            // (e.g. ArrowLeft to close the browser). Restore it every tick so
+            // the sidebar FocusScope always receives keys while browsing.
+            if let Some(nb) = native_browser_timer.borrow().as_ref() {
+                if let Some(ui) = ui_weak.upgrade() {
+                    if ui.get_show_browser_panel() {
+                        nb.restore_first_responder();
+                    }
+                }
+            }
+
             if pane_dirty_ids.is_empty() && tasku_buf.is_none() && runner_buf.is_none()
                 && plugin_bufs.is_empty() && right_plugin_bufs.is_empty()
                 && top_right_buf.is_none() && bottom_right_buf.is_none()
@@ -2530,10 +2542,11 @@ fn main() {
                                             as *mut objc2::runtime::AnyObject;
                                         // Start with a placeholder frame; real frame is set
                                         // the first time the panel becomes visible.
+                                        // NativeBrowser::new no longer pre-loads a URL —
+                                        // load_url is called via MACT navigate actions only.
                                         if let Some(nb) = browser::NativeBrowser::new(
                                             ns_view, 0.0, 0.0,
                                             browser_panel_w as f64, h as f64,
-                                            &initial_url,
                                         ) {
                                             *native_browser_resize.borrow_mut() = Some(nb);
                                         }
@@ -3323,10 +3336,7 @@ fn main() {
                           &images.borrow(), *focused_id.borrow(), None);
 
                 // Route keyboard focus to the first pane now that the layout is live.
-                if let Some(fid) = *focused_id.borrow() {
-                    ui.set_force_focus_id(fid as i32);
-                    ui.set_force_focus_id(-1);
-                }
+                ui.set_pane_refocus_counter(ui.get_pane_refocus_counter() + 1);
 
                 // Seed titles from saved CWD basenames so they appear immediately
                 // on restore (the poll timer fills in live process names after ~1 s).
@@ -3883,11 +3893,15 @@ fn main() {
     ui.on_plugin_key_input({
         let registry = Rc::clone(&registry);
         let pixel_plugins = Rc::clone(&pixel_plugins);
+        let ui_weak = ui.as_weak();
         move |idx, text, ctrl, meta, alt, shift| {
             let idx = idx as usize;
             if idx >= num_left_ext { return; }
             if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
                 if keys::is_modifier_only(text.as_str()) { return; }
+                if let Some(ui) = ui_weak.upgrade() {
+                    if handle_plugin_global_shortcut(&ui, text.as_str(), ctrl, meta, shift) { return; }
+                }
                 plugin.send_key(text.as_str(), ctrl, meta, alt, shift);
             } else {
                 let zoom_mod = ctrl || meta;
@@ -4084,11 +4098,15 @@ fn main() {
     ui.on_right_plugin_key_input({
         let registry = Rc::clone(&registry);
         let right_pixel_plugins = Rc::clone(&right_pixel_plugins);
+        let ui_weak = ui.as_weak();
         move |idx, text, ctrl, meta, alt, shift| {
             let idx = idx as usize;
             if idx >= num_right_ext { return; }
             if let Some(plugin) = right_pixel_plugins.borrow_mut().get_mut(&idx) {
                 if keys::is_modifier_only(text.as_str()) { return; }
+                if let Some(ui) = ui_weak.upgrade() {
+                    if handle_plugin_global_shortcut(&ui, text.as_str(), ctrl, meta, shift) { return; }
+                }
                 plugin.send_key(text.as_str(), ctrl, meta, alt, shift);
             } else {
                 let zoom_mod = ctrl || meta;
@@ -4279,11 +4297,15 @@ fn main() {
         let has_top_right = top_right_plugin.is_some();
         let top_right_pixel = Rc::clone(&top_right_pixel);
         let top_right_paste_result = Rc::clone(&top_right_paste_result);
+        let ui_weak = ui.as_weak();
         move |text, ctrl, meta, alt, shift| {
             // Route to pixel plugin if present
             if top_right_pixel.borrow().is_some() {
                 let t = text.as_str();
                 if keys::is_modifier_only(t) { return; }
+                if let Some(ui) = ui_weak.upgrade() {
+                    if handle_plugin_global_shortcut(&ui, t, ctrl, meta, shift) { return; }
+                }
                 let is_paste = (meta || ctrl) && t == "v";
                 if is_paste {
                     // Try clipboard image first (synchronous — fast)
@@ -4530,6 +4552,9 @@ fn main() {
                         let w = ui.get_browser_panel_width() as f64;
                         nb.update_frame(x, y, w, h);
                     }
+                    // WKWebView steals first responder when shown — give it back to
+                    // Slint so Mado keyboard shortcuts keep working over the browser.
+                    nb.restore_first_responder();
                 }
             }
         }
@@ -4605,13 +4630,9 @@ fn main() {
 
     ui.on_sidebar_escaped({
         let ui_weak = ui.as_weak();
-        let focused_id = Rc::clone(&focused_id);
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
-            if let Some(fid) = *focused_id.borrow() {
-                ui.set_force_focus_id(fid as i32);
-                ui.set_force_focus_id(-1);
-            }
+            ui.set_pane_refocus_counter(ui.get_pane_refocus_counter() + 1);
         }
     });
 
@@ -4625,7 +4646,6 @@ fn main() {
     // since Slint batches property updates and the toggle would be a no-op.
     {
         let ui_weak = ui.as_weak();
-        let focused_id = Rc::clone(&focused_id);
         let startup_focus = Timer::default();
         startup_focus.start(
             TimerMode::SingleShot,
@@ -4663,10 +4683,7 @@ fn main() {
                     }
                 });
 
-                if let Some(fid) = *focused_id.borrow() {
-                    ui.set_force_focus_id(fid as i32);
-                    ui.set_force_focus_id(-1);
-                }
+                ui.set_pane_refocus_counter(ui.get_pane_refocus_counter() + 1);
             },
         );
         std::mem::forget(startup_focus);
@@ -4865,6 +4882,44 @@ fn curl_get(url: &str) -> Result<String, String> {
     String::from_utf8(out.stdout).map_err(|e| e.to_string())
 }
 
+/// Handle global Mado shortcuts (Cmd+[/]/T/B//) when a plugin panel has Slint
+/// focus instead of a terminal pane.  Returns `true` if the shortcut was
+/// consumed (caller must NOT forward to the plugin).
+fn handle_plugin_global_shortcut(ui: &MainWindow, text: &str, ctrl: bool, meta: bool, shift: bool) -> bool {
+    if !(meta || ctrl) { return false; }
+    match text {
+        "[" => {
+            ui.set_sidebar_icon_only(false);
+            ui.set_left_sb_kb_counter(ui.get_left_sb_kb_counter() + 1);
+            true
+        }
+        "]" => {
+            ui.set_right_sidebar_icon_only(false);
+            ui.set_right_sb_kb_counter(ui.get_right_sb_kb_counter() + 1);
+            true
+        }
+        "t" if !shift => {
+            let new = !ui.get_show_top_bar();
+            ui.set_show_top_bar(new);
+            if new { ui.set_top_bar_expanded(true); }
+            ui.set_pane_refocus_counter(ui.get_pane_refocus_counter() + 1);
+            true
+        }
+        "b" if !shift => {
+            let new = !ui.get_show_bottom_bar();
+            ui.set_show_bottom_bar(new);
+            if new { ui.set_bottom_bar_expanded(true); }
+            ui.set_pane_refocus_counter(ui.get_pane_refocus_counter() + 1);
+            true
+        }
+        "/" => {
+            ui.set_show_help(!ui.get_show_help());
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Download a URL to a file on disk.
 /// Downloads to a temp file beside `dest`, then renames it into place. Writing
 /// over an existing executable in place makes macOS kill it on launch (its
@@ -4886,6 +4941,67 @@ fn curl_download(url: &str, dest: &std::path::Path) -> Result<(), String> {
         let _ = std::fs::remove_file(&tmp);
         format!("could not replace {}: {e}", dest.display())
     })
+}
+
+/// Quit the running Mado app and relaunch it so a freshly installed/updated
+/// plugin takes effect without the user having to do anything manually.
+///
+/// On macOS we derive the Mado.app path from the current executable (which
+/// lives at `Mado.app/Contents/MacOS/mado`), spawn a tiny background shell
+/// that waits briefly, kills the running process, then reopens the bundle.
+/// The sleep before `pkill` gives the current process time to exit cleanly
+/// first; the sleep after `pkill` avoids a race where `open` finds the old
+/// process still alive and just re-focuses it.
+///
+/// On Linux there is no `open` equivalent, so we just print the old message.
+fn restart_mado() {
+    #[cfg(target_os = "macos")]
+    {
+        // Walk up from current exe looking for a .app bundle (works whether
+        // running inside Mado.app or as a standalone CLI symlink).
+        let app_path = std::env::current_exe().ok().and_then(|exe| {
+            let mut path = exe.as_path();
+            loop {
+                if path.extension().map_or(false, |e| e == "app") {
+                    return Some(path.to_path_buf());
+                }
+                match path.parent() {
+                    Some(p) => path = p,
+                    None    => break,
+                }
+            }
+            None
+        }).or_else(|| {
+            // CLI binary not inside an .app — check standard install locations.
+            let home = std::env::var("HOME").unwrap_or_default();
+            [
+                "/Applications/Mado.app".to_string(),
+                format!("{home}/Applications/Mado.app"),
+            ]
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .find(|p| p.exists())
+        });
+
+        if let Some(app) = app_path {
+            let app_str = app.to_string_lossy();
+            let script = format!(
+                "sleep 0.4 && osascript -e 'tell application \"Mado\" to quit' 2>/dev/null; \
+                 sleep 0.5 && pkill -9 -x mado 2>/dev/null; \
+                 sleep 0.2 && open '{app_str}'"
+            );
+            let _ = std::process::Command::new("sh")
+                .args(["-c", &script])
+                .spawn();
+            println!("restarting Mado…");
+        } else {
+            println!("restart Mado to activate");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        println!("restart Mado to activate");
+    }
 }
 
 /// Resolve a short name ("clock") to an org/repo ("mado-plugins/mado-clock")
@@ -5005,6 +5121,22 @@ fn plugin_install(name: &str) {
         }
     }
 
+    // 5b. Codesign on macOS so the binary can be spawned by the signed app
+    #[cfg(target_os = "macos")]
+    {
+        print!("signing... ");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let status = std::process::Command::new("codesign")
+            .args(["--force", "--sign", "Developer ID Application: Tom Dringer (FAG2987V9S)"])
+            .arg(&dest)
+            .status();
+        match status {
+            Ok(s) if s.success() => println!("done"),
+            Ok(s) => eprintln!("warning: codesign exited with {s} — plugin may be blocked by macOS"),
+            Err(e) => eprintln!("warning: codesign failed: {e} — plugin may be blocked by macOS"),
+        }
+    }
+
     // 6. Fetch mado-plugin.json to determine kind and icon
     let meta_url = format!("https://raw.githubusercontent.com/{repo}/HEAD/mado-plugin.json");
     let (kind, icon) = curl_get(&meta_url)
@@ -5020,7 +5152,8 @@ fn plugin_install(name: &str) {
     let command = dest.to_string_lossy();
     plugin_register(id, &command, &kind, &icon);
 
-    println!("installed '{id}' — restart Mado to activate");
+    println!("installed '{id}'");
+    restart_mado();
 }
 
 /// `mado plugin update <name>` — download the latest release binary for an
@@ -5103,7 +5236,23 @@ fn plugin_update(name: &str) {
         }
     }
 
-    println!("updated '{id}' to {tag} — restart Mado to activate");
+    #[cfg(target_os = "macos")]
+    {
+        print!("signing... ");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let status = std::process::Command::new("codesign")
+            .args(["--force", "--sign", "Developer ID Application: Tom Dringer (FAG2987V9S)"])
+            .arg(dest)
+            .status();
+        match status {
+            Ok(s) if s.success() => println!("done"),
+            Ok(s) => eprintln!("warning: codesign exited with {s} — plugin may be blocked by macOS"),
+            Err(e) => eprintln!("warning: codesign failed: {e} — plugin may be blocked by macOS"),
+        }
+    }
+
+    println!("updated '{id}' to {tag}");
+    restart_mado();
 }
 
 /// Low-level: append a [[plugins]] entry to config.toml.
