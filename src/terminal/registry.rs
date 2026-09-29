@@ -122,6 +122,13 @@ impl TerminalRegistry {
         }
     }
 
+    /// Rebuild the font for a new display scale factor. As with
+    /// `set_font_size`, call `resize` for each pane afterwards.
+    pub fn set_scale(&mut self, scale: f32) {
+        self.scale = scale;
+        self.set_font_size(self.font_size);
+    }
+
     /// Spawn a shell at `id`. `cwd` sets the initial working directory; pass
     /// `None` to inherit from the current process (default shell behaviour).
     pub fn spawn(&mut self, id: NodeId, logical_w: f32, logical_h: f32, cwd: Option<&str>) {

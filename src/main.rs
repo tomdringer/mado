@@ -12,7 +12,7 @@ mod workspace;
 
 use pane_tree::PaneTree;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::collections::HashMap;
@@ -875,9 +875,13 @@ fn main() {
     let default_font_size = config.font_size;
     let shell = config.resolved_shell();
 
-    // Get device pixel ratio once at startup for HiDPI-correct rendering
-    let scale = ui.window().scale_factor();
-    eprintln!("mado: display scale factor = {scale}");
+    // Device pixel ratio for HiDPI-correct rendering. Slint only reports the
+    // real value once the window exists, so before `ui.run()` this is usually
+    // 1.0; the window-resized handler corrects it before anything is spawned
+    // and again whenever it changes (e.g. dragging onto a Retina display).
+    // Leaked so every callback can share it for the life of the app.
+    let scale: &'static Cell<f32> = Box::leak(Box::new(Cell::new(ui.window().scale_factor())));
+    eprintln!("mado: display scale factor = {} (before window shown)", scale.get());
 
     // Scroll direction: macOS passes raw CGEvent deltas regardless of the
     // "natural scrolling" system preference, so we must apply the flip ourselves.
@@ -890,7 +894,7 @@ fn main() {
         Rc::new(RefCell::new(HashMap::new()));
 
     let tree = Rc::new(RefCell::new(PaneTree::new()));
-    let registry = Rc::new(RefCell::new(TerminalRegistry::new(default_font_size, scale, shell, config.font_family.clone())));
+    let registry = Rc::new(RefCell::new(TerminalRegistry::new(default_font_size, scale.get(), shell, config.font_family.clone())));
     registry.borrow().font.prewarm();
 
     // ── Sidebar + Tasku detection ────────────────────────────────────────────
@@ -1318,6 +1322,14 @@ fn main() {
         let native_browser_timer    = Rc::clone(&native_browser);
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, std::time::Duration::from_millis(16), move || {
+            // ── Display scale change (e.g. window moved to another monitor) ─
+            // The window-resized handler does the actual work; re-run it.
+            if let Some(ui) = ui_weak.upgrade() {
+                if (ui.window().scale_factor() - scale.get()).abs() > 0.01 {
+                    ui.invoke_window_resized(ui.get_window_w(), ui.get_window_h());
+                }
+            }
+
             // ── projects.toml hot-reload ─────────────────────────────────
             if reload_rx_timer.try_recv().is_ok() {
                 // Drain any queued signals (debounce multiple save events)
@@ -2197,6 +2209,38 @@ fn main() {
         let default_project = default_project.clone();
         let last_size: Rc<RefCell<(f32, f32)>> = Rc::new(RefCell::new((0.0, 0.0)));
         move |w, h| {
+            // ── Display scale ────────────────────────────────────────────────
+            // Pick up the real scale factor (first resize after the window
+            // appears) or a change (window moved to another display): rebuild
+            // the font and force the full re-layout below, even though the
+            // logical size may not have changed.
+            let new_scale = ui_weak.upgrade()
+                .map(|ui| ui.window().scale_factor())
+                .unwrap_or(scale.get());
+            if (new_scale - scale.get()).abs() > 0.01 {
+                eprintln!("mado: display scale factor = {new_scale}");
+                scale.set(new_scale);
+                registry.borrow_mut().set_scale(new_scale);
+                *last_size.borrow_mut() = (0.0, 0.0);
+                images.borrow_mut().clear();
+                if initial_spawned.get() {
+                    // Sidebar panels are sized by their own handlers; run them
+                    // once this handler has released its borrows.
+                    let ui_weak = ui_weak.clone();
+                    let sidebar = Rc::clone(&sidebar);
+                    Timer::single_shot(std::time::Duration::from_millis(0), move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            let (left_w, right_w) = {
+                                let s = sidebar.borrow();
+                                (s.width, s.right_width)
+                            };
+                            ui.invoke_sidebar_width_changed(left_w);
+                            ui.invoke_right_sidebar_width_changed(right_w);
+                        }
+                    });
+                }
+            }
+
             // ── One-time macOS title-bar setup ───────────────────────────────
             // window_handle() is only valid once the event loop is running.
             // This is the earliest safe point to run ObjC window modifications.
@@ -2852,8 +2896,8 @@ fn main() {
                     let h = plugin_panel_h_model.row_data(i).unwrap_or(DEFAULT_PLUGIN_PANEL_H);
                     if let Some(plugin) = pp.get_mut(&i) {
                         plugin.send_resize(
-                            (sidebar_w * scale) as u32,
-                            (h * scale) as u32,
+                            (sidebar_w * scale.get()) as u32,
+                            (h * scale.get()) as u32,
                         );
                     } else {
                         reg.resize(plugin_node_id(i), sidebar_w, plugin_terminal_h(h));
@@ -3759,8 +3803,8 @@ fn main() {
             let mut reg = registry.borrow_mut();
             if now_expanded {
                 if kind == "pixel" {
-                    let phys_w = (sidebar_w * scale) as u32;
-                    let phys_h = (panel_h * scale) as u32;
+                    let phys_w = (sidebar_w * scale.get()) as u32;
+                    let phys_h = (panel_h * scale.get()) as u32;
                     if let Some(plugin) = PixelPlugin::spawn(&program, &args_ref, phys_w, phys_h, &[]) {
                         pixel_plugins.borrow_mut().insert(idx, plugin);
                     } else {
@@ -3808,7 +3852,7 @@ fn main() {
             plugin_panel_h_model.set_row_data(idx, new_h);
             let sidebar_w = (sidebar.borrow().width - 24.0).max(50.0);
             if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
-                plugin.send_resize((sidebar_w * scale) as u32, (new_h * scale) as u32);
+                plugin.send_resize((sidebar_w * scale.get()) as u32, (new_h * scale.get()) as u32);
             } else {
                 registry.borrow_mut().resize(plugin_node_id(idx), sidebar_w, plugin_terminal_h(new_h));
             }
@@ -3960,8 +4004,8 @@ fn main() {
             let mut reg = registry.borrow_mut();
             if now_expanded {
                 if kind == "pixel" {
-                    let phys_w = (sidebar_w * scale) as u32;
-                    let phys_h = (panel_h * scale) as u32;
+                    let phys_w = (sidebar_w * scale.get()) as u32;
+                    let phys_h = (panel_h * scale.get()) as u32;
                     let ws_code = active_project_rpt.borrow().clone().unwrap_or_default();
                     if let Some(plugin) = PixelPlugin::spawn(&program, &args_ref, phys_w, phys_h,
                                                              &[("MADO_WORKSPACE", &ws_code)]) {
@@ -4010,7 +4054,7 @@ fn main() {
             right_plugin_panel_h_model.set_row_data(idx, new_h);
             let sidebar_w = (sidebar.borrow().right_width - 24.0).max(50.0);
             if let Some(plugin) = right_pixel_plugins.borrow_mut().get_mut(&idx) {
-                plugin.send_resize((sidebar_w * scale) as u32, (new_h * scale) as u32);
+                plugin.send_resize((sidebar_w * scale.get()) as u32, (new_h * scale.get()) as u32);
             } else {
                 registry.borrow_mut().resize(right_plugin_node_id(idx), sidebar_w, plugin_terminal_h(new_h));
             }
@@ -4111,7 +4155,7 @@ fn main() {
             if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
                 let ui = ui_weak.upgrade().unwrap();
                 let max_logical = (ui.get_window_w() - 80.0).min(ui.get_window_h() - 80.0).min(800.0);
-                let size = (max_logical * scale).round() as u32;
+                let size = (max_logical * scale.get()).round() as u32;
                 plugin.send_resize(size, size);
                 *float_plugin.borrow_mut() = Some((idx, false));
             }
@@ -4127,7 +4171,7 @@ fn main() {
             if let Some(plugin) = right_pixel_plugins.borrow_mut().get_mut(&idx) {
                 let ui = ui_weak.upgrade().unwrap();
                 let max_logical = (ui.get_window_w() - 80.0).min(ui.get_window_h() - 80.0).min(800.0);
-                let size = (max_logical * scale).round() as u32;
+                let size = (max_logical * scale.get()).round() as u32;
                 plugin.send_resize(size, size);
                 *float_plugin.borrow_mut() = Some((idx, true));
             }
@@ -4149,16 +4193,16 @@ fn main() {
                     let sidebar_w = (sidebar.borrow().right_width - 24.0).max(50.0);
                     let h = right_plugin_panel_h_model.row_data(idx).unwrap_or(DEFAULT_PLUGIN_PANEL_H);
                     if let Some(plugin) = right_pixel_plugins.borrow_mut().get_mut(&idx) {
-                        let phys_w = (sidebar_w * scale) as u32;
-                        let phys_h = (h * scale) as u32;
+                        let phys_w = (sidebar_w * scale.get()) as u32;
+                        let phys_h = (h * scale.get()) as u32;
                         plugin.send_resize(phys_w, phys_h);
                     }
                 } else {
                     let sidebar_w = (sidebar.borrow().width - 24.0).max(50.0);
                     let h = plugin_panel_h_model.row_data(idx).unwrap_or(DEFAULT_PLUGIN_PANEL_H);
                     if let Some(plugin) = pixel_plugins.borrow_mut().get_mut(&idx) {
-                        let phys_w = (sidebar_w * scale) as u32;
-                        let phys_h = (h * scale) as u32;
+                        let phys_w = (sidebar_w * scale.get()) as u32;
+                        let phys_h = (h * scale.get()) as u32;
                         plugin.send_resize(phys_w, phys_h);
                     }
                 }
