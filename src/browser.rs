@@ -5,8 +5,8 @@
 /// input, 60 fps GPU rendering, native text selection, and Safari Web Inspector
 /// support — none of which are achievable via the pixel-plugin protocol.
 ///
-/// On non-macOS targets the struct is a no-op stub so the rest of the code
-/// can be written without cfg gates everywhere.
+/// On other platforms the same API is backed by the off-screen `mado-webview`
+/// helper (see the bottom of this file).
 
 // ── macOS implementation ──────────────────────────────────────────────────────
 
@@ -18,85 +18,8 @@ pub const DEFAULT_BROWSER_URL: &str = "https://www.google.com";
 
 /// JS injected as a WKUserScript on every page (DocumentEnd, main-frame only).
 /// Adds a persistent nav bar at the top of every page.
-const NAV_BAR_JS: &str = r#"
-(function() {
-    if (document.getElementById('__mado_nav_bar')) return;
-
-    // Push page content down so the bar doesn't cover it.
-    var style = document.createElement('style');
-    style.id = '__mado_nav_style';
-    style.textContent = 'body { margin-top: 44px !important; }';
-    document.head.appendChild(style);
-
-    var bar = document.createElement('div');
-    bar.id = '__mado_nav_bar';
-    bar.style.cssText = [
-        'position:fixed', 'top:0', 'left:0', 'right:0', 'height:44px',
-        'background:#1e293b', 'display:flex', 'align-items:center',
-        'padding:0 8px', 'gap:6px', 'z-index:2147483647',
-        'box-shadow:0 1px 4px rgba(0,0,0,0.6)', 'font-family:system-ui,sans-serif'
-    ].join(';');
-
-    function btn(label, action) {
-        var b = document.createElement('button');
-        b.textContent = label;
-        b.title = label;
-        b.onclick = action;
-        b.style.cssText = [
-            'background:#334155', 'border:none', 'color:#cbd5e1',
-            'width:28px', 'height:28px', 'border-radius:5px',
-            'cursor:pointer', 'font-size:15px', 'flex-shrink:0',
-            'display:flex', 'align-items:center', 'justify-content:center'
-        ].join(';');
-        return b;
-    }
-
-    bar.appendChild(btn('←', function(){ history.back(); }));
-    bar.appendChild(btn('→', function(){ history.forward(); }));
-    bar.appendChild(btn('↻', function(){ location.reload(); }));
-
-    var input = document.createElement('input');
-    input.type = 'text';
-    input.spellcheck = false;
-    input.value = location.href;
-    input.style.cssText = [
-        'flex:1', 'background:#0f172a', 'border:1px solid #475569',
-        'color:#f1f5f9', 'padding:4px 12px', 'border-radius:6px',
-        'font-size:13px', 'outline:none', 'min-width:0'
-    ].join(';');
-    input.addEventListener('focus', function() {
-        this.value = location.href;
-        this.select();
-    });
-    input.addEventListener('keydown', function(e) {
-        if (e.key !== 'Enter') return;
-        var raw = this.value.trim();
-        if (!raw) return;
-        var url = raw;
-        if (!/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(url)) {
-            // Looks like a hostname (has a dot, no spaces) or a search query
-            if (/^[^\s]+\.[^\s]+$/.test(url)) {
-                url = 'https://' + url;
-            } else {
-                url = 'https://duckduckgo.com/?q=' + encodeURIComponent(url);
-            }
-        }
-        location.href = url;
-    });
-    bar.appendChild(input);
-
-    // Update the URL input whenever the visible URL changes (SPA navigation, etc.)
-    var lastHref = location.href;
-    setInterval(function() {
-        if (location.href !== lastHref) {
-            lastHref = location.href;
-            input.value = location.href;
-        }
-    }, 500);
-
-    document.body.insertBefore(bar, document.body.firstChild);
-})();
-"#;
+#[cfg(target_os = "macos")]
+const NAV_BAR_JS: &str = include_str!("browser_nav_bar.js");
 
 #[cfg(target_os = "macos")]
 pub mod macos_impl {
@@ -295,18 +218,114 @@ pub mod macos_impl {
     }
 }
 
-// ── Non-macOS stub ────────────────────────────────────────────────────────────
+// ── Linux (and other non-macOS) implementation ────────────────────────────────
+//
+// Wayland does not allow embedding another toolkit's widget in Mado's window,
+// so the page is rendered off-screen by the `mado-webview` helper (WebKitGTK)
+// and streamed back over the pixel-plugin protocol. Mado draws the frames in
+// the browser panel and forwards pointer, scroll and key input to the helper.
+// Positions passed in are logical pixels; the helper works in physical pixels.
 
 #[cfg(not(target_os = "macos"))]
-pub struct NativeBrowser;
+pub use offscreen_impl::NativeBrowser;
 
 #[cfg(not(target_os = "macos"))]
-impl NativeBrowser {
-    pub fn new(_: *mut (), _: f64, _: f64, _: f64, _: f64, _: &str) -> Option<Self> {
-        None
+mod offscreen_impl {
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
+
+    use slint::{Rgba8Pixel, SharedPixelBuffer};
+
+    use crate::pixel_plugin::PixelPlugin;
+
+    pub struct NativeBrowser {
+        plugin: RefCell<PixelPlugin>,
+        scale:  f32,
     }
-    pub fn update_frame(&self, _: f64, _: f64, _: f64, _: f64) {}
-    pub fn set_visible(&self, _: bool) {}
-    pub fn go_back(&self) {}
-    pub fn load_url(&self, _: &str) {}
+
+    /// Prefer the helper installed next to the running `mado` binary (cargo
+    /// builds both into the same target dir); otherwise rely on $PATH.
+    fn helper_path() -> PathBuf {
+        std::env::current_exe().ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("mado-webview")))
+            .filter(|p| p.is_file())
+            .unwrap_or_else(|| PathBuf::from("mado-webview"))
+    }
+
+    impl NativeBrowser {
+        /// Start the off-screen browser at `w`×`h` logical pixels. Returns None
+        /// (and logs why) if the helper cannot be started.
+        pub fn spawn(initial_url: &str, w: f64, h: f64, scale: f32) -> Option<Self> {
+            let helper = helper_path();
+            let scale_env = scale.to_string();
+            let plugin = PixelPlugin::spawn(
+                &helper.to_string_lossy(), &[initial_url],
+                (w as f32 * scale).max(1.0) as u32, (h as f32 * scale).max(1.0) as u32,
+                &[("MADO_SCALE", &scale_env)],
+            );
+            if plugin.is_none() {
+                eprintln!("mado: could not start browser helper '{}' — is it installed?", helper.display());
+            }
+            let browser = NativeBrowser { plugin: RefCell::new(plugin?), scale };
+            // Start hidden, like the macOS WKWebView; the panel toggle shows it.
+            browser.set_visible(false);
+            Some(browser)
+        }
+
+        /// Resize the page to the panel's new size (position is irrelevant
+        /// off-screen, but kept for parity with the macOS API).
+        pub fn update_frame(&self, _x: f64, _y: f64, w: f64, h: f64) {
+            let (pw, ph) = (self.phys(w as f32).max(1.0), self.phys(h as f32).max(1.0));
+            self.plugin.borrow_mut().send_resize(pw as u32, ph as u32);
+        }
+
+        /// Hidden browsers stop publishing frames to save CPU.
+        pub fn set_visible(&self, visible: bool) {
+            self.plugin.borrow_mut().send_visible(visible);
+        }
+
+        pub fn go_back(&self) {
+            self.plugin.borrow_mut().send_back();
+        }
+
+        pub fn load_url(&self, url: &str) {
+            self.plugin.borrow_mut().send_navigate(url);
+        }
+
+        /// The newest frame, if one arrived since the last call.
+        pub fn take_frame(&self) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
+            let plugin = self.plugin.borrow();
+            if !plugin.dirty.swap(false, Ordering::Relaxed) { return None; }
+            plugin.image.lock().ok()?.take()
+        }
+
+        pub fn set_focused(&self, focused: bool) {
+            self.plugin.borrow_mut().send_focus(focused);
+        }
+
+        pub fn mouse_press(&self, x: f32, y: f32) {
+            self.plugin.borrow_mut().send_mouse_press(self.phys(x), self.phys(y));
+        }
+
+        pub fn mouse_move(&self, x: f32, y: f32) {
+            self.plugin.borrow_mut().send_mouse_move(self.phys(x), self.phys(y));
+        }
+
+        pub fn mouse_release(&self) {
+            self.plugin.borrow_mut().send_mouse_release();
+        }
+
+        pub fn scroll(&self, delta: f32) {
+            self.plugin.borrow_mut().send_scroll(self.phys(delta));
+        }
+
+        pub fn key(&self, text: &str, ctrl: bool, meta: bool, alt: bool, shift: bool) {
+            self.plugin.borrow_mut().send_key(text, ctrl, meta, alt, shift);
+        }
+
+        fn phys(&self, logical: f32) -> f32 {
+            logical * self.scale
+        }
+    }
 }

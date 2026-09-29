@@ -1387,6 +1387,14 @@ fn main() {
                 }
             }
 
+            // ── Off-screen browser frames (Linux) ─────────────────────────
+            #[cfg(not(target_os = "macos"))]
+            if let Some(buf) = native_browser_timer.borrow().as_ref().and_then(|nb| nb.take_frame()) {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_browser_image(Image::from_rgba8(buf));
+                }
+            }
+
             // ── Runner exit detection ─────────────────────────────────────
             // Fire a notification when a task or deploy finishes naturally.
             // Skipped if runner_command is None (user stopped it manually).
@@ -2450,15 +2458,23 @@ fn main() {
                                       &program, &args_ref, None,
                                       &[("MADO_PLUGIN_ID", &plugin_id)]);
                     }
-                    // Create native browser WKWebView (hidden; shown on first toggle)
+                    // Create native browser (hidden; shown on first toggle)
                     if browser_plugin_resize.is_some() {
+                        let initial_url = browser_plugin_resize.as_ref()
+                            .map(|p| p.command.as_str())
+                            .filter(|s| s.starts_with("http"))
+                            .unwrap_or(browser::DEFAULT_BROWSER_URL)
+                            .to_string();
+                        // Linux: off-screen WebKitGTK helper drawn into the panel.
+                        #[cfg(not(target_os = "macos"))]
+                        if let Some(nb) = browser::NativeBrowser::spawn(
+                            &initial_url, browser_panel_w as f64, h as f64, reg.scale,
+                        ) {
+                            *native_browser_resize.borrow_mut() = Some(nb);
+                        }
+                        // macOS: WKWebView overlaid on the panel.
+                        #[cfg(target_os = "macos")]
                         if let Some(ui) = ui_weak.upgrade() {
-                            let initial_url = browser_plugin_resize.as_ref()
-                                .map(|p| p.command.as_str())
-                                .filter(|s| s.starts_with("http"))
-                                .unwrap_or(browser::DEFAULT_BROWSER_URL)
-                                .to_string();
-                            #[cfg(target_os = "macos")]
                             ui.window().with_winit_window(|win| {
                                 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
                                 if let Ok(handle) = win.window_handle() {
@@ -4471,6 +4487,37 @@ fn main() {
             }
         }
     });
+
+    // ── Off-screen browser input (Linux) ──────────────────────────────────────
+    #[cfg(not(target_os = "macos"))]
+    {
+        ui.set_browser_offscreen(browser_plugin.is_some());
+        let nb_ref = Rc::clone(&native_browser);
+        ui.on_browser_mouse_release(move || {
+            if let Some(nb) = nb_ref.borrow().as_ref() { nb.mouse_release(); }
+        });
+        let nb_ref = Rc::clone(&native_browser);
+        ui.on_browser_mouse_press(move |x, y| {
+            if let Some(nb) = nb_ref.borrow().as_ref() { nb.mouse_press(x, y); }
+        });
+        let nb_ref = Rc::clone(&native_browser);
+        ui.on_browser_mouse_move(move |x, y| {
+            if let Some(nb) = nb_ref.borrow().as_ref() { nb.mouse_move(x, y); }
+        });
+        let nb_ref = Rc::clone(&native_browser);
+        ui.on_browser_scroll(move |delta| {
+            if let Some(nb) = nb_ref.borrow().as_ref() { nb.scroll(delta); }
+        });
+        let nb_ref = Rc::clone(&native_browser);
+        ui.on_browser_focus_changed(move |focused| {
+            if let Some(nb) = nb_ref.borrow().as_ref() { nb.set_focused(focused); }
+        });
+        let nb_ref = Rc::clone(&native_browser);
+        ui.on_browser_key_input(move |text, ctrl, meta, alt, shift| {
+            if keys::is_modifier_only(text.as_str()) { return; }
+            if let Some(nb) = nb_ref.borrow().as_ref() { nb.key(text.as_str(), ctrl, meta, alt, shift); }
+        });
+    }
 
     // ── Bottom-right panel plugin callbacks ───────────────────────────────────
     ui.on_bottom_right_plugin_key_input({

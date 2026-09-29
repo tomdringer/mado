@@ -105,6 +105,16 @@ export component MainWindow inherits Window {
     // ── Browser panel (native WKWebView overlay) ──────────────────────────────
     in-out property <float> browser-panel-width: 0;
     in-out property <bool> show-browser-panel: false;
+    // Linux: the page is rendered off-screen by mado-webview and drawn here as an
+    // image, with input forwarded back. macOS overlays a WKWebView instead.
+    in property <bool>  browser-offscreen: false;
+    in property <image> browser-image;
+    callback browser-key-input(string, bool, bool, bool, bool); // text, ctrl, meta, alt, shift
+    callback browser-mouse-press(float, float);
+    callback browser-mouse-move(float, float);
+    callback browser-mouse-release();
+    callback browser-scroll(float);
+    callback browser-focus-changed(bool);
     // Fired when show-browser-panel toggles — Rust uses this to show/hide the WKWebView.
     callback browser-visible-changed(bool);
     callback browser-panel-width-changed(float);
@@ -503,6 +513,72 @@ export component MainWindow inherits Window {
             if root.show-browser-panel && root.browser-panel-width > 0: Rectangle {
                 width: root.browser-panel-width * 1px;
                 background: root.theme-terminal-area-bg;
+                clip: true;
+
+                if root.browser-offscreen: browser-fs := FocusScope {
+                    x: 0px; y: 0px;
+                    width: parent.width; height: parent.height;
+                    changed has-focus => { root.browser-focus-changed(self.has-focus); }
+                    key-pressed(e) => {
+                        // Keep Mado's focus shortcuts working here so the keyboard can
+                        // always leave the page (same bindings as PaneView).
+                        if ((e.modifiers.meta || e.modifiers.control) && !e.modifiers.alt) {
+                            if (e.text == "[") {
+                                root.sidebar-icon-only = false;
+                                root.left-sb-kb-counter += 1;
+                                return accept;
+                            }
+                            if (e.text == "]") {
+                                root.right-sidebar-icon-only = false;
+                                root.right-sb-kb-counter += 1;
+                                return accept;
+                            }
+                        }
+                        // Cmd/Ctrl+Alt+Left (or h) — back to the terminal panes.
+                        if ((e.modifiers.meta || e.modifiers.control) && e.modifiers.alt
+                            && (e.text == "h" || e.text == "\u{F702}")) {
+                            root.pane-refocus-counter += 1;
+                            return accept;
+                        }
+                        root.browser-key-input(e.text, e.modifiers.control, e.modifiers.meta, e.modifiers.alt, e.modifiers.shift);
+                        accept
+                    }
+
+                    if root.browser-image.width > 0: Image {
+                        x: 0px; y: 0px;
+                        width: parent.width; height: parent.height;
+                        source: root.browser-image;
+                        image-fit: fill;
+                    }
+                    if root.browser-image.width == 0: Text {
+                        text: "loading…";
+                        color: rgba(255, 255, 255, 0.12);
+                        font-size: 11px;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        x: 0px; y: 0px;
+                        width: parent.width; height: parent.height;
+                    }
+
+                    TouchArea {
+                        x: 0px; y: 0px;
+                        width: parent.width; height: parent.height;
+                        pointer-event(e) => {
+                            if e.kind == PointerEventKind.down {
+                                browser-fs.focus();
+                                root.browser-mouse-press(self.mouse-x / 1px, self.mouse-y / 1px);
+                            } else if e.kind == PointerEventKind.up {
+                                root.browser-mouse-release();
+                            }
+                        }
+                        moved => {
+                            root.browser-mouse-move(self.mouse-x / 1px, self.mouse-y / 1px);
+                        }
+                        scroll-event(e) => {
+                            root.browser-scroll(e.delta-y / 1px);
+                            accept
+                        }
+                    }
+                }
             }
 
             // ── Persistent AI panel (toggled via top-bar button) ─────────────

@@ -106,6 +106,19 @@ pub(crate) fn fmt_workspace(code: &str) -> String {
     format!(r#"{{"type":"workspace","code":{json_code}}}"#)
 }
 
+pub(crate) fn fmt_navigate(url: &str) -> String {
+    let json_url = serde_json::to_string(url).unwrap_or_else(|_| "\"\"".to_string());
+    format!(r#"{{"type":"navigate","url":{json_url}}}"#)
+}
+
+pub(crate) fn fmt_back() -> String {
+    r#"{"type":"back"}"#.to_string()
+}
+
+pub(crate) fn fmt_visible(visible: bool) -> String {
+    format!(r#"{{"type":"visible","visible":{visible}}}"#)
+}
+
 /// Returns `true` if `json` contains the `"paste"` action string.
 pub(crate) fn mact_is_paste(json: &[u8]) -> bool {
     json.windows(7).any(|w| w == b"\"paste\"")
@@ -287,6 +300,18 @@ impl PixelPlugin {
 
     pub fn send_workspace(&mut self, code: &str) {
         let _ = writeln!(self.stdin, "{}", fmt_workspace(code));
+    }
+
+    pub fn send_navigate(&mut self, url: &str) {
+        let _ = writeln!(self.stdin, "{}", fmt_navigate(url));
+    }
+
+    pub fn send_back(&mut self) {
+        let _ = writeln!(self.stdin, "{}", fmt_back());
+    }
+
+    pub fn send_visible(&mut self, visible: bool) {
+        let _ = writeln!(self.stdin, "{}", fmt_visible(visible));
     }
 
     pub fn send_paste_image(&mut self, base64_data: &str, media_type: &str) {
@@ -875,5 +900,22 @@ mod tests {
     fn notify_action_missing_message_returns_none() {
         let json = br#"{"action":"notify","title":"X"}"#;
         assert_eq!(mact_extract_notify(json), None);
+    }
+
+    // ── Browser messages ──────────────────────────────────────────────────────
+
+    #[test]
+    fn navigate_escapes_url() {
+        let json = fmt_navigate(r#"https://a.b/?q="x""#);
+        assert_eq!(json_str(&json, "type"), "navigate");
+        assert_eq!(json_str(&json, "url"), r#"https://a.b/?q="x""#);
+    }
+
+    #[test]
+    fn back_and_visible_are_valid_json() {
+        assert_eq!(json_str(&fmt_back(), "type"), "back");
+        let v: serde_json::Value = serde_json::from_str(&fmt_visible(false)).unwrap();
+        assert_eq!(v["type"], "visible");
+        assert_eq!(v["visible"], false);
     }
 }

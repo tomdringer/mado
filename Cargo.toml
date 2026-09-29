@@ -25,9 +25,23 @@ objc2 = "0.5"
 font-kit = "0.14"
 ureq = { version = "2", features = ["native-tls"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+gdk = "0.18"
+glib = "0.18"
+gdk-sys = "0.18"
+gtk-sys = "0.18"
+glib-sys = "0.18"
+gobject-sys = "0.18"
+webkit2gtk = { version = "2.0", features = ["v2_40"] }
+
 [[bin]]
 name = "mado-claude"
 path = "src/bin/mado_claude.rs"
+
+[[bin]]
+name = "mado-webview"
+path = "src/bin/mado_webview.rs"
 
 [build-dependencies]
 slint-build = "1"
