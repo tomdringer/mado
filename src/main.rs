@@ -806,6 +806,11 @@ fn main() {
                     Some(s) => s.as_str(),
                     None => { eprintln!("usage: mado plugin add <id> <command>"); std::process::exit(1); }
                 };
+                if args.len() > 5 {
+                    eprintln!("usage: mado plugin add <id> <command>");
+                    eprintln!("      too many arguments — quote names or commands that contain spaces");
+                    std::process::exit(1);
+                }
                 plugin_add(id, command);
             }
             Some("remove") => {
@@ -4790,10 +4795,27 @@ fn resolve_repo(name: &str) -> Result<String, String> {
     let json = curl_get(REGISTRY_URL)?;
     let registry: serde_json::Value = serde_json::from_str(&json)
         .map_err(|e| format!("invalid registry JSON: {e}"))?;
-    registry.get(name)
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| format!("'{name}' not found in mado-plugins registry"))
+    lookup_registry(&registry, name)
+}
+
+/// Normalise a user-typed plugin name to registry-key form, so "World Time",
+/// "world_time" and "mado-world-time" all find "world-time".
+fn normalize_plugin_name(name: &str) -> String {
+    let key = name.trim().to_lowercase().replace([' ', '_'], "-");
+    key.strip_prefix("mado-").map(str::to_string).unwrap_or(key)
+}
+
+fn lookup_registry(registry: &serde_json::Value, name: &str) -> Result<String, String> {
+    let key = normalize_plugin_name(name);
+    if let Some(repo) = registry.get(&key).and_then(|v| v.as_str()) {
+        return Ok(repo.to_string());
+    }
+    let mut available: Vec<&str> = registry.as_object()
+        .map(|m| m.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    available.sort_unstable();
+    Err(format!("'{name}' not found in mado-plugins registry\n      available: {}",
+                available.join(", ")))
 }
 
 fn plugin_install(name: &str) {
@@ -4824,6 +4846,7 @@ fn plugin_install(name: &str) {
     let _ = std::io::Write::flush(&mut std::io::stdout());
     let json = curl_get(&api_url).unwrap_or_else(|e| {
         eprintln!("\nmado: {e}");
+        eprintln!("      {repo} may not have a published GitHub release yet");
         std::process::exit(1);
     });
     let release: serde_json::Value = serde_json::from_str(&json).unwrap_or_else(|e| {
@@ -4931,6 +4954,7 @@ fn plugin_update(name: &str) {
     let _ = std::io::Write::flush(&mut std::io::stdout());
     let json = curl_get(&api_url).unwrap_or_else(|e| {
         eprintln!("\nmado: {e}");
+        eprintln!("      {repo} may not have a published GitHub release yet");
         std::process::exit(1);
     });
     let release: serde_json::Value = serde_json::from_str(&json).unwrap_or_else(|e| {
@@ -5018,8 +5042,25 @@ fn plugin_add(id: &str, command: &str) {
         eprintln!("mado: invalid command '{command}'");
         std::process::exit(1);
     }
+    if !command_exists(command) {
+        eprintln!("mado: command '{command}' not found — give an absolute path or a binary on $PATH");
+        eprintln!("      to install a plugin from the registry, use: mado plugin install <name>");
+        std::process::exit(1);
+    }
     plugin_register(id, command, "", "");
     println!("registered plugin '{id}' — restart Mado to activate");
+}
+
+/// True if the program part of `command` (its first word) is an existing file
+/// path or a binary found on $PATH.
+fn command_exists(command: &str) -> bool {
+    let Some(program) = command.split_whitespace().next() else { return false };
+    if program.contains('/') {
+        return std::path::Path::new(program).is_file();
+    }
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
+        .unwrap_or(false)
 }
 
 fn plugin_remove(id: &str) {
@@ -5117,6 +5158,48 @@ fn remove_plugin_block(content: &str, target_id: &str) -> String {
 ///   Navigation/function keys are in the Specials range (U+F700+).
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod plugin_cli_tests {
+    use super::{command_exists, lookup_registry, normalize_plugin_name};
+
+    fn registry() -> serde_json::Value {
+        serde_json::json!({
+            "clock":      "tomdringer/mado-clock",
+            "world-time": "tomdringer/mado-world-time",
+        })
+    }
+
+    #[test]
+    fn normalize_handles_case_spaces_underscores_and_prefix() {
+        assert_eq!(normalize_plugin_name("World Time"), "world-time");
+        assert_eq!(normalize_plugin_name("world_time"), "world-time");
+        assert_eq!(normalize_plugin_name(" mado-world-time "), "world-time");
+        assert_eq!(normalize_plugin_name("clock"), "clock");
+    }
+
+    #[test]
+    fn lookup_finds_loosely_typed_names() {
+        assert_eq!(lookup_registry(&registry(), "World Time").unwrap(), "tomdringer/mado-world-time");
+        assert_eq!(lookup_registry(&registry(), "CLOCK").unwrap(), "tomdringer/mado-clock");
+    }
+
+    #[test]
+    fn lookup_miss_lists_available_names_sorted() {
+        let err = lookup_registry(&registry(), "Mado Browser").unwrap_err();
+        assert!(err.contains("'Mado Browser' not found"));
+        assert!(err.contains("available: clock, world-time"));
+    }
+
+    #[test]
+    fn command_exists_checks_path_and_first_word_only() {
+        assert!(command_exists("sh"));
+        assert!(command_exists("/bin/sh -c true"));
+        assert!(!command_exists("Time"));
+        assert!(!command_exists("/no/such/binary"));
+        assert!(!command_exists("   "));
+    }
 }
 
 #[cfg(test)]

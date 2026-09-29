@@ -79,24 +79,41 @@ impl PtySession {
             pixel_height: 0,
         }).expect("openpty failed");
 
-        let mut child = pair.slave.spawn_command(cmd).expect("spawn failed");
-        let pid = child.process_id();
-
-        // Drop slave after spawning so the master gets EOF when child exits
-        drop(pair.slave);
+        let program = cmd.get_argv().first()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
 
         let exited:       Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let exit_success: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
-        {
-            let exited_w       = Arc::clone(&exited);
-            let exit_success_w = Arc::clone(&exit_success);
-            thread::spawn(move || {
-                if let Ok(status) = child.wait() {
-                    exit_success_w.store(status.success(), Ordering::Relaxed);
-                }
-                exited_w.store(true, Ordering::Relaxed);
-            });
-        }
+
+        // A missing or broken program (e.g. a mistyped plugin command) must not
+        // take down the whole app: show the error in the pane and mark it as
+        // exited with failure instead.
+        let mut spawn_error: Option<String> = None;
+        let pid = match pair.slave.spawn_command(cmd) {
+            Ok(mut child) => {
+                let pid = child.process_id();
+                let exited_w       = Arc::clone(&exited);
+                let exit_success_w = Arc::clone(&exit_success);
+                thread::spawn(move || {
+                    if let Ok(status) = child.wait() {
+                        exit_success_w.store(status.success(), Ordering::Relaxed);
+                    }
+                    exited_w.store(true, Ordering::Relaxed);
+                });
+                pid
+            }
+            Err(e) => {
+                eprintln!("mado: could not start '{program}': {e}");
+                spawn_error = Some(format!("\x1b[31mmado: could not start '{program}'\x1b[0m\r\n{e}\r\n"));
+                exit_success.store(false, Ordering::Relaxed);
+                exited.store(true, Ordering::Relaxed);
+                None
+            }
+        };
+
+        // Drop slave after spawning so the master gets EOF when child exits
+        drop(pair.slave);
 
         let state = Arc::new(Mutex::new(TerminalState::new(cols as usize, rows as usize)));
         let dirty = Arc::new(AtomicBool::new(true));
@@ -104,11 +121,12 @@ impl PtySession {
         let writer = pair.master.take_writer().expect("take_writer failed");
 
         // Inject pre_bytes BEFORE the reader thread starts — no contention possible.
-        if !pre_bytes.is_empty() {
+        let error_bytes = spawn_error.as_deref().unwrap_or("").as_bytes();
+        if !pre_bytes.is_empty() || !error_bytes.is_empty() {
             let mut parser = Parser::new();
             let mut st = state.lock().unwrap();
             let mut handler = VteHandler(&mut *st);
-            for &b in pre_bytes {
+            for &b in pre_bytes.iter().chain(error_bytes) {
                 parser.advance(&mut handler, b);
             }
             dirty.store(true, Ordering::Relaxed);
@@ -174,5 +192,23 @@ impl PtySession {
             parser.advance(&mut handler, b);
         }
         self.dirty.store(true, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_program_reports_error_instead_of_panicking() {
+        let session = PtySession::spawn_cmd(200, 10, "mado-no-such-program", &[], None, &[]);
+
+        assert!(session.exited.load(Ordering::Relaxed));
+        assert!(!session.exit_success.load(Ordering::Relaxed));
+        assert_eq!(session.pid, None);
+
+        let st = session.state.lock().unwrap();
+        let first_row: String = st.cells[..st.cols].iter().map(|c| c.ch).collect();
+        assert!(first_row.contains("could not start"), "row was: {first_row:?}");
     }
 }
