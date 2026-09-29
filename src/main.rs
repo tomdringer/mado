@@ -4866,18 +4866,26 @@ fn curl_get(url: &str) -> Result<String, String> {
 }
 
 /// Download a URL to a file on disk.
+/// Downloads to a temp file beside `dest`, then renames it into place. Writing
+/// over an existing executable in place makes macOS kill it on launch (its
+/// cached code signature no longer matches), and fails on Linux while running.
 fn curl_download(url: &str, dest: &std::path::Path) -> Result<(), String> {
+    let tmp = dest.with_extension("download");
     let status = std::process::Command::new("curl")
         .args(["-sL", "--fail",
                "-H", "User-Agent: mado",
-               "-o", dest.to_str().unwrap_or(""),
+               "-o", tmp.to_str().unwrap_or(""),
                url])
         .status()
         .map_err(|e| format!("curl not available: {e}"))?;
     if !status.success() {
+        let _ = std::fs::remove_file(&tmp);
         return Err(format!("download failed from {url}"));
     }
-    Ok(())
+    std::fs::rename(&tmp, dest).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("could not replace {}: {e}", dest.display())
+    })
 }
 
 /// Resolve a short name ("clock") to an org/repo ("mado-plugins/mado-clock")
