@@ -115,6 +115,10 @@ pub(crate) fn fmt_back() -> String {
     r#"{"type":"back"}"#.to_string()
 }
 
+pub(crate) fn fmt_scale(scale: f32) -> String {
+    format!(r#"{{"type":"scale","scale":{scale}}}"#)
+}
+
 pub(crate) fn fmt_visible(visible: bool) -> String {
     format!(r#"{{"type":"visible","visible":{visible}}}"#)
 }
@@ -308,6 +312,10 @@ impl PixelPlugin {
 
     pub fn send_back(&mut self) {
         let _ = writeln!(self.stdin, "{}", fmt_back());
+    }
+
+    pub fn send_scale(&mut self, scale: f32) {
+        let _ = writeln!(self.stdin, "{}", fmt_scale(scale));
     }
 
     pub fn send_visible(&mut self, visible: bool) {
@@ -909,6 +917,13 @@ mod tests {
         let json = fmt_navigate(r#"https://a.b/?q="x""#);
         assert_eq!(json_str(&json, "type"), "navigate");
         assert_eq!(json_str(&json, "url"), r#"https://a.b/?q="x""#);
+    }
+
+    #[test]
+    fn scale_is_valid_json() {
+        let v: serde_json::Value = serde_json::from_str(&fmt_scale(2.0)).unwrap();
+        assert_eq!(v["type"], "scale");
+        assert_eq!(v["scale"], 2.0);
     }
 
     #[test]

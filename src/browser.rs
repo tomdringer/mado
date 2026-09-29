@@ -231,7 +231,7 @@ pub use offscreen_impl::NativeBrowser;
 
 #[cfg(not(target_os = "macos"))]
 mod offscreen_impl {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
 
@@ -241,7 +241,7 @@ mod offscreen_impl {
 
     pub struct NativeBrowser {
         plugin: RefCell<PixelPlugin>,
-        scale:  f32,
+        scale:  Cell<f32>,
     }
 
     /// Prefer the helper installed next to the running `mado` binary (cargo
@@ -267,7 +267,7 @@ mod offscreen_impl {
             if plugin.is_none() {
                 eprintln!("mado: could not start browser helper '{}' — is it installed?", helper.display());
             }
-            let browser = NativeBrowser { plugin: RefCell::new(plugin?), scale };
+            let browser = NativeBrowser { plugin: RefCell::new(plugin?), scale: Cell::new(scale) };
             // Start hidden, like the macOS WKWebView; the panel toggle shows it.
             browser.set_visible(false);
             Some(browser)
@@ -278,6 +278,13 @@ mod offscreen_impl {
         pub fn update_frame(&self, _x: f64, _y: f64, w: f64, h: f64) {
             let (pw, ph) = (self.phys(w as f32).max(1.0), self.phys(h as f32).max(1.0));
             self.plugin.borrow_mut().send_resize(pw as u32, ph as u32);
+        }
+
+        /// The display scale changed: re-zoom the page. The caller resizes it
+        /// afterwards via `update_frame`.
+        pub fn set_scale(&self, scale: f32) {
+            self.scale.set(scale);
+            self.plugin.borrow_mut().send_scale(scale);
         }
 
         /// Hidden browsers stop publishing frames to save CPU.
@@ -325,7 +332,7 @@ mod offscreen_impl {
         }
 
         fn phys(&self, logical: f32) -> f32 {
-            logical * self.scale
+            logical * self.scale.get()
         }
     }
 }

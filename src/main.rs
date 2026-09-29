@@ -2221,6 +2221,9 @@ fn main() {
                 eprintln!("mado: display scale factor = {new_scale}");
                 scale.set(new_scale);
                 registry.borrow_mut().set_scale(new_scale);
+                if let Some(nb) = native_browser_resize.borrow().as_ref() {
+                    nb.set_scale(new_scale);
+                }
                 *last_size.borrow_mut() = (0.0, 0.0);
                 images.borrow_mut().clear();
                 if initial_spawned.get() {

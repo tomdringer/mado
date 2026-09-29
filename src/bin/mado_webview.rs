@@ -14,6 +14,7 @@
 //!   {"type":"resize","width":800,"height":600}
 //!   {"type":"navigate","url":"https://…"}      {"type":"back"}
 //!   {"type":"visible","visible":true}          {"type":"focus"} / {"type":"blur"}
+//!   {"type":"scale","scale":2.0}
 //!   {"type":"mouse_press","x":1.0,"y":2.0}     {"type":"mouse_move",…}
 //!   {"type":"mouse_release"}                   {"type":"scroll","delta":-3.0}
 //!   {"type":"key","text":"a","ctrl":false,"meta":false,"alt":false,"shift":false}
@@ -42,6 +43,7 @@ mod protocol {
         Navigate { url: String },
         Back,
         Visible { visible: bool },
+        Scale { scale: f64 },
         Focus,
         Blur,
         MousePress { x: f64, y: f64 },
@@ -191,6 +193,7 @@ mod linux {
             .and_then(|s| s.parse().ok())
             .filter(|s: &f64| *s > 0.0)
             .unwrap_or(1.0);
+        let scale = Rc::new(Cell::new(scale));
         let initial_url = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_URL.to_string());
 
         // ── WebView ───────────────────────────────────────────────────────────
@@ -208,7 +211,7 @@ mod linux {
             settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never);
             settings.set_enable_developer_extras(true);
         }
-        web.set_zoom_level(scale);
+        web.set_zoom_level(scale.get());
 
         // Links that ask for a new window (target=_blank) open in place.
         web.connect_decide_policy(|web, decision, kind| {
@@ -290,7 +293,7 @@ mod linux {
                     return glib::ControlFlow::Break;
                 };
                 let Some(event) = protocol::parse_event(&line) else { continue };
-                handle_event(event, &win, &web, &pointer, &visible, &active, &size, &damaged, scale);
+                handle_event(event, &win, &web, &pointer, &visible, &active, &size, &damaged, &scale);
             }
 
             if visible.get() && damaged.get() {
@@ -317,7 +320,7 @@ mod linux {
         active: &Cell<bool>,
         size: &RefCell<(u32, u32)>,
         damaged: &Cell<bool>,
-        scale: f64,
+        scale: &Cell<f64>,
     ) {
         let Some(gdk_win) = web.window() else { return };
         match event {
@@ -329,6 +332,12 @@ mod linux {
             }
             Event::Navigate { url } => web.load_uri(&url),
             Event::Back => web.go_back(),
+            Event::Scale { scale: s } if s > 0.0 => {
+                scale.set(s);
+                web.set_zoom_level(s);
+                damaged.set(true);
+            }
+            Event::Scale { .. } => {}
             Event::Visible { visible: v } => {
                 visible.set(v);
                 damaged.set(true);
@@ -356,7 +365,7 @@ mod linux {
                 };
             }
             Event::Scroll { delta } => {
-                let dy = protocol::scroll_delta_to_gdk(delta, scale);
+                let dy = protocol::scroll_delta_to_gdk(delta, scale.get());
                 unsafe { send_scroll(&gdk_win, pointer.x.get(), pointer.y.get(), dy) };
             }
             Event::Key { text, ctrl, meta, alt, shift } => {
@@ -537,6 +546,7 @@ mod tests {
         assert_eq!(parse_event(r#"{"type":"key","text":"a","ctrl":true,"meta":false,"alt":false,"shift":false}"#),
                    Some(Event::Key { text: "a".into(), ctrl: true, meta: false, alt: false, shift: false }));
         assert_eq!(parse_event(r#"{"type":"visible","visible":false}"#), Some(Event::Visible { visible: false }));
+        assert_eq!(parse_event(r#"{"type":"scale","scale":2.0}"#), Some(Event::Scale { scale: 2.0 }));
     }
 
     #[test]
