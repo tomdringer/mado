@@ -3,6 +3,8 @@ name = "mado"
 version = "0.0.3"
 edition = "2024"
 default-run = "mado"
+license = "MIT"
+description = "A macOS-inspired terminal multiplexer with sidebar plugins and integrated task management"
 
 [dependencies]
 slint = "1"
@@ -45,4 +47,26 @@ path = "src/bin/mado_webview.rs"
 
 [build-dependencies]
 slint-build = "1"
+
+[package.metadata.deb]
+name = "mado"
+maintainer = "Tom Dringer <tom@nerimasoft.com>"
+copyright = "2026 Tom Dringer"
+license-file = ["LICENSE", "0"]
+extended-description = "A macOS-inspired terminal multiplexer with a sidebar plugin architecture, integrated task management, and a theme system."
+depends = "$auto"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/mado",        "usr/bin/",              "755"],
+    ["target/release/mado-webview", "usr/bin/",             "755"],
+    ["target/release/mado-claude",  "usr/lib/mado/plugins/", "755"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/mado",         dest = "/usr/bin/mado",                       mode = "755" },
+    { source = "target/release/mado-webview",  dest = "/usr/bin/mado-webview",               mode = "755" },
+    { source = "target/release/mado-claude",   dest = "/usr/lib/mado/plugins/mado-claude",   mode = "755" },
+]
 

@@ -1,0 +1,19 @@
+# Maintainer: Tom Dringer <tom@nerimasoft.com>
+pkgname=mado-bin
+pkgver=0.0.3
+pkgrel=1
+pkgdesc="A macOS-inspired terminal multiplexer with sidebar plugins and integrated task management"
+arch=('x86_64')
+url="https://github.com/nerimasoft/mado"
+license=('MIT')
+depends=('webkit2gtk' 'gtk3')
+provides=('mado')
+conflicts=('mado')
+source=("mado-${pkgver}-linux.tar.gz::https://github.com/nerimasoft/mado/releases/download/v${pkgver}/mado-${pkgver}-linux.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    install -Dm755 "${srcdir}/mado"              "${pkgdir}/usr/bin/mado"
+    install -Dm755 "${srcdir}/mado-webview"       "${pkgdir}/usr/bin/mado-webview"
+    install -Dm755 "${srcdir}/mado-claude"        "${pkgdir}/usr/lib/mado/plugins/mado-claude"
+}
