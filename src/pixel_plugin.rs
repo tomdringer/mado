@@ -107,19 +107,23 @@ pub(crate) fn fmt_workspace(code: &str) -> String {
     format!(r#"{{"type":"workspace","code":{json_code}}}"#)
 }
 
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn fmt_navigate(url: &str) -> String {
     let json_url = serde_json::to_string(url).unwrap_or_else(|_| "\"\"".to_string());
     format!(r#"{{"type":"navigate","url":{json_url}}}"#)
 }
 
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn fmt_back() -> String {
     r#"{"type":"back"}"#.to_string()
 }
 
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn fmt_scale(scale: f32) -> String {
     format!(r#"{{"type":"scale","scale":{scale}}}"#)
 }
 
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn fmt_visible(visible: bool) -> String {
     format!(r#"{{"type":"visible","visible":{visible}}}"#)
 }
@@ -310,18 +314,22 @@ impl PixelPlugin {
         let _ = writeln!(self.stdin, "{}", fmt_workspace(code));
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn send_navigate(&mut self, url: &str) {
         let _ = writeln!(self.stdin, "{}", fmt_navigate(url));
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn send_back(&mut self) {
         let _ = writeln!(self.stdin, "{}", fmt_back());
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn send_scale(&mut self, scale: f32) {
         let _ = writeln!(self.stdin, "{}", fmt_scale(scale));
     }
 
+    #[cfg(not(target_os = "macos"))]
     pub fn send_visible(&mut self, visible: bool) {
         let _ = writeln!(self.stdin, "{}", fmt_visible(visible));
     }

@@ -14,6 +14,7 @@
 pub use macos_impl::NativeBrowser;
 
 /// Default page to open when no initial URL is configured.
+#[cfg(not(target_os = "macos"))]
 pub const DEFAULT_BROWSER_URL: &str = "https://www.google.com";
 
 /// JS injected as a WKUserScript on every page (DocumentEnd, main-frame only).

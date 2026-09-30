@@ -2539,17 +2539,19 @@ fn main() {
                     }
                     // Create native browser (hidden; shown on first toggle)
                     if browser_plugin_resize.is_some() {
-                        let initial_url = browser_plugin_resize.as_ref()
-                            .map(|p| p.command.as_str())
-                            .filter(|s| s.starts_with("http"))
-                            .unwrap_or(browser::DEFAULT_BROWSER_URL)
-                            .to_string();
                         // Linux: off-screen WebKitGTK helper drawn into the panel.
                         #[cfg(not(target_os = "macos"))]
-                        if let Some(nb) = browser::NativeBrowser::spawn(
-                            &initial_url, browser_panel_w as f64, h as f64, reg.scale,
-                        ) {
-                            *native_browser_resize.borrow_mut() = Some(nb);
+                        {
+                            let initial_url = browser_plugin_resize.as_ref()
+                                .map(|p| p.command.as_str())
+                                .filter(|s| s.starts_with("http"))
+                                .unwrap_or(browser::DEFAULT_BROWSER_URL)
+                                .to_string();
+                            if let Some(nb) = browser::NativeBrowser::spawn(
+                                &initial_url, browser_panel_w as f64, h as f64, reg.scale,
+                            ) {
+                                *native_browser_resize.borrow_mut() = Some(nb);
+                            }
                         }
                         // macOS: WKWebView overlaid on the panel.
                         #[cfg(target_os = "macos")]
