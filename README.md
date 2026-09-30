@@ -1,4 +1,4 @@
-A macOS terminal multiplexer with a sidebar plugin architecture, built in Rust.
+A terminal multiplexer for macOS and Linux with a sidebar plugin architecture, built in Rust.
 
 ![Mado](assets/mado-1200.png)
 
@@ -18,7 +18,7 @@ A macOS terminal multiplexer with a sidebar plugin architecture, built in Rust.
 
 ## Installation
 
-### Homebrew
+### macOS: Homebrew
 
 ```bash
 brew tap tomdringer/tap
@@ -31,13 +31,47 @@ To update to a new release:
 brew upgrade --cask mado
 ```
 
-### Manual
+### macOS: manual
 
 Download `Mado.dmg` from the [latest release](https://github.com/tomdringer/mado/releases/latest), open it, and drag Mado to your Applications folder.
 
+### Linux: Debian and Ubuntu
+
+Download the `.deb` for your machine from the [latest release](https://github.com/tomdringer/mado/releases/latest) (`amd64` for Intel/AMD, `arm64` for ARM), then:
+
+```bash
+sudo apt install ./mado_*_amd64.deb
+```
+
+`apt` installs everything Mado needs, including WebKitGTK for the browser panel. To update, download the new `.deb` and run the same command.
+
+### Linux: other distributions
+
+Download `mado-<version>-linux-x86_64.tar.gz` (or `-aarch64`) from the [latest release](https://github.com/tomdringer/mado/releases/latest), then:
+
+```bash
+tar -xzf mado-*-linux-*.tar.gz
+cd mado-*-linux-*/
+./install.sh
+```
+
+This installs Mado into `~/.local` (no sudo) and adds it to your applications menu. Run `./install.sh --remove` from the same folder to uninstall. The browser panel needs WebKitGTK 4.1 from your distribution; `install.sh` tells you if it's missing.
+
+### Linux: Homebrew
+
+```bash
+brew install tomdringer/tap/mado
+```
+
+Requires Ubuntu 22.04 or newer, or another distribution with glibc 2.35+.
+
 ## Building from source
 
-Requires Rust and a macOS system with Xcode command line tools.
+Requires Rust. On macOS, also the Xcode command line tools. On Debian/Ubuntu, also:
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libfontconfig1-dev libxkbcommon-dev
+```
 
 ```bash
 git clone https://github.com/tomdringer/mado

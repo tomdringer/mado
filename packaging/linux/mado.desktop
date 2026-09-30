@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Mado
+GenericName=Terminal
+Comment=Terminal multiplexer with sidebar plugins
+Exec=mado
+Icon=mado
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;multiplexer;tasku;
+StartupWMClass=mado

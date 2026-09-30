@@ -868,6 +868,10 @@ fn main() {
             .build()
             .unwrap();
         slint::platform::set_platform(Box::new(backend)).unwrap();
+        // Wayland/X11 docks match the window to mado.desktop by this id; without
+        // it the dock shows a generic icon.
+        #[cfg(target_os = "linux")]
+        let _ = slint::set_xdg_app_id("mado");
     }
 
     let ui = MainWindow::new().unwrap();
