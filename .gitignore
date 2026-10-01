@@ -5,3 +5,8 @@ src/*.png
 CLAUDE.md
 Mado.dmg
 roadmap.md
+*.tar.gz
+*.deb
+*.rpm
+scripts/Mado.app/
+scripts/send_launch_email.rb

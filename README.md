@@ -1,4 +1,4 @@
-A macOS terminal multiplexer with a sidebar plugin architecture, built in Rust.
+A terminal multiplexer for macOS and Linux with a sidebar plugin architecture, built in Rust.
 
 ![Mado](assets/mado-1200.png)
 
@@ -18,26 +18,49 @@ A macOS terminal multiplexer with a sidebar plugin architecture, built in Rust.
 
 ## Installation
 
-### Homebrew
+### macOS — Homebrew
 
 ```bash
 brew tap tomdringer/tap
 brew install --cask tomdringer/tap/mado
 ```
 
-To update to a new release:
+To update:
 
 ```bash
 brew upgrade --cask mado
 ```
 
-### Manual
+### macOS — Manual
 
 Download `Mado.dmg` from the [latest release](https://github.com/tomdringer/mado/releases/latest), open it, and drag Mado to your Applications folder.
 
+### Linux — Debian / Ubuntu
+
+```bash
+wget https://github.com/tomdringer/mado/releases/latest/download/mado_0.0.3-1_arm64.deb
+sudo dpkg -i mado_0.0.3-1_arm64.deb
+```
+
+### Linux — Fedora / RHEL
+
+```bash
+sudo rpm -i https://github.com/tomdringer/mado/releases/latest/download/mado-0.0.3-1.aarch64.rpm
+```
+
+### Linux — Raw binary
+
+```bash
+curl -LO https://github.com/tomdringer/mado/releases/latest/download/mado-0.0.3-linux.tar.gz
+tar -xzf mado-0.0.3-linux.tar.gz
+sudo mv mado mado-webview mado-claude /usr/local/bin/
+```
+
+Requires `webkit2gtk-4.1` and `gtk3`.
+
 ## Building from source
 
-Requires Rust and a macOS system with Xcode command line tools.
+Requires Rust. On macOS, Xcode command line tools are also needed.
 
 ```bash
 git clone https://github.com/tomdringer/mado
