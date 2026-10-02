@@ -1,0 +1,50 @@
+name: Linux release
+
+# Builds the Linux .deb and .tar.gz (x86_64 and aarch64) and attaches them to a
+# GitHub release. Runs automatically when a release is published (for example
+# by scripts/release.sh), or by hand for an existing tag:
+#   gh workflow run linux-release.yml -f tag=v0.0.4
+'on':
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and attach to (e.g. v0.0.4)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Ubuntu 22.04 keeps the glibc requirement at 2.35, so the binaries run
+        # on 22.04 and newer. Native ARM runner: no cross-compiling WebKitGTK.
+        runner: [ubuntu-22.04, ubuntu-22.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libx11-dev \
+            libxcb1-dev libwayland-dev libegl1-mesa-dev libssl-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --bins
+      - name: Package
+        run: scripts/package-linux.sh "${TAG#v}"
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/*.tar.gz dist/*.deb --clobber
