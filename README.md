@@ -37,23 +37,26 @@ Download `Mado.dmg` from the [latest release](https://github.com/tomdringer/mado
 
 ### Linux — Debian / Ubuntu
 
-```bash
-wget https://github.com/tomdringer/mado/releases/latest/download/mado_0.0.3-1_arm64.deb
-sudo dpkg -i mado_0.0.3-1_arm64.deb
-```
+Download the `.deb` for your architecture from the [latest release](https://github.com/tomdringer/mado/releases/latest):
 
-### Linux — Fedora / RHEL
+- `mado_*_amd64.deb` — Intel/AMD (64-bit)
+- `mado_*_arm64.deb` — ARM
 
 ```bash
-sudo rpm -i https://github.com/tomdringer/mado/releases/latest/download/mado-0.0.3-1.aarch64.rpm
+sudo dpkg -i mado_*_amd64.deb   # or arm64
 ```
 
 ### Linux — Raw binary
 
+Download the tarball for your architecture from the [latest release](https://github.com/tomdringer/mado/releases/latest):
+
+- `mado-*-linux-x86_64.tar.gz` — Intel/AMD (64-bit)
+- `mado-*-linux-aarch64.tar.gz` — ARM
+
 ```bash
-curl -LO https://github.com/tomdringer/mado/releases/latest/download/mado-0.0.3-linux.tar.gz
-tar -xzf mado-0.0.3-linux.tar.gz
-sudo mv mado mado-webview mado-claude /usr/local/bin/
+tar -xzf mado-*-linux-*.tar.gz
+cd mado-*-linux-*/
+./install.sh
 ```
 
 Requires `webkit2gtk-4.1` and `gtk3`.
