@@ -1918,6 +1918,9 @@ fn main() {
         let focused_id = Rc::clone(&focused_id);
         let ui_weak = ui.as_weak();
         move |id| {
+            // Never close the last pane — always keep at least one open.
+            if tree.borrow().leaf_ids().len() <= 1 { return; }
+
             registry.borrow_mut().remove(id as NodeId);
             images.borrow_mut().remove(&(id as NodeId));
             let remap = tree.borrow_mut().close(id as u32);
@@ -2767,6 +2770,9 @@ fn main() {
         let focused_id = Rc::clone(&focused_id);
         let ui_weak = ui.as_weak();
         move || {
+            // Never close the last pane — always keep at least one open.
+            if tree.borrow().leaf_ids().len() <= 1 { return; }
+
             let id = match *focused_id.borrow() {
                 Some(id) => id,
                 None => return,
