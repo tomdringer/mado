@@ -775,10 +775,11 @@ fn selection_text(state: &TermState) -> String {
             &state.scrollback[virtual_row as usize]
         } else {
             let sr = virtual_row as usize - sb_len;
+            let screen = state.active_screen();
             if sr < state.rows {
                 let base = sr * cols;
-                let end_  = (base + cols).min(state.screen.len());
-                &state.screen[base..end_]
+                let end_  = (base + cols).min(screen.len());
+                &screen[base..end_]
             } else { &[] }
         };
 
