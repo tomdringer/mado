@@ -4959,11 +4959,59 @@ fn handle_plugin_global_shortcut(ui: &MainWindow, text: &str, ctrl: bool, meta: 
     }
 }
 
+/// Compute SHA256 digest of a file.
+fn sha256_file(path: &std::path::Path) -> Result<String, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    
+    // Use the shasum command available on macOS and Linux, or certutil on Windows
+    #[cfg(not(target_os = "windows"))]
+    {
+        let output = std::process::Command::new("shasum")
+            .args(["-a", "256"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(&bytes);
+                }
+                child.wait_with_output()
+            })
+            .map_err(|e| format!("shasum not available: {e}"))?;
+        
+        if !output.status.success() {
+            return Err("shasum failed".to_string());
+        }
+        
+        let hash = String::from_utf8_lossy(&output.stdout);
+        Ok(hash.split_whitespace().next().unwrap_or("").to_lowercase())
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        let output = std::process::Command::new("certutil")
+            .args(["-hashfile", path.to_str().unwrap_or(""), "SHA256"])
+            .output()
+            .map_err(|e| format!("certutil not available: {e}"))?;
+        
+        if !output.status.success() {
+            return Err("certutil failed".to_string());
+        }
+        
+        let hash = String::from_utf8_lossy(&output.stdout);
+        // certutil output has the hash on the second line
+        Ok(hash.lines().nth(1).unwrap_or("").trim().to_lowercase())
+    }
+}
+
 /// Download a URL to a file on disk.
 /// Downloads to a temp file beside `dest`, then renames it into place. Writing
 /// over an existing executable in place makes macOS kill it on launch (its
 /// cached code signature no longer matches), and fails on Linux while running.
-fn curl_download(url: &str, dest: &std::path::Path) -> Result<(), String> {
+/// If `expected_sha256` is provided, verifies the downloaded file's checksum.
+fn curl_download(url: &str, dest: &std::path::Path, expected_sha256: Option<&str>) -> Result<(), String> {
     let tmp = dest.with_extension("download");
     let status = std::process::Command::new("curl")
         .args(["-sL", "--fail",
@@ -4976,6 +5024,24 @@ fn curl_download(url: &str, dest: &std::path::Path) -> Result<(), String> {
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("download failed from {url}"));
     }
+    
+    // Verify checksum if provided
+    if let Some(expected) = expected_sha256 {
+        let actual = sha256_file(&tmp).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            e
+        })?;
+        
+        let expected_normalized = expected.trim().to_lowercase();
+        if actual != expected_normalized {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!(
+                "checksum mismatch: expected {}, got {}",
+                expected_normalized, actual
+            ));
+        }
+    }
+    
     std::fs::rename(&tmp, dest).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("could not replace {}: {e}", dest.display())
@@ -5112,6 +5178,58 @@ fn lookup_registry(registry: &serde_json::Value, name: &str) -> Result<String, S
                 available.join(", ")))
 }
 
+/// Extract SHA256 checksum for a specific asset from release metadata.
+/// Looks for:
+/// 1. A matching `.sha256` file (e.g., `mado-clock-x86_64-apple-darwin.sha256`)
+/// 2. A `SHA256SUMS` or `checksums.txt` file containing the asset name
+/// Returns None if no checksum is found (caller must decide whether to proceed).
+fn extract_checksum(release: &serde_json::Value, asset_name: &str) -> Option<String> {
+    let empty = vec![];
+    let assets = release["assets"].as_array().unwrap_or(&empty);
+    
+    // Try 1: Look for asset_name.sha256
+    let sha256_name = format!("{}.sha256", asset_name);
+    if let Some(sha_asset) = assets.iter().find(|a| {
+        a["name"].as_str().map_or(false, |n| n == sha256_name)
+    }) {
+        if let Some(url) = sha_asset["browser_download_url"].as_str() {
+            if let Ok(content) = curl_get(url) {
+                // The .sha256 file typically contains just the hash, possibly with filename
+                let hash = content.split_whitespace().next()?.trim();
+                if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Some(hash.to_string());
+                }
+            }
+        }
+    }
+    
+    // Try 2: Look for SHA256SUMS or checksums.txt
+    for checksum_file in ["SHA256SUMS", "checksums.txt", "CHECKSUMS", "sha256sums.txt"] {
+        if let Some(sums_asset) = assets.iter().find(|a| {
+            a["name"].as_str().map_or(false, |n| n == checksum_file)
+        }) {
+            if let Some(url) = sums_asset["browser_download_url"].as_str() {
+                if let Ok(content) = curl_get(url) {
+                    // Parse lines like "hash  filename" or "hash *filename"
+                    for line in content.lines() {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() >= 2 {
+                            let hash = parts[0];
+                            let filename = parts[1].trim_start_matches('*');
+                            if filename == asset_name && hash.len() == 64 
+                                && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                                return Some(hash.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    None
+}
+
 fn plugin_install(name: &str) {
     // 1. Resolve to org/repo
     print!("resolving '{name}'... ");
@@ -5169,7 +5287,14 @@ fn plugin_install(name: &str) {
             std::process::exit(1);
         });
 
-    // 4. Download to plugins dir
+    // 4. Extract and verify checksum
+    let checksum = extract_checksum(&release, &asset_suffix);
+    if checksum.is_none() {
+        eprintln!("warning: no checksum found for {asset_suffix} — proceeding without verification");
+        eprintln!("         this is insecure; plugin maintainers should publish SHA256 checksums");
+    }
+
+    // 5. Download to plugins dir
     let dir = plugins_dir();
     std::fs::create_dir_all(&dir).unwrap_or_else(|e| {
         eprintln!("mado: cannot create plugins dir: {e}");
@@ -5180,13 +5305,13 @@ fn plugin_install(name: &str) {
 
     print!("downloading {asset_suffix}... ");
     let _ = std::io::Write::flush(&mut std::io::stdout());
-    curl_download(download_url, &dest).unwrap_or_else(|e| {
+    curl_download(download_url, &dest, checksum.as_deref()).unwrap_or_else(|e| {
         eprintln!("\nmado: {e}");
         std::process::exit(1);
     });
     println!("done");
 
-    // 5. Make executable on Unix
+    // 6. Make executable on Unix
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -5293,10 +5418,17 @@ fn plugin_update(name: &str) {
             std::process::exit(1);
         });
 
+    // Extract and verify checksum
+    let checksum = extract_checksum(&release, &asset_suffix);
+    if checksum.is_none() {
+        eprintln!("warning: no checksum found for {asset_suffix} — proceeding without verification");
+        eprintln!("         this is insecure; plugin maintainers should publish SHA256 checksums");
+    }
+
     let dest = std::path::Path::new(&plugin.command);
     print!("downloading {asset_suffix}... ");
     let _ = std::io::Write::flush(&mut std::io::stdout());
-    curl_download(download_url, dest).unwrap_or_else(|e| {
+    curl_download(download_url, dest, checksum.as_deref()).unwrap_or_else(|e| {
         eprintln!("\nmado: {e}");
         std::process::exit(1);
     });
