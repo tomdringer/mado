@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+- Plugin install and update now verify SHA256 checksums before executing downloaded
+  binaries — downloads with mismatched checksums are rejected and the temp file
+  removed; a warning is printed when no checksum is published by the plugin
+  maintainer
+
 ### Fixed
 - AI panel (mado-claude): text selection, copy (Cmd+C), and paste (Cmd+V) now
   work correctly — `selection_text` was reading from the main screen buffer
