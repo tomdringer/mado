@@ -10,6 +10,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binaries — downloads with mismatched checksums are rejected and the temp file
   removed; a warning is printed when no checksum is published by the plugin
   maintainer
+- Release builds now use `--locked` to enforce exact dependency versions from
+  `Cargo.lock`, preventing supply chain attacks via malicious compatible dependency
+  releases during CI resolution
 
 ### Fixed
 - AI panel (mado-claude): text selection, copy (Cmd+C), and paste (Cmd+V) now
