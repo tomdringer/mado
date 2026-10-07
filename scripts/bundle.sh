@@ -8,7 +8,7 @@ sed -i '' \
     -e "s|<string>[0-9]*\.[0-9]*\.[0-9]*</string>|<string>${VERSION}</string>|g" \
     Mado.app/Contents/Info.plist
 
-cargo build --release
+cargo build --release --locked
 
 # Kill any running Mado BEFORE overwriting the binary — writing to a running
 # executable on macOS produces a 0-byte file.
