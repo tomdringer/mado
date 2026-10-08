@@ -5,6 +5,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+<!-- NOTE: AI panel (mado-claude) keyboard selection changes need verifying on
+     Linux before release — key codepoints and Shift+Cmd+Arrow detection may
+     differ. Cut a new release tag once confirmed. -->
+
 ### Security
 - Plugin install and update now verify SHA256 checksums before executing downloaded
   binaries — downloads with mismatched checksums are rejected and the temp file
@@ -13,6 +17,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Release builds now use `--locked` to enforce exact dependency versions from
   `Cargo.lock`, preventing supply chain attacks via malicious compatible dependency
   releases during CI resolution
+
+### Added
+- AI panel (mado-claude): keyboard text selection — Shift+Arrow, Shift+Home, and
+  Shift+End extend a selection from the cursor without touching the PTY; the
+  virtual cursor moves to the selection edge and is shown in the render
+- AI panel (mado-claude): Right Arrow flash — pressing Right Arrow to accept
+  ghost text briefly highlights the accepted characters, then auto-clears after
+  ~200 ms
+- AI panel (mado-claude): ghost text rendered in a dimmed colour — SGR 2 (dim)
+  is now tracked per-cell and the foreground is blended toward the background at
+  render time, making ghost text visually distinct from normal output
 
 ### Fixed
 - AI panel (mado-claude): text selection, copy (Cmd+C), and paste (Cmd+V) now
