@@ -5,6 +5,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.4.4] - 2026-10-29
 
+<!-- NOTE: AI panel (mado-claude) keyboard selection changes need verifying on
+     Linux before release — key codepoints and Shift+Cmd+Arrow detection may
+     differ. Cut a new release tag once confirmed. -->
+
 ### Security
 - Plugin install and update now verify SHA256 checksums before executing downloaded
   binaries — downloads with mismatched checksums are rejected and the temp file
@@ -15,6 +19,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   releases during CI resolution
 - GitHub Actions release workflow permissions restricted to minimum required,
   preventing credential exposure
+
+### Added
+- AI panel (mado-claude): keyboard text selection — Shift+Arrow, Shift+Home, and
+  Shift+End extend a selection from the cursor without touching the PTY; the
+  virtual cursor moves to the selection edge and is shown in the render
+- AI panel (mado-claude): Right Arrow flash — pressing Right Arrow to accept
+  ghost text briefly highlights the accepted characters, then auto-clears after
+  ~200 ms
+- AI panel (mado-claude): ghost text rendered in a dimmed colour — SGR 2 (dim)
+  is now tracked per-cell and the foreground is blended toward the background at
+  render time, making ghost text visually distinct from normal output
 
 ### Fixed
 - Paste on Wayland now works correctly; minimum of one pane enforced

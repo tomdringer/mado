@@ -89,11 +89,12 @@ struct Cell {
     bold: bool,
     italic: bool,
     underline: bool,
+    dim: bool,
 }
 
 impl Cell {
     fn default_with_bg(bg: Rgb) -> Self {
-        Cell { ch: ' ', fg: DEFAULT_FG, bg, bold: false, italic: false, underline: false }
+        Cell { ch: ' ', fg: DEFAULT_FG, bg, bold: false, italic: false, underline: false, dim: false }
     }
 }
 
@@ -122,6 +123,7 @@ struct TermState {
     cur_bold: bool,
     cur_italic: bool,
     cur_underline: bool,
+    cur_dim: bool,
     cursor_visible: bool,
     /// Blink phase: toggled every ~500 ms so the cursor pulses.
     cursor_blink_on: bool,
@@ -132,6 +134,16 @@ struct TermState {
     sel_start: Option<(usize, usize)>,
     sel_end:   Option<(usize, usize)>,
     sel_drag:  bool,
+    /// Keyboard selection anchor — set when Shift+Arrow is first pressed.
+    kbd_sel_anchor: Option<(usize, usize)>,
+    /// Virtual cursor position during keyboard selection (display space).
+    /// When set, the rendered cursor draws here instead of at the PTY cursor.
+    kbd_cursor: Option<(usize, usize)>,
+    /// Set when Right Arrow is forwarded to PTY; cleared once the PTY moves
+    /// the cursor, at which point sel_end is snapped to the new position.
+    sel_flash_pending: bool,
+    /// Countdown ticks (16 ms each) until the Right Arrow flash is cleared.
+    sel_flash_ticks: u32,
 }
 
 impl TermState {
@@ -156,6 +168,7 @@ impl TermState {
             cur_bold: false,
             cur_italic: false,
             cur_underline: false,
+            cur_dim: false,
             cursor_visible: true,
             cursor_blink_on: true,
             scroll_offset: 0,
@@ -164,6 +177,10 @@ impl TermState {
             sel_start: None,
             sel_end:   None,
             sel_drag:  false,
+            kbd_sel_anchor: None,
+            kbd_cursor: None,
+            sel_flash_pending: false,
+            sel_flash_ticks: 0,
         }
     }
 
@@ -333,6 +350,7 @@ impl<'a> Perform for Performer<'a> {
         let bold = s.cur_bold;
         let italic = s.cur_italic;
         let underline = s.cur_underline;
+        let dim = s.cur_dim;
         let row = s.cur_row;
         let col = s.cur_col;
         if let Some(cell) = s.cell_mut(row, col) {
@@ -342,6 +360,7 @@ impl<'a> Perform for Performer<'a> {
             cell.bold = bold;
             cell.italic = italic;
             cell.underline = underline;
+            cell.dim = dim;
         }
         s.cur_col += 1;
         s.dirty = true;
@@ -634,6 +653,7 @@ impl<'a> Perform for Performer<'a> {
                     s.cur_bold = false;
                     s.cur_italic = false;
                     s.cur_underline = false;
+                    s.cur_dim = false;
                     return;
                 }
                 let mut i = 0;
@@ -646,11 +666,13 @@ impl<'a> Perform for Performer<'a> {
                             s.cur_bold = false;
                             s.cur_italic = false;
                             s.cur_underline = false;
+                            s.cur_dim = false;
                         }
                         1  => s.cur_bold = true,
+                        2  => s.cur_dim = true,
                         3  => s.cur_italic = true,
                         4  => s.cur_underline = true,
-                        22 => s.cur_bold = false,
+                        22 => { s.cur_bold = false; s.cur_dim = false; }
                         23 => s.cur_italic = false,
                         24 => s.cur_underline = false,
                         30..=37 => s.cur_fg = ANSI_COLORS[v - 30],
@@ -876,10 +898,17 @@ fn render(state: &TermState, fm: &Fm) -> Vec<u8> {
 
             if cell.ch != ' ' {
                 let baseline_y = py + fm.baseline;
-                draw_glyph(&mut buf, phys_w, fm, cell.ch, px, baseline_y, cell.fg, cell.bg);
+                // Dim text: blend fg 40% toward bg so it appears as light grey ghost text
+                let fg = if cell.dim {
+                    let blend = |a: u8, b: u8| -> u8 { ((a as u16 * 4 + b as u16 * 6) / 10) as u8 };
+                    Rgb(blend(cell.fg.0, cell.bg.0), blend(cell.fg.1, cell.bg.1), blend(cell.fg.2, cell.bg.2))
+                } else {
+                    cell.fg
+                };
+                draw_glyph(&mut buf, phys_w, fm, cell.ch, px, baseline_y, fg, cell.bg);
                 // Fake bold: overdraw
                 if cell.bold {
-                    draw_glyph(&mut buf, phys_w, fm, cell.ch, px + 1, baseline_y, cell.fg, cell.bg);
+                    draw_glyph(&mut buf, phys_w, fm, cell.ch, px + 1, baseline_y, fg, cell.bg);
                 }
             }
         }
@@ -930,8 +959,8 @@ fn render(state: &TermState, fm: &Fm) -> Vec<u8> {
     // Show cursor if: cursor_visible AND blink phase is on. Even when claude
     // sends ?25l, we still show it during the "on" phase to avoid confusion.
     if state.cursor_blink_on && state.scroll_offset == 0 {
-        let cr = state.cur_row;
-        let cc = state.cur_col;
+        // During keyboard selection, show cursor at the virtual position; otherwise at PTY position
+        let (cr, cc) = state.kbd_cursor.unwrap_or((state.cur_row, state.cur_col));
         if cr < rows && cc < cols {
             let px = cc * fm.cell_w;
             let py = cr * fm.cell_h;
@@ -1116,6 +1145,7 @@ fn handle_event(
             let meta  = v["meta"].as_bool().unwrap_or(false);
             let shift = v["shift"].as_bool().unwrap_or(false);
 
+
             // Cmd+C: copy selection if active, otherwise forward ^C to PTY
             if (meta || ctrl) && text == "c" {
                 let sel = selection_text(state);
@@ -1125,18 +1155,93 @@ fn handle_event(
                     }
                     state.sel_start = None;
                     state.sel_end   = None;
+                    state.kbd_sel_anchor = None;
+                    state.kbd_cursor = None;
                     return true;
                 }
                 // No selection — fall through so PTY receives the bytes
             }
 
-            // Any non-modifier key clears selection
-            if !matches!(text,
+            // Drop bare modifier keypresses — nothing to do
+            let is_modifier_only = matches!(text,
                 "\u{0010}" | "\u{0015}" | "\u{0011}" | "\u{0016}" |
                 "\u{0012}" | "\u{0013}" | "\u{0014}" | "\u{0017}" | "\u{0018}" | "\u{0019}"
-            ) {
-                state.sel_start = None;
-                state.sel_end   = None;
+            );
+            if is_modifier_only { return true; }
+
+            // Shift+Arrow/Home/End: extend keyboard selection without touching PTY.
+            // Note: on macOS Slint reports Cmd+Arrow as ctrl=true (not meta=true),
+            // so we accept any Shift+Arrow regardless of ctrl/meta.
+            let is_shift_arrow = shift && matches!(text,
+                "\u{F700}" | "\u{F701}" | "\u{F702}" | "\u{F703}" | "\u{F729}" | "\u{F72B}"
+            );
+            if is_shift_arrow {
+                // Cancel any pending Right Arrow flash so it doesn't auto-clear this selection
+                state.sel_flash_pending = false;
+                state.sel_flash_ticks = 0;
+
+                let cols = state.cols;
+                let rows = state.rows;
+                // Start virtual cursor at PTY cursor if not yet in kbd-select mode
+                let (cur_r, cur_c) = state.kbd_cursor.unwrap_or((state.cur_row, state.cur_col));
+                if state.kbd_sel_anchor.is_none() {
+                    state.kbd_sel_anchor = Some((cur_r, cur_c));
+                }
+                let (new_r, new_c) = if ctrl || meta {
+                    // Shift+Cmd+Arrow (ctrl=true on macOS) or Shift+Meta+Arrow:
+                    // jump to line/document boundary
+                    match text {
+                        "\u{F702}" | "\u{F729}" => (cur_r, 0),                         // ← / Home → line start
+                        "\u{F703}" | "\u{F72B}" => (cur_r, cols.saturating_sub(1)),    // → / End  → line end
+                        "\u{F700}" => (0, cur_c),                                       // ↑ → top of screen
+                        "\u{F701}" => (rows.saturating_sub(1), cur_c),                 // ↓ → bottom of screen
+                        _ => (cur_r, cur_c),
+                    }
+                } else {
+                    // Plain Shift+Arrow: move one step
+                    match text {
+                        "\u{F700}" => (cur_r.saturating_sub(1), cur_c),
+                        "\u{F701}" => ((cur_r + 1).min(rows.saturating_sub(1)), cur_c),
+                        "\u{F702}" => {
+                            if cur_c > 0 { (cur_r, cur_c - 1) }
+                            else if cur_r > 0 { (cur_r - 1, cols.saturating_sub(1)) }
+                            else { (cur_r, cur_c) }
+                        }
+                        "\u{F703}" => {
+                            if cur_c + 1 < cols { (cur_r, cur_c + 1) }
+                            else if cur_r + 1 < rows { (cur_r + 1, 0) }
+                            else { (cur_r, cur_c) }
+                        }
+                        "\u{F729}" => (cur_r, 0),
+                        "\u{F72B}" => (cur_r, cols.saturating_sub(1)),
+                        _ => (cur_r, cur_c),
+                    }
+                };
+                state.kbd_cursor = Some((new_r, new_c));
+                let anchor = state.kbd_sel_anchor.unwrap();
+                if anchor <= (new_r, new_c) {
+                    state.sel_start = Some(anchor);
+                    state.sel_end   = Some((new_r, new_c));
+                } else {
+                    state.sel_start = Some((new_r, new_c));
+                    state.sel_end   = Some(anchor);
+                }
+                return true;
+            }
+
+            // Any other key: clear all selection and keyboard-select state
+            state.kbd_sel_anchor = None;
+            state.kbd_cursor = None;
+            state.sel_start = None;
+            state.sel_end   = None;
+            state.sel_flash_pending = false;
+
+            // Right Arrow (no modifier): forward to PTY and set up flash to highlight
+            // any ghost/autocomplete text that gets accepted
+            if text == "\u{F703}" && !ctrl && !meta {
+                state.kbd_sel_anchor = Some((state.cur_row, state.cur_col));
+                state.sel_flash_pending = true;
+                state.sel_flash_ticks = 0;
             }
 
             let bytes = key_to_bytes(text, ctrl, meta, shift);
@@ -1173,6 +1278,12 @@ fn handle_event(
                 // scroll down toward live
                 state.scroll_offset = state.scroll_offset.saturating_sub(lines);
             }
+            // Scrolling exits keyboard selection mode — the virtual cursor position
+            // is no longer meaningful relative to the scrolled view.
+            state.kbd_sel_anchor = None;
+            state.kbd_cursor = None;
+            state.sel_start = None;
+            state.sel_end   = None;
             state.dirty = true;
             true
         }
@@ -1181,6 +1292,11 @@ fn handle_event(
             let y = v["y"].as_f64().unwrap_or(0.0) as usize;
             let col = (x / fm.cell_w.max(1)).min(state.cols.saturating_sub(1));
             let row = (y / fm.cell_h.max(1)).min(state.rows.saturating_sub(1));
+            // Clear any lingering keyboard selection state so the cursor
+            // snaps back to the PTY cursor position before we start a new selection.
+            state.kbd_sel_anchor = None;
+            state.kbd_cursor = None;
+            state.sel_flash_pending = false;
             state.sel_start = Some((row, col));
             state.sel_end   = Some((row, col));
             state.sel_drag  = true;
@@ -1335,9 +1451,23 @@ fn main() {
     loop {
         match rx.recv_timeout(std::time::Duration::from_millis(16)) {
             Ok(Msg::PtyData(bytes)) => {
+                let pre_row = state.cur_row;
+                let pre_col = state.cur_col;
                 let mut performer = Performer { state: &mut state };
                 for byte in &bytes {
                     vte_parser.advance(&mut performer, *byte);
+                }
+                // Right Arrow flash: once the PTY cursor moves, highlight accepted text
+                if state.sel_flash_pending
+                    && (state.cur_row != pre_row || state.cur_col != pre_col)
+                {
+                    if let Some(anchor) = state.kbd_sel_anchor {
+                        state.sel_start = Some(anchor);
+                        state.sel_end   = Some((state.cur_row, state.cur_col));
+                        state.sel_flash_ticks = 12; // ~192 ms at 16 ms/tick
+                    }
+                    state.sel_flash_pending = false;
+                    state.kbd_sel_anchor = None;
                 }
                 // Reset blink so cursor appears immediately after output
                 blink_ticks = 0;
@@ -1362,6 +1492,15 @@ fn main() {
                 break;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Flash selection countdown: clear selection once timer expires
+                if state.sel_flash_ticks > 0 {
+                    state.sel_flash_ticks -= 1;
+                    if state.sel_flash_ticks == 0 {
+                        state.sel_start = None;
+                        state.sel_end   = None;
+                        state.dirty = true;
+                    }
+                }
                 blink_ticks += 1;
                 if blink_ticks >= BLINK_PERIOD {
                     blink_ticks = 0;
