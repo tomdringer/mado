@@ -128,11 +128,14 @@ export component RunnerContent inherits Rectangle {
     in property <string> current-command: "";
     in property <bool> is-running: false;
     in property <bool> has-deploy-command: false;
+    in property <bool> show-browser-button: false;
+    in property <bool> browser-active: false;
 
     callback play();
     callback stop();
     callback restart();
     callback deploy();
+    callback browser-globe-clicked();
     callback key-input(string, bool, bool, bool, bool);  // text, ctrl, meta, alt, shift
     callback scroll(float);
     callback mouse-pressed(float, float);
@@ -247,6 +250,29 @@ export component RunnerContent inherits Rectangle {
                         text: "▲";
                         color: rgba(255, 255, 255, 0.80);
                         font-size: 14px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: parent.width; height: parent.height;
+                    }
+                }
+
+                // Globe — only shown when the active project has a url configured
+                if root.show-browser-button: Rectangle {
+                    width: parent.width; height: 36px;
+                    border-radius: 4px;
+                    background: globe-ta.has-hover ? #ffffff1C : #ffffff0E;
+                    globe-ta := TouchArea {
+                        width: parent.width; height: parent.height;
+                        mouse-cursor: MouseCursor.pointer;
+                        clicked => { root.browser-globe-clicked(); }
+                    }
+                    Text {
+                        text: "\u{F0AC}";  // nf-fa-globe
+                        color: root.browser-active
+                            ? rgba(255, 255, 255, 0.90)
+                            : rgba(255, 255, 255, 0.45);
+                        font-family: "Hack Nerd Font";
+                        font-size: 18px;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                         width: parent.width; height: parent.height;
