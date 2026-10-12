@@ -661,19 +661,64 @@ fn main() {
     if args.get(1).map(|s| s.as_str()) == Some("plugins") {
         args[1] = "plugin".into();
     }
+    if args.get(1).map(|s| s.as_str()) == Some("projects") {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        let projects_path = std::path::PathBuf::from(&home)
+            .join(".config/mado/projects.toml");
+        if !projects_path.exists() {
+            if let Some(parent) = projects_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let defaults = concat!(
+                "# Mado project config\n",
+                "#\n",
+                "# Set a default project to activate on launch (optional):\n",
+                "# default = \"MDO\"\n",
+                "#\n",
+                "# Each section maps a Tasku project code to its settings.\n",
+                "# All fields except [CODE] are optional.\n",
+                "#\n",
+                "# [MDO]\n",
+                "# path    = \"/Users/you/Sites/mado\"   # root directory for new panes\n",
+                "# icon    = \"terminal\"                 # workspace tile icon\n",
+                "# task    = \"cargo run\"                # command for the bottom-bar runner\n",
+                "# deploy  = \"fly deploy\"               # command for the deploy button\n",
+                "# url     = \"http://localhost:3000\"    # URL for the browser globe button\n",
+                "# project = \"Mado\"                     # override: match a Tasku project by name\n",
+            );
+            let _ = std::fs::write(&projects_path, defaults);
+        }
+        let cfg = config::Config::load();
+        let editor = if !cfg.editor.is_empty() {
+            cfg.editor.clone()
+        } else {
+            std::env::var("VISUAL")
+                .or_else(|_| std::env::var("EDITOR"))
+                .unwrap_or_else(|_| "vi".into())
+        };
+        std::process::Command::new(&editor)
+            .arg(&projects_path)
+            .status()
+            .unwrap_or_else(|e| {
+                eprintln!("mado: could not launch editor '{editor}': {e}");
+                std::process::ExitStatus::default()
+            });
+        return;
+    }
     if args.get(1).map(|s| s.as_str()) == Some("config") {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
 
+        // `mado config projects` → open ~/.config/mado/projects.toml
         // `mado config <plugin-id>` → open ~/.config/mado/plugins/<id>.toml
-        let config_path = if let Some(plugin_id) = args.get(2) {
-            std::path::PathBuf::from(&home)
+        // `mado config` → open ~/.config/mado/config.toml
+        let config_path = match args.get(2).map(|s| s.as_str()) {
+            Some("projects") => std::path::PathBuf::from(&home)
+                .join(".config/mado/projects.toml"),
+            Some(plugin_id) => std::path::PathBuf::from(&home)
                 .join(".config/mado/plugins")
-                .join(format!("{plugin_id}.toml"))
-        } else {
-            std::path::PathBuf::from(&home)
-                .join(".config")
-                .join("mado")
-                .join("config.toml")
+                .join(format!("{plugin_id}.toml")),
+            None => std::path::PathBuf::from(&home)
+                .join(".config/mado/config.toml"),
         };
 
         // Create the file with commented defaults if it doesn't exist yet
@@ -979,6 +1024,8 @@ fn main() {
         Rc::new(RefCell::new(workspace::load_runner_tasks()));
     let deploy_commands: Rc<RefCell<std::collections::HashMap<String, String>>> =
         Rc::new(RefCell::new(workspace::load_deploy_commands()));
+    let browser_urls: Rc<RefCell<std::collections::HashMap<String, String>>> =
+        Rc::new(RefCell::new(workspace::load_browser_urls()));
     let runner_is_running: Rc<std::cell::Cell<bool>> = Rc::new(std::cell::Cell::new(false));
     // None = idle, Some(true) = deploy running, Some(false) = task running
     let runner_command: Rc<std::cell::Cell<Option<bool>>> = Rc::new(std::cell::Cell::new(None));
@@ -1333,6 +1380,7 @@ fn main() {
         let project_paths_timer = Rc::clone(&project_paths);
         let runner_tasks_timer = Rc::clone(&runner_tasks);
         let deploy_commands_timer = Rc::clone(&deploy_commands);
+        let browser_urls_timer = Rc::clone(&browser_urls);
         let active_project_timer = Rc::clone(&active_project);
         let code_to_name_timer = Rc::clone(&code_to_name);
         let tree_timer = Rc::clone(&tree);
@@ -1358,6 +1406,7 @@ fn main() {
                 *project_paths_timer.borrow_mut() = workspace::load_project_paths();
                 *runner_tasks_timer.borrow_mut()  = workspace::load_runner_tasks();
                 *deploy_commands_timer.borrow_mut() = workspace::load_deploy_commands();
+                *browser_urls_timer.borrow_mut() = workspace::load_browser_urls();
                 if let (Some(ui), Some(code)) = (
                     ui_weak.upgrade(),
                     active_project_timer.borrow().clone(),
@@ -1377,6 +1426,12 @@ fn main() {
                             || proj_name.map(|n| deploys.contains_key(n)).unwrap_or(false)
                     };
                     ui.set_runner_has_deploy(has_deploy);
+                    let has_browser_url = {
+                        let urls = browser_urls_timer.borrow();
+                        urls.contains_key(&code)
+                            || proj_name.map(|n| urls.contains_key(n)).unwrap_or(false)
+                    };
+                    ui.set_show_browser_globe(has_browser_url);
                     // Refresh workspace and priority panels (icons, new entries)
                     ui.invoke_workspace_refresh();
                 }
@@ -1697,11 +1752,12 @@ fn main() {
 
             // While the browser panel is visible, WebKit can steal macOS first
             // responder during page loads, which cuts off Slint keyboard events
-            // (e.g. ArrowLeft to close the browser). Restore it every tick so
-            // the sidebar FocusScope always receives keys while browsing.
+            // (e.g. ArrowLeft to close the browser). Restore it every tick —
+            // but only when Slint doesn't already hold focus, so we don't
+            // steal it back while the user is typing in the nav bar URL input.
             if let Some(nb) = native_browser_timer.borrow().as_ref() {
                 if let Some(ui) = ui_weak.upgrade() {
-                    if ui.get_show_browser_panel() {
+                    if ui.get_show_browser_panel() && !nb.slint_has_focus() {
                         nb.restore_first_responder();
                     }
                 }
@@ -3282,6 +3338,7 @@ fn main() {
         let project_paths = Rc::clone(&project_paths);
         let runner_tasks = Rc::clone(&runner_tasks);
         let deploy_commands = Rc::clone(&deploy_commands);
+        let browser_urls = Rc::clone(&browser_urls);
         let top_right_pixel = Rc::clone(&top_right_pixel);
         let right_pixel_plugins_ws = Rc::clone(&right_pixel_plugins);
         let tasku_open_ws = Rc::clone(&tasku_open);
@@ -3423,6 +3480,12 @@ fn main() {
                         || proj_name.map(|n| deploys.contains_key(n)).unwrap_or(false)
                 };
                 ui.set_runner_has_deploy(has_deploy);
+                let has_browser_url = {
+                    let urls = browser_urls.borrow();
+                    urls.contains_key(&code)
+                        || proj_name.map(|n| urls.contains_key(n)).unwrap_or(false)
+                };
+                ui.set_show_browser_globe(has_browser_url);
                 // Kill any running task and clear the terminal so the previous
                 // project's output doesn't bleed into the new workspace.
                 {
@@ -4591,6 +4654,10 @@ fn main() {
                         let w = ui.get_browser_panel_width() as f64;
                         nb.update_frame(x, y, w, h);
                     }
+                    // Load the default URL the first time the panel is opened.
+                    if !nb.has_loaded.get() {
+                        nb.load_url(browser::DEFAULT_BROWSER_URL);
+                    }
                     // WKWebView steals first responder when shown — give it back to
                     // Slint so Mado keyboard shortcuts keep working over the browser.
                     nb.restore_first_responder();
@@ -4629,6 +4696,35 @@ fn main() {
             if let Some(nb) = nb_ref.borrow().as_ref() { nb.key(text.as_str(), ctrl, meta, alt, shift); }
         });
     }
+    ui.on_browser_globe_clicked({
+        let native_browser = Rc::clone(&native_browser);
+        let browser_urls   = Rc::clone(&browser_urls);
+        let active_project = Rc::clone(&active_project);
+        let code_to_name   = code_to_name.clone();
+        let ui_weak        = ui.as_weak();
+        move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            // Toggle off if already visible
+            if ui.get_show_browser_panel() {
+                ui.set_show_browser_panel(false);
+                return;
+            }
+            // Look up the URL for the active project
+            let url = active_project.borrow().as_ref().and_then(|code| {
+                let urls = browser_urls.borrow();
+                let proj_name = code_to_name.get(code).map(|s| s.as_str());
+                urls.get(code)
+                    .or_else(|| proj_name.and_then(|n| urls.get(n)))
+                    .cloned()
+            });
+            if let Some(url) = url {
+                if let Some(nb) = native_browser.borrow().as_ref() {
+                    nb.load_url(&url);
+                }
+                ui.set_show_browser_panel(true);
+            }
+        }
+    });
 
     // ── Bottom-right panel plugin callbacks ───────────────────────────────────
     ui.on_bottom_right_plugin_key_input({

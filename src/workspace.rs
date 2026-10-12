@@ -225,6 +225,39 @@ pub fn load_deploy_commands() -> HashMap<String, String> {
     }
 }
 
+// ── Browser URLs ──────────────────────────────────────────────────────────────
+//
+// Optional `url` key in projects.toml. When set, a globe button appears in
+// the bottom bar and opens the browser panel at that URL:
+//
+//   [NRT]
+//   path = "/Users/tom/Sites/nerimasoft"
+//   task = "bundle exec bin/bridgetown start"
+//   url  = "http://localhost:4000"
+
+fn parse_browser_urls(content: &str) -> HashMap<String, String> {
+    let table = match content.parse::<toml::Table>() {
+        Ok(t) => t,
+        Err(e) => { eprintln!("mado: could not parse projects.toml: {e}"); return HashMap::new(); }
+    };
+    table.into_iter().filter_map(|(section, val)| {
+        let url = val.get("url")?.as_str()?.to_string();
+        let key = val.get("project")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or(section);
+        Some((key, url))
+    }).collect()
+}
+
+pub fn load_browser_urls() -> HashMap<String, String> {
+    let file = config_dir().join("projects.toml");
+    match fs::read_to_string(&file) {
+        Ok(s) => parse_browser_urls(&s),
+        Err(_) => HashMap::new(),
+    }
+}
+
 // ── Hidden projects ────────────────────────────────────────────────────────────
 //
 // A project can be hidden from the Workspaces and Priorities panels by adding
@@ -777,5 +810,38 @@ icon = "web"
     #[test]
     fn parse_hidden_invalid_toml_returns_empty() {
         assert!(parse_hidden_projects("not valid {{ toml").is_empty());
+    }
+
+    // ── parse_browser_urls() ─────────────────────────────────────────────────
+
+    #[test]
+    fn parse_browser_urls_reads_url_fields() {
+        let toml = "[NRT]\npath = \"/srv\"\nurl = \"http://localhost:4000\"\n\n[MDO]\npath = \"/mado\"\n";
+        let urls = parse_browser_urls(toml);
+        assert_eq!(urls.get("NRT").map(|s| s.as_str()), Some("http://localhost:4000"));
+        assert!(!urls.contains_key("MDO"), "MDO has no url");
+    }
+
+    #[test]
+    fn parse_browser_urls_ignores_default_key() {
+        let toml = "default = \"MDO\"\n\n[MDO]\npath = \"/mado\"\n\n[NRT]\npath = \"/nrt\"\nurl = \"http://localhost:4000\"\n";
+        let urls = parse_browser_urls(toml);
+        assert!(!urls.contains_key("default"), "top-level default string should be ignored");
+        assert_eq!(urls.get("NRT").map(|s| s.as_str()), Some("http://localhost:4000"));
+    }
+
+    #[test]
+    fn parse_browser_urls_uses_project_key() {
+        let toml = "[APP]\npath = \"/app\"\nproject = \"MyApp\"\nurl = \"http://localhost:3000\"\n";
+        let urls = parse_browser_urls(toml);
+        assert_eq!(urls.get("MyApp").map(|s| s.as_str()), Some("http://localhost:3000"));
+        assert!(!urls.contains_key("APP"));
+    }
+
+    #[test]
+    fn parse_browser_urls_parses_actual_projects_toml() {
+        let urls = load_browser_urls();
+        assert!(urls.contains_key("NRT"), "NRT should have a url entry; got: {:?}", urls.keys().collect::<Vec<_>>());
+        assert_eq!(urls.get("NRT").map(|s| s.as_str()), Some("http://localhost:4000"));
     }
 }

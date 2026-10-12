@@ -104,6 +104,8 @@ pub mod macos_impl {
     /// Must only be used on the main thread (same as all AppKit objects).
     pub struct NativeBrowser {
         wk_view: *mut AnyObject,
+        /// True once load_url has been called at least once.
+        pub has_loaded: std::cell::Cell<bool>,
     }
 
     // Raw pointer is main-thread-only; stored in Rc<RefCell<>>, never in Arc.
@@ -183,7 +185,7 @@ pub mod macos_impl {
                 // during page load even on a hidden view.  The URL is loaded the
                 // first time load_url() is called via a MACT navigate action.
 
-                Some(NativeBrowser { wk_view: wk })
+                Some(NativeBrowser { wk_view: wk, has_loaded: std::cell::Cell::new(false) })
             }
         }
 
@@ -220,6 +222,20 @@ pub mod macos_impl {
             }
         }
 
+        /// Returns true if the current first responder is Slint's parent NSView
+        /// (i.e. focus is already where we want it — no need to restore).
+        pub fn slint_has_focus(&self) -> bool {
+            unsafe {
+                use objc2::runtime::AnyObject;
+                let parent: *mut AnyObject = objc2::msg_send![self.wk_view, superview];
+                if parent.is_null() { return false; }
+                let ns_window: *mut AnyObject = objc2::msg_send![parent, window];
+                if ns_window.is_null() { return false; }
+                let first_responder: *mut AnyObject =
+                    objc2::msg_send![ns_window, firstResponder];
+                std::ptr::eq(first_responder, parent)
+            }
+        }
 
         /// Navigate back in browser history.
         pub fn go_back(&self) {
@@ -230,6 +246,7 @@ pub mod macos_impl {
 
         /// Navigate to `url`.
         pub fn load_url(&self, url: &str) {
+            self.has_loaded.set(true);
             unsafe {
                 let ns_url_str = nsstr(url);
                 let Some(url_cls) = AnyClass::get("NSURL") else { return };
