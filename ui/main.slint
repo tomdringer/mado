@@ -107,6 +107,8 @@ export component MainWindow inherits Window {
     // Fired when show-browser-panel toggles — Rust uses this to show/hide the WKWebView.
     callback browser-visible-changed(bool);
     callback browser-panel-width-changed(float);
+    callback browser-globe-clicked();
+    in property <bool> show-browser-globe: false;
     // Exposes the browser panel's left edge in logical window coords so Rust can
     // position the native WKWebView to match the Slint layout exactly.
     out property <float> browser-panel-logical-x:
@@ -698,10 +700,13 @@ export component MainWindow inherits Window {
                 current-command: root.runner-current-command;
                 is-running: root.runner-is-running;
                 has-deploy-command: root.runner-has-deploy;
+                show-browser-button: root.show-browser-globe;
+                browser-active: root.show-browser-panel;
                 play    => { root.runner-play(); }
                 stop    => { root.runner-stop(); }
                 restart => { root.runner-restart(); }
                 deploy  => { root.runner-deploy(); }
+                browser-globe-clicked => { root.browser-globe-clicked(); }
                 key-input(text, ctrl, meta, alt, shift) => { root.runner-key-input(text, ctrl, meta, alt, shift); }
                 scroll(delta) => { root.runner-scroll(delta); }
                 mouse-pressed(x, y) => { root.runner-mouse-pressed(x, y); }
