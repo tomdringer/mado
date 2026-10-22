@@ -1703,18 +1703,10 @@ fn main() {
                 });
             }
 
-            // While the browser panel is visible, WebKit can steal macOS first
-            // responder during page loads, which cuts off Slint keyboard events
-            // (e.g. ArrowLeft to close the browser). Restore it every tick —
-            // but only when Slint doesn't already hold focus, so we don't
-            // steal it back while the user is typing in the nav bar URL input.
-            if let Some(nb) = native_browser_timer.borrow().as_ref() {
-                if let Some(ui) = ui_weak.upgrade() {
-                    if ui.get_show_browser_panel() && !nb.slint_has_focus() {
-                        nb.restore_first_responder();
-                    }
-                }
-            }
+            // Focus is restored to Slint once in on_browser_visible_changed and
+            // in NativeBrowser::new — we do NOT restore it on every render tick
+            // because doing so immediately steals focus back from WKWebView
+            // whenever the user clicks the nav-bar URL input or page content.
 
             if pane_dirty_ids.is_empty() && tasku_buf.is_none() && runner_buf.is_none()
                 && plugin_bufs.is_empty() && right_plugin_bufs.is_empty()
