@@ -28,12 +28,12 @@ export component BottomBar inherits Rectangle {
 
         // Icon
         Rectangle {
-            width: 38px; height: parent.height;
+            width: 28px; height: parent.height;
             Text {
                 text: "\u{F144}";   // nf-fa-play_circle
-                color: rgba(255, 255, 255, 0.45);
-                font-family: "Hack Nerd Font Mono";
-                font-size: 22px;
+                color: rgba(255, 255, 255, 0.40);
+                font-family: "Hack Nerd Font";
+                font-size: 14px;
                 horizontal-alignment: center; vertical-alignment: center;
                 width: parent.width; height: parent.height;
             }
@@ -50,25 +50,25 @@ export component BottomBar inherits Rectangle {
             }
             Text {
                 text: "RUNNER";
-                color: rgba(255, 255, 255, 0.80);
+                color: rgba(255, 255, 255, 0.65);
                 font-family: "SF Pro Text";
-                font-size: 18px; font-weight: 700;
-                letter-spacing: 0.4px;
+                font-size: 11px; font-weight: 600;
+                letter-spacing: 1.2px;
                 overflow: elide;
                 vertical-alignment: center;
-                x: 18px;
-                width: parent.width - 22px; height: parent.height;
+                x: 10px;
+                width: parent.width - 14px; height: parent.height;
             }
         }
 
         // Chevron — ↑ when collapsed (expand upward), ↓ when expanded (collapse)
         Rectangle {
-            width: 24px; height: parent.height;
+            width: 20px; height: parent.height;
             Text {
                 text: root.expanded ? "↓" : "↑";
-                color: rgba(255, 255, 255, 0.22);
+                color: rgba(255, 255, 255, 0.18);
                 font-family: "SF Pro Text";
-                font-size: 12px;
+                font-size: 10px;
                 horizontal-alignment: center; vertical-alignment: center;
                 width: parent.width; height: parent.height;
             }
@@ -92,12 +92,12 @@ export component BottomBar inherits Rectangle {
                 height: parent.height;
 
                 Rectangle {
-                    width: 38px; height: parent.height;
+                    width: 28px; height: parent.height;
                     Text {
                         text: root.bottom-right-icon;
-                        color: rgba(255, 255, 255, 0.45);
-                        font-family: "Hack Nerd Font Mono";
-                        font-size: 22px;
+                        color: rgba(255, 255, 255, 0.40);
+                        font-family: "Hack Nerd Font";
+                        font-size: 14px;
                         horizontal-alignment: center; vertical-alignment: center;
                         width: parent.width; height: parent.height;
                     }
@@ -106,9 +106,10 @@ export component BottomBar inherits Rectangle {
                 Text {
                     horizontal-stretch: 1;
                     text: root.bottom-right-title;
-                    color: rgba(255, 255, 255, 0.80);
+                    color: rgba(255, 255, 255, 0.65);
                     font-family: "SF Pro Text";
-                    font-size: 18px; font-weight: 700;
+                    font-size: 11px; font-weight: 600;
+                    letter-spacing: 1.2px;
                     overflow: elide;
                     vertical-alignment: center;
                     height: parent.height;

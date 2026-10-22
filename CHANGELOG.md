@@ -9,6 +9,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
      Linux before release — key codepoints and Shift+Cmd+Arrow detection may
      differ. Cut a new release tag once confirmed. -->
 
+### Changed
+- Top bar, bottom bar, and sidebar section headers are now more compact: strip
+  height reduced from 52 px to 36 px, titles use 11 px semibold with wider
+  letter-spacing, and icons are proportionally smaller — matching macOS sidebar
+  conventions and giving terminal panes more vertical space
+
 ### Security
 - Plugin install and update now verify SHA256 checksums before executing downloaded
   binaries — downloads with mismatched checksums are rejected and the temp file

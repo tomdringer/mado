@@ -52,12 +52,12 @@ export component TopBar inherits Rectangle {
 
             // Icon
             Rectangle {
-                width: 38px; height: parent.height;
+                width: 28px; height: parent.height;
                 Text {
                     text: item.icon;
-                    color: rgba(255, 255, 255, 0.45);
-                    font-family: "Hack Nerd Font Mono";
-                    font-size: 22px;
+                    color: rgba(255, 255, 255, 0.40);
+                    font-family: "Hack Nerd Font";
+                    font-size: 14px;
                     horizontal-alignment: center; vertical-alignment: center;
                     width: parent.width; height: parent.height;
                 }
@@ -74,25 +74,25 @@ export component TopBar inherits Rectangle {
                 }
                 Text {
                     text: item.title;
-                    color: rgba(255, 255, 255, 0.80);
+                    color: rgba(255, 255, 255, 0.65);
                     font-family: "SF Pro Text";
-                    font-size: 18px; font-weight: 700;
-                    letter-spacing: 0.4px;
+                    font-size: 11px; font-weight: 600;
+                    letter-spacing: 1.2px;
                     overflow: elide;
                     vertical-alignment: center;
-                    x: 18px;
-                    width: parent.width - 22px; height: parent.height;
+                    x: 10px;
+                    width: parent.width - 14px; height: parent.height;
                 }
             }
 
             // Chevron
             Rectangle {
-                width: 24px; height: parent.height;
+                width: 20px; height: parent.height;
                 Text {
                     text: root.expanded ? "↑" : "↓";
-                    color: rgba(255, 255, 255, 0.22);
+                    color: rgba(255, 255, 255, 0.18);
                     font-family: "SF Pro Text";
-                    font-size: 12px;
+                    font-size: 10px;
                     horizontal-alignment: center; vertical-alignment: center;
                     width: parent.width; height: parent.height;
                 }
@@ -119,10 +119,10 @@ export component TopBar inherits Rectangle {
         Text {
             text: "\u{f0ac}";
             color: root.browser-active
-                ? rgba(255, 255, 255, 0.90)
-                : rgba(255, 255, 255, 0.45);
-            font-family: "Hack Nerd Font Mono";
-            font-size: 20px;
+                ? rgba(255, 255, 255, 0.85)
+                : rgba(255, 255, 255, 0.40);
+            font-family: "Hack Nerd Font";
+            font-size: 15px;
             horizontal-alignment: center; vertical-alignment: center;
             width: parent.width; height: parent.height;
         }
@@ -153,10 +153,10 @@ export component TopBar inherits Rectangle {
         Text {
             text: "\u{f086}";
             color: root.ai-active
-                ? rgba(255, 255, 255, 0.90)
-                : rgba(255, 255, 255, 0.45);
-            font-family: "Hack Nerd Font Mono";
-            font-size: 20px;
+                ? rgba(255, 255, 255, 0.85)
+                : rgba(255, 255, 255, 0.40);
+            font-family: "Hack Nerd Font";
+            font-size: 15px;
             horizontal-alignment: center; vertical-alignment: center;
             width: parent.width; height: parent.height;
         }

@@ -774,9 +774,10 @@ export component PluginContent inherits Rectangle {
 
     // ── Pixel plugin display (full-bleed, no terminal chrome) ─────────────────
     if root.is-pixel: Rectangle {
-        x: 0; y: 0;
-        width: parent.width;
-        height: parent.height - 8px;
+        x: 6px; y: 4px;
+        width: parent.width - 12px;
+        height: parent.height - 12px;
+        border-radius: 8px;
         clip: true;
 
         if root.terminal-image.width > 0: Image {
@@ -849,7 +850,7 @@ export component PluginContent inherits Rectangle {
 component PluginRowHeader inherits Rectangle {
     in property <PluginItem> item;
     in property <int>    row-index;
-    in property <float>  row-h: 52;
+    in property <float>  row-h: 36;
     in property <bool>   is-dragging: false;
     in property <bool>   show-drop-indicator: false;
     in property <bool>   show-drag-handle: true;
@@ -925,12 +926,12 @@ component PluginRowHeader inherits Rectangle {
 
             // ── Icon ──────────────────────────────────────────────────────────
             Rectangle {
-                width: 38px; height: parent.height;
+                width: 28px; height: parent.height;
                 Text {
                     text: root.item.icon;
-                    color: rgba(255,255,255,0.45);
-                    font-family: "Hack Nerd Font Mono";
-                    font-size: 22px;
+                    color: rgba(255,255,255,0.40);
+                    font-family: "Hack Nerd Font";
+                    font-size: 14px;
                     horizontal-alignment: center; vertical-alignment: center;
                     width: parent.width; height: parent.height;
                 }
@@ -946,30 +947,30 @@ component PluginRowHeader inherits Rectangle {
                 // Focus/expanded dot — green when open, gray when collapsed
                 Text {
                     text: "●";
-                    color: root.expanded ? #22c55e : #3a3a4a;
-                    font-family: "Hack Nerd Font Mono";
-                    font-size: 14px;
+                    color: root.expanded ? #22c55e : #2a2a3a;
+                    font-family: "Hack Nerd Font";
+                    font-size: 8px;
                     vertical-alignment: center;
-                    x: 4px;
-                    width: 18px; height: parent.height;
+                    x: 2px;
+                    width: 12px; height: parent.height;
                 }
 
                 Text {
                     text: root.item.title;
-                    color: rgba(255,255,255,0.80);
+                    color: rgba(255,255,255,0.65);
                     font-family: "SF Pro Text";
-                    font-size: 18px; font-weight: 700;
-                    letter-spacing: 0.4px;
+                    font-size: 11px; font-weight: 600;
+                    letter-spacing: 1.2px;
                     overflow: elide;
                     vertical-alignment: center;
-                    x: 24px;
-                    width: parent.width - 28px; height: parent.height;
+                    x: 16px;
+                    width: parent.width - 20px; height: parent.height;
                 }
             }
 
             // ── Float button (pixel plugins only, when expanded) ─────────────
             if root.item.plugin-index >= 0 && root.expanded: Rectangle {
-                width: 28px; height: parent.height;
+                width: 22px; height: parent.height;
                 float-ta := TouchArea {
                     width: parent.width; height: parent.height;
                     mouse-cursor: MouseCursor.pointer;
@@ -978,10 +979,10 @@ component PluginRowHeader inherits Rectangle {
                 Text {
                     text: "↗";
                     color: float-ta.has-hover
-                        ? rgba(255,255,255,0.70)
-                        : rgba(255,255,255,0.22);
+                        ? rgba(255,255,255,0.60)
+                        : rgba(255,255,255,0.18);
                     font-family: "SF Pro Text";
-                    font-size: 12px;
+                    font-size: 10px;
                     horizontal-alignment: center; vertical-alignment: center;
                     width: parent.width; height: parent.height;
                 }
@@ -989,12 +990,12 @@ component PluginRowHeader inherits Rectangle {
 
             // ── Expand chevron ────────────────────────────────────────────────
             Rectangle {
-                width: 24px; height: parent.height;
+                width: 20px; height: parent.height;
                 Text {
                     text: root.expanded ? "↓" : "›";
-                    color: rgba(255,255,255,0.22);
+                    color: rgba(255,255,255,0.18);
                     font-family: "SF Pro Text";
-                    font-size: 12px;
+                    font-size: 10px;
                     horizontal-alignment: center; vertical-alignment: center;
                     width: parent.width; height: parent.height;
                 }
@@ -1094,7 +1095,7 @@ export component Sidebar inherits Rectangle {
     // ── Drag state ────────────────────────────────────────────────────────────
     private property <int>   drag-index: -1;
     private property <float> drag-y: 0;
-    private property <float> row-h: 52;
+    private property <float> row-h: 36;
 
     // ── Per-built-in expanded state ───────────────────────────────────────────
     private property <bool> tasku-expanded:      false;

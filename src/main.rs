@@ -2528,7 +2528,7 @@ fn main() {
                     .map(|ui| ui.get_overlay_total_w())
                     .unwrap_or(w + 300.0);
                 // overlay_h = terminal-area height (window height minus 52px header)
-                let overlay_h = h - 52.0;
+                let overlay_h = h - 36.0;
 
                 if !initial_spawned.get() && w > 50.0 && h > 50.0 {
                     initial_spawned.set(true);
@@ -2573,7 +2573,7 @@ fn main() {
                         let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
                         if plugin.kind == "pixel" {
                             let phys_w = ((top_right_panel_w - PANE_H_INSET as f32).max(10.0) * reg.scale) as u32;
-                            let phys_h = ((h - 52.0).max(50.0) * reg.scale) as u32;
+                            let phys_h = ((h - 36.0).max(50.0) * reg.scale) as u32;
                             let fs_str = reg.font_size.to_string();
                             let sc_str = reg.scale.to_string();
                             if let Some(pp) = PixelPlugin::spawn(&program, &args_ref, phys_w, phys_h,
@@ -2596,7 +2596,7 @@ fn main() {
                         let args: Vec<String> = parts.map(|s| s.to_string()).collect();
                         let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
                         let plugin_id = plugin.id.clone();
-                        reg.spawn_cmd(bottom_right_plugin_node_id(0), bottom_right_panel_w, (h - 52.0).max(50.0),
+                        reg.spawn_cmd(bottom_right_plugin_node_id(0), bottom_right_panel_w, (h - 36.0).max(50.0),
                                       &program, &args_ref, None,
                                       &[("MADO_PLUGIN_ID", &plugin_id)]);
                     }
@@ -2677,17 +2677,17 @@ fn main() {
                     if let Some(ref plugin) = top_right_plugin_resize {
                         if plugin.kind == "pixel" {
                             let phys_w = ((top_right_panel_w - PANE_H_INSET as f32).max(10.0) * reg.scale) as u32;
-                            let phys_h = ((h - 52.0).max(50.0) * reg.scale) as u32;
+                            let phys_h = ((h - 36.0).max(50.0) * reg.scale) as u32;
                             if let Some(pp) = top_right_pixel_resize.borrow_mut().as_mut() {
                                 pp.send_resize(phys_w, phys_h);
                             }
                         } else {
-                            reg.resize(top_right_plugin_node_id(0), (top_right_panel_w - PANE_H_INSET as f32).max(10.0), (h - 52.0).max(50.0));
+                            reg.resize(top_right_plugin_node_id(0), (top_right_panel_w - PANE_H_INSET as f32).max(10.0), (h - 36.0).max(50.0));
                         }
                     }
                     // Resize bottom-right panel plugin
                     if bottom_right_plugin_resize.is_some() {
-                        reg.resize(bottom_right_plugin_node_id(0), bottom_right_panel_w, (h - 52.0).max(50.0));
+                        reg.resize(bottom_right_plugin_node_id(0), bottom_right_panel_w, (h - 36.0).max(50.0));
                     }
                     // Update native browser WKWebView frame on window resize
                     if let Some(nb) = native_browser_resize.borrow().as_ref() {
@@ -4611,7 +4611,7 @@ fn main() {
             if let Some(ui) = ui_weak.upgrade() {
                 let h = ui.get_window_h();
                 let pane_w = (new_w - PANE_H_INSET as f32).max(10.0);
-                let pane_h = (h - 52.0).max(50.0);
+                let pane_h = (h - 36.0).max(50.0);
                 if let Some(pp) = top_right_pixel.borrow_mut().as_mut() {
                     let scale = registry.borrow().scale;
                     pp.send_resize((pane_w * scale) as u32, (pane_h * scale) as u32);
