@@ -272,10 +272,10 @@ export component MainWindow inherits Window {
 
     // Top bar shows when explicitly enabled OR when the AI/browser panel is configured.
     private property <bool>   show-top-bar-effective: root.show-top-bar || root.top-right-panel-width > 0 || root.browser-panel-width > 0;
-    // Top bar is always 52px (header only). Content shown via overlay below.
-    private property <length> effective-top-bar-h: root.show-top-bar-effective ? 52px : 0px;
-    // Bottom bar is always 52px (header only). Content shown via overlay above.
-    private property <length> effective-bottom-bar-h: root.show-bottom-bar ? 52px : 0px;
+    // Top bar is always 36px (header only). Content shown via overlay below.
+    private property <length> effective-top-bar-h: root.show-top-bar-effective ? 36px : 0px;
+    // Bottom bar is always 36px (header only). Content shown via overlay above.
+    private property <length> effective-bottom-bar-h: root.show-bottom-bar ? 36px : 0px;
 
     callback sidebar-escaped();
 
@@ -319,10 +319,10 @@ export component MainWindow inherits Window {
         spacing: 0;
         padding: 0;
 
-        // ── Top bar header (always 52px; content rendered in overlay below) ─────
+        // ── Top bar header (always 36px; content rendered in overlay below) ─────
         if root.show-top-bar-effective: TopBar {
             width: parent.width;
-            height: 52px;
+            height: 36px;
             expanded: root.top-bar-expanded;
             top-plugins: root.top-plugins;
             theme-card-bg: root.theme-card-bg;
@@ -630,10 +630,10 @@ export component MainWindow inherits Window {
             }
         }
 
-        // ── Bottom bar header (optional, always 52px) ─────────────────────────
+        // ── Bottom bar header (optional, always 36px) ─────────────────────────
         if root.show-bottom-bar: BottomBar {
             width: parent.width;
-            height: 52px;
+            height: 36px;
             expanded: root.bottom-bar-expanded;
             theme-card-bg: root.theme-card-bg;
             theme-card-border: root.theme-card-border;
