@@ -306,13 +306,14 @@ fn fire_notification(title: &str, message: &str) {
         .spawn();
 }
 
-fn apply_theme(ui: &MainWindow, t: &theme::Theme) {
-    // Sidebar and chrome are solid; only terminal panes are glassy (~47% opacity).
+fn apply_theme(ui: &MainWindow, t: &theme::Theme, transparent_panes: bool) {
+    // Sidebar and chrome are solid; terminal panes are glassy (~47% opacity) unless
+    // transparent_panes is false, in which case they use a solid background.
     ui.set_theme_window_bg(rgb(t.window_bg));
     // macOS title-bar fix is applied in on_window_resized (first fire only),
     // because with_winit_window/window_handle() returns None before the event loop.
     ui.set_theme_terminal_area_bg(rgb(t.terminal_area_bg));
-    ui.set_theme_pane_bg(rgba(t.pane_bg, 120));
+    ui.set_theme_pane_bg(if transparent_panes { rgba(t.pane_bg, 120) } else { rgb(t.pane_bg) });
     ui.set_theme_pane_toolbar(rgb(t.pane_toolbar));
     ui.set_theme_focus_border(rgb(t.focus_border));
     ui.set_theme_active_dot(rgb(t.active_dot));
@@ -733,6 +734,7 @@ fn main() {
                 "# theme        = \"gray\"\n",
                 "# editor       = \"\"     # e.g. \"nvim\", \"nano\" — overrides $VISUAL/$EDITOR\n",
                 "# theme_starship = false  # true = Mado themes your Starship prompt to match\n",
+                "# transparent_panes = true  # false = solid pane backgrounds (no glassy effect)\n",
                 "\n",
                 "# Disable built-in sidebar panels:\n",
                 "# disable_tasku      = false\n",
@@ -901,7 +903,7 @@ fn main() {
     // Load config first — font size, shell, theme, etc.
     let config = Config::load();
     let loaded_theme = Rc::new(RefCell::new(theme::Theme::load(&config.theme)));
-    apply_theme(&ui, &loaded_theme.borrow());
+    apply_theme(&ui, &loaded_theme.borrow(), config.transparent_panes);
     if config.theme_starship {
         apply_starship_theme(&loaded_theme.borrow());
     }
@@ -1404,7 +1406,7 @@ fn main() {
                     if new_cfg.theme_starship {
                         apply_starship_theme(&new_theme);
                     }
-                    apply_theme(&ui, &new_theme);
+                    apply_theme(&ui, &new_theme, new_cfg.transparent_panes);
                     *loaded_theme_timer.borrow_mut() = new_theme;
                     // Sidebar / panel dimensions
                     ui.set_sidebar_width(new_cfg.sidebar_width);
