@@ -34,6 +34,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   preventing credential exposure
 
 ### Added
+- `transparent_panes` config option — set to `false` in `~/.config/mado/config.toml`
+  to use solid pane backgrounds instead of the default glassy (~47% opacity) effect;
+  hot-reloadable
+- Projects: `url` key in `projects.toml` — when configured, a globe button
+  appears in the runner sidebar; clicking it opens that URL in the native browser
+  panel, clicking again closes it; the button lights up while the panel is open
+- `mado projects` CLI command — opens `~/.config/mado/projects.toml` in your
+  editor (also accessible as `mado config projects`)
 - AI panel (mado-claude): keyboard text selection — Shift+Arrow, Shift+Home, and
   Shift+End extend a selection from the cursor without touching the PTY; the
   virtual cursor moves to the selection edge and is shown in the render
