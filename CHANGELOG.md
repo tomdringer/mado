@@ -3,7 +3,7 @@
 All notable changes to Mado are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.4.4] - 2026-10-29
 
 ### Security
 - Plugin install and update now verify SHA256 checksums before executing downloaded
@@ -13,13 +13,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Release builds now use `--locked` to enforce exact dependency versions from
   `Cargo.lock`, preventing supply chain attacks via malicious compatible dependency
   releases during CI resolution
+- GitHub Actions release workflow permissions restricted to minimum required,
+  preventing credential exposure
 
 ### Fixed
+- Paste on Wayland now works correctly; minimum of one pane enforced
 - AI panel (mado-claude): text selection, copy (Cmd+C), and paste (Cmd+V) now
   work correctly — `selection_text` was reading from the main screen buffer
   instead of the active screen, so when Claude's TUI is on the alt screen the
   extracted text was always empty, causing Cmd+C to fall through and send ^C to
   the PTY instead of copying to the clipboard
+- Restored executable permission on `bundle.sh`
 
 ## [0.0.3] - 2026-09-26
 
