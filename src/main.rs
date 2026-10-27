@@ -3332,6 +3332,7 @@ fn main() {
         let browser_urls = Rc::clone(&browser_urls);
         let top_right_pixel = Rc::clone(&top_right_pixel);
         let right_pixel_plugins_ws = Rc::clone(&right_pixel_plugins);
+        let pixel_plugins_ws = Rc::clone(&pixel_plugins);
         let tasku_open_ws = Rc::clone(&tasku_open);
         let tasku_active_filter_ws = Rc::clone(&tasku_active_filter);
         let pane_titles_ws = Rc::clone(&pane_titles);
@@ -3453,6 +3454,11 @@ fn main() {
                 // 4d. Notify all right-sidebar plugins of the workspace change
                 for pp in right_pixel_plugins_ws.borrow_mut().values_mut() {
                     pp.send_workspace(&code);
+                }
+
+                // 4e. Tell left-sidebar pixel plugins (e.g. file manager) to cd to the project root
+                for pp in pixel_plugins_ws.borrow_mut().values_mut() {
+                    pp.send_chdir(&project_root);
                 }
 
                 // 4b. Update runner command for the new workspace and clear stale output
@@ -3885,6 +3891,8 @@ fn main() {
         let plugin_expanded_model = Rc::clone(&plugin_expanded_model);
         let plugin_panel_h_model = Rc::clone(&plugin_panel_h_model);
         let pixel_plugins = Rc::clone(&pixel_plugins);
+        let active_project = Rc::clone(&active_project);
+        let project_paths = Rc::clone(&project_paths);
         let ui_weak = ui.as_weak();
         move |idx| {
             let idx = idx as usize;
@@ -3914,7 +3922,20 @@ fn main() {
                 if kind == "pixel" {
                     let phys_w = (sidebar_w * scale.get()) as u32;
                     let phys_h = (panel_h * scale.get()) as u32;
-                    if let Some(plugin) = PixelPlugin::spawn(&program, &args_ref, phys_w, phys_h, &[]) {
+                    let project_root = {
+                        let paths = project_paths.borrow();
+                        let proj = active_project.borrow();
+                        proj.as_deref()
+                            .and_then(|code| paths.get(code))
+                            .cloned()
+                            .unwrap_or_default()
+                    };
+                    let sc_str = scale.get().to_string();
+                    let mut env_vec: Vec<(&str, &str)> = vec![("MADO_SCALE", &sc_str)];
+                    if !project_root.is_empty() {
+                        env_vec.push(("MADO_PROJECT_PATH", &project_root));
+                    }
+                    if let Some(plugin) = PixelPlugin::spawn(&program, &args_ref, phys_w, phys_h, &env_vec) {
                         pixel_plugins.borrow_mut().insert(idx, plugin);
                     } else {
                         eprintln!("mado: failed to spawn pixel plugin '{plugin_id}'");
