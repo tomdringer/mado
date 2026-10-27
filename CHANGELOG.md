@@ -3,13 +3,13 @@
 All notable changes to Mado are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
-
-<!-- NOTE: AI panel (mado-claude) keyboard selection changes need verifying on
-     Linux before release — key codepoints and Shift+Cmd+Arrow detection may
-     differ. Cut a new release tag once confirmed. -->
+## [0.4.5] - 2026-10-29
 
 ### Fixed
+- File manager plugin: now opens the active workspace's project directory on
+  first load instead of the process working directory — `MADO_PROJECT_PATH` is
+  passed when the panel is spawned, and a `chdir` event is sent on every
+  workspace switch
 - Native browser panel: clicking the URL bar or page content now works correctly
   — focus was being restored to Slint on every render tick, immediately
   cancelling any keyboard input directed at WKWebView
