@@ -3,7 +3,8 @@
 # Usage: ./scripts/release.sh <version>
 # e.g.:  ./scripts/release.sh 0.0.4
 set -e
-cd "$(dirname "$0")/.."
+MADO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$MADO_ROOT"
 
 WIKI_DIR="$HOME/Sites/mado-wiki"
 TAP_DIR="$HOME/Sites/homebrew-tap"
@@ -61,7 +62,7 @@ fi
 
 # ── Bump version in Cargo.toml ────────────────────────────────────────────────
 
-cd "$(dirname "$0")/.."
+cd "$MADO_ROOT"
 echo ""
 echo "Bumping version to ${VERSION}..."
 sed -i '' "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
@@ -130,7 +131,7 @@ git push origin main
 # ── Tag and push mado ─────────────────────────────────────────────────────────
 
 echo ""
-cd "$(dirname "$0")/.."
+cd "$MADO_ROOT"
 git tag "v${VERSION}"
 git push origin main
 git push origin "v${VERSION}"
