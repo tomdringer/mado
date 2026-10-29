@@ -1,109 +1,147 @@
 use slint::SharedPixelBuffer;
-use std::sync::{Arc, Mutex};
 
-use super::terminal_state::{TerminalState, DEFAULT_BG};
+use libghostty_vt::Terminal;
+use libghostty_vt::render::{RenderState, RowIterator, CellIterator, Dirty};
+
 use super::font::FontRaster;
 
-/// Returns true if `(col, row)` falls within a normalized selection.
-fn in_selection(col: usize, row: usize, ((c0, r0), (c1, r1)): ((usize, usize), (usize, usize))) -> bool {
-    if row < r0 || row > r1 { return false; }
-    if r0 == r1 { col >= c0 && col <= c1 }
-    else if row == r0 { col >= c0 }
-    else if row == r1 { col <= c1 }
-    else { true }
-}
-
-/// Render terminal state into a pixel buffer. Returns None if nothing changed.
-/// Pass `force=true` to always render (e.g. on resize).
-/// `selection` is a normalized `((start_col, start_row), (end_col, end_row))` in
-/// display-row coordinates (0 = top of the visible area).
+/// Render terminal state into a pixel buffer using the libghostty-vt render API.
+/// Returns None if nothing rendered.
+///
+/// The terminal's default background colour is treated as transparent (alpha=0)
+/// so the Slint pane background shows through.
+///
+/// All objects use the global allocator so their `'alloc` lifetime is `'static`.
 pub fn render_terminal(
-    state: &Arc<Mutex<TerminalState>>,
+    terminal: &Terminal<'static, '_>,
+    render_state: &mut RenderState<'static>,
+    row_it: &mut RowIterator<'static>,
+    cell_it: &mut CellIterator<'static>,
     font: &FontRaster,
-    force: bool,
-    selection: Option<((usize, usize), (usize, usize))>,
     phys_w: usize,
     phys_h: usize,
 ) -> Option<SharedPixelBuffer<slint::Rgba8Pixel>> {
-    let mut st = state.lock().unwrap();
-    if !force && !st.dirty {
-        return None;
-    }
-    st.dirty = false;
+    let snapshot = render_state.update(terminal).ok()?;
 
-    let cols = st.cols;
-    let rows = st.rows;
+    let colors = snapshot.colors().ok()?;
+    let def_fg: [u8; 3] = [colors.foreground.r, colors.foreground.g, colors.foreground.b];
+    let def_bg: [u8; 3] = [colors.background.r, colors.background.g, colors.background.b];
+
+    let cols = snapshot.cols().ok()? as usize;
+    let rows = snapshot.rows().ok()? as usize;
+
     let cw = font.cell_w;
     let ch = font.cell_h;
+
     let cell_area_w = cols * cw;
     let cell_area_h = rows * ch;
-
-    // Use the exact physical pane dimensions as the buffer size so Slint
-    // doesn't need to scale the image (which causes bilinear blur artifacts).
-    // Any strip beyond the cell area is filled with transparent background.
     let w = phys_w.max(cell_area_w);
     let h = phys_h.max(cell_area_h);
 
     if w == 0 || h == 0 {
+        let _ = snapshot.set_dirty(Dirty::Clean);
         return None;
     }
 
-    let scroll_offset = st.scroll_offset;
-    let sb_len = st.scrollback.len();
-    let transparent_bg = st.theme_bg.unwrap_or(DEFAULT_BG);
+    // Cursor info — in v0.2.2 there's no combined cursor(); use separate getters
+    let cursor_visible = snapshot.cursor_visible().unwrap_or(false);
+    let (cursor_col, cursor_row) = if let Some(pt) = snapshot.cursor_viewport().ok().flatten() {
+        (pt.x as usize, pt.y as usize)
+    } else {
+        (usize::MAX, usize::MAX)
+    };
+
     let mut buf = vec![0u8; w * h * 4];
 
-    for row in 0..rows {
-        // Map display row → virtual row (scrollback rows followed by current screen rows).
-        // virtual_row 0..sb_len = scrollback (oldest first)
-        // virtual_row sb_len..sb_len+rows = current screen
-        let virtual_row = (sb_len as isize) - (scroll_offset as isize) + (row as isize);
+    // Reuse text buffer across cells
+    let mut text = String::with_capacity(8);
 
-        for col in 0..cols {
-            let cell = if virtual_row < 0 {
-                super::terminal_state::Cell::default()
-            } else if (virtual_row as usize) < sb_len {
-                st.scrollback[virtual_row as usize]
-                    .get(col)
-                    .cloned()
-                    .unwrap_or_default()
+    // v0.2.2: rows are iterated sequentially; position = iteration index 0..rows
+    let mut row_iter = row_it.update(&snapshot).ok()?;
+    let mut row_y: usize = 0;
+
+    while let Some(row) = row_iter.next() {
+        if row_y >= rows { row_y += 1; continue; }
+
+        let mut cell_iter = match cell_it.update(row) {
+            Ok(ci) => ci,
+            Err(_) => { row_y += 1; continue; }
+        };
+
+        let mut col: usize = 0;
+        while let Some(cell) = cell_iter.next() {
+            if col >= cols { col += 1; continue; }
+
+            let graphemes = cell.graphemes_len().unwrap_or(0);
+            let ch_char = if graphemes > 0 {
+                text.clear();
+                if cell.graphemes_utf8(&mut text).is_ok() && !text.is_empty() {
+                    text.chars().next().unwrap_or(' ')
+                } else {
+                    ' '
+                }
             } else {
-                let screen_row = (virtual_row as usize) - sb_len;
-                st.cells
-                    .get(screen_row * cols + col)
-                    .cloned()
-                    .unwrap_or_default()
+                ' '
             };
 
-            // Only show cursor at live view (scroll_offset == 0) and when visible
-            let is_cursor = scroll_offset == 0
-                && st.cursor_visible
-                && row == st.cursor_row
-                && col == st.cursor_col;
+            // Resolve colours (palette already resolved by the API)
+            let raw_fg = cell.fg_color().ok().flatten().map(|c| [c.r, c.g, c.b]).unwrap_or(def_fg);
+            let raw_bg = cell.bg_color().ok().flatten().map(|c| [c.r, c.g, c.b]).unwrap_or(def_bg);
 
-            let is_selected = selection.map_or(false, |s| in_selection(col, row, s));
+            let (is_bold, is_faint, is_inverse) = if cell.has_styling().unwrap_or(false) {
+                match cell.style() {
+                    Ok(style) => (style.bold, style.faint, style.inverse),
+                    Err(_) => (false, false, false),
+                }
+            } else {
+                (false, false, false)
+            };
 
-            let (fg, mut bg) = if is_cursor {
-                (cell.bg, cell.fg)
+            let is_selected = cell.is_selected().unwrap_or(false);
+            let is_cursor = cursor_visible && row_y == cursor_row && col == cursor_col;
+
+            // Compute final fg/bg
+            let (mut fg, mut bg) = if is_cursor {
+                (raw_bg, raw_fg) // invert at cursor
             } else if is_selected {
-                // Classic reverse-video selection highlight
-                ([0xFF, 0xFF, 0xFF, 0xFF], [0x26, 0x4F, 0x78, 0xFF])
+                ([0xFF_u8, 0xFF, 0xFF], [0x26_u8, 0x4F, 0x78])
+            } else if is_inverse {
+                (raw_bg, raw_fg)
             } else {
-                (cell.fg, cell.bg)
+                (raw_fg, raw_bg)
             };
 
-            // Treat the theme background as transparent so the Slint pane
-            // background shows through. transparent_bg is detected automatically
-            // from the first full-screen erase; falls back to DEFAULT_BG.
-            if !is_cursor && !is_selected && (bg == transparent_bg || bg == DEFAULT_BG) {
-                bg[3] = 0;
+            // Faint (dim/ghost text): blend fg 40% toward bg
+            if is_faint && !is_cursor && !is_selected {
+                fg = [
+                    ((fg[0] as u16 * 4 + bg[0] as u16 * 6) / 10) as u8,
+                    ((fg[1] as u16 * 4 + bg[1] as u16 * 6) / 10) as u8,
+                    ((fg[2] as u16 * 4 + bg[2] as u16 * 6) / 10) as u8,
+                ];
             }
 
+            // Transparent for default bg
+            let bg_alpha: u8 = if !is_cursor && !is_selected && bg == def_bg { 0 } else { 0xFF };
+
+            let fg4 = [fg[0], fg[1], fg[2], 0xFF];
+            let bg4 = [bg[0], bg[1], bg[2], bg_alpha];
+
             let dst_x = col * cw;
-            let dst_y = row * ch;
-            font.render_char_into(&mut buf, cell.ch, fg, bg, dst_x, dst_y, w);
+            let dst_y = row_y * ch;
+            font.render_char_into(&mut buf, ch_char, fg4, bg4, dst_x, dst_y, w);
+
+            // Fake bold: overdraw shifted 1px right
+            if is_bold && ch_char != ' ' {
+                font.render_char_into(&mut buf, ch_char, fg4, bg4, dst_x + 1, dst_y, w);
+            }
+
+            col += 1;
         }
+
+        row_y += 1;
     }
+
+    let _ = snapshot.set_dirty(Dirty::Clean);
 
     let mut pixel_buf = SharedPixelBuffer::<slint::Rgba8Pixel>::new(w as u32, h as u32);
     pixel_buf.make_mut_bytes().copy_from_slice(&buf);

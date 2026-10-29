@@ -4,27 +4,29 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use vte::Parser;
-
-use super::terminal_state::{TerminalState, VteHandler};
 
 pub struct PtySession {
-    pub state: Arc<Mutex<TerminalState>>,
+    /// Raw PTY bytes received from the child process.
+    pub bytes_rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    /// Set by the reader thread when new bytes arrive.
     pub dirty: Arc<AtomicBool>,
-    /// Set by the reader thread when the terminal rings the bell, cleared by drain_bells.
+    /// Set by the on_bell callback; cleared by drain_bells in registry.
     pub bell: Arc<AtomicBool>,
-    /// PID of the shell process — used for cwd lookup when OSC 7 hasn't fired.
+    /// PID of the shell process.
     pub pid: Option<u32>,
-    /// Physical pixel dimensions of the pane — used to size the render buffer
-    /// exactly so Slint doesn't need to scale it (which causes blurry artifacts).
+    /// Physical pixel dimensions of the pane.
     pub phys_w: usize,
     pub phys_h: usize,
     /// Set by the wait thread when the child process exits.
-    pub exited:       Arc<AtomicBool>,
-    /// Set to true if the process exited with status 0, false otherwise.
+    pub exited: Arc<AtomicBool>,
+    /// True if the process exited successfully.
     pub exit_success: Arc<AtomicBool>,
-    writer: Box<dyn Write + Send>,
+    /// Shared writer used for both user key input and the on_pty_write callback.
+    pub pty_writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    /// PTY master handle (for resize).
     master: Box<dyn portable_pty::MasterPty + Send>,
+    /// Bytes to inject via vt_write before the first PTY bytes arrive.
+    pub pre_bytes: Vec<u8>,
 }
 
 impl PtySession {
@@ -34,15 +36,12 @@ impl PtySession {
         Self::launch(cols, rows, cmd, &[])
     }
 
-    /// Spawn a shell with `pre_bytes` injected into the terminal state before
-    /// the reader thread starts — guaranteed to appear before any shell output.
     pub fn spawn_with_banner(cols: u16, rows: u16, shell: &str, cwd: Option<&str>, pre_bytes: &[u8]) -> Self {
         let mut cmd = CommandBuilder::new(shell);
         Self::set_env(&mut cmd, cwd);
         Self::launch(cols, rows, cmd, pre_bytes)
     }
 
-    /// Spawn with an explicit program + argument list and optional extra env vars.
     pub fn spawn_cmd(cols: u16, rows: u16, program: &str, args: &[&str],
                      cwd: Option<&str>, extra_env: &[(&str, &str)]) -> Self {
         let mut cmd = CommandBuilder::new(program);
@@ -56,12 +55,9 @@ impl PtySession {
         Self::launch(cols, rows, cmd, &[])
     }
 
-    /// Apply standard environment variables to a CommandBuilder.
     fn set_env(cmd: &mut CommandBuilder, cwd: Option<&str>) {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        // Explicitly propagate STARSHIP_CONFIG so shells pick up Mado's theme palette
-        // even if the PTY system doesn't inherit the full parent environment.
         if let Ok(sc) = std::env::var("STARSHIP_CONFIG") {
             cmd.env("STARSHIP_CONFIG", sc);
         }
@@ -82,13 +78,12 @@ impl PtySession {
         let mut child = pair.slave.spawn_command(cmd).expect("spawn failed");
         let pid = child.process_id();
 
-        // Drop slave after spawning so the master gets EOF when child exits
         drop(pair.slave);
 
-        let exited:       Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+        let exited: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let exit_success: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
         {
-            let exited_w       = Arc::clone(&exited);
+            let exited_w = Arc::clone(&exited);
             let exit_success_w = Arc::clone(&exit_success);
             thread::spawn(move || {
                 if let Ok(status) = child.wait() {
@@ -98,46 +93,26 @@ impl PtySession {
             });
         }
 
-        let state = Arc::new(Mutex::new(TerminalState::new(cols as usize, rows as usize)));
         let dirty = Arc::new(AtomicBool::new(true));
-        let bell  = Arc::new(AtomicBool::new(false));
+        let bell = Arc::new(AtomicBool::new(false));
+
+        // Single writer wrapped in Arc<Mutex> so both user input and
+        // the on_pty_write callback can share it.
         let writer = pair.master.take_writer().expect("take_writer failed");
+        let pty_writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(writer));
 
-        // Inject pre_bytes BEFORE the reader thread starts — no contention possible.
-        if !pre_bytes.is_empty() {
-            let mut parser = Parser::new();
-            let mut st = state.lock().unwrap();
-            let mut handler = VteHandler(&mut *st);
-            for &b in pre_bytes {
-                parser.advance(&mut handler, b);
-            }
-            dirty.store(true, Ordering::Relaxed);
-        }
-
-        // Background reader thread — lock once per buffer read (not per byte).
+        // Reader thread: reads PTY bytes → sends via channel → sets dirty
+        let (bytes_tx, bytes_rx) = std::sync::mpsc::channel::<Vec<u8>>();
         {
-            let state = Arc::clone(&state);
             let dirty = Arc::clone(&dirty);
-            let bell  = Arc::clone(&bell);
             let mut reader = pair.master.try_clone_reader().expect("clone_reader failed");
             thread::spawn(move || {
-                let mut parser = Parser::new();
                 let mut buf = [0u8; 4096];
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
-                            {
-                                let mut st = state.lock().unwrap();
-                                let mut handler = VteHandler(&mut *st);
-                                for &b in &buf[..n] {
-                                    parser.advance(&mut handler, b);
-                                }
-                                if st.bell {
-                                    st.bell = false;
-                                    bell.store(true, Ordering::Relaxed);
-                                }
-                            }
+                            let _ = bytes_tx.send(buf[..n].to_vec());
                             dirty.store(true, Ordering::Relaxed);
                         }
                     }
@@ -145,34 +120,33 @@ impl PtySession {
             });
         }
 
-        let phys_w = cols as usize; // placeholder; registry sets real values after spawn
+        let phys_w = cols as usize;
         let phys_h = rows as usize;
-        PtySession { state, dirty, bell, pid, phys_w, phys_h, exited, exit_success, writer, master: pair.master }
+        PtySession {
+            bytes_rx,
+            dirty,
+            bell,
+            pid,
+            phys_w,
+            phys_h,
+            exited,
+            exit_success,
+            pty_writer,
+            master: pair.master,
+            pre_bytes: pre_bytes.to_vec(),
+        }
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16, phys_w: usize, phys_h: usize) {
         self.phys_w = phys_w;
         self.phys_h = phys_h;
         let _ = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
-        self.state.lock().unwrap().resize(cols as usize, rows as usize);
-        // Signal the timer that this session needs re-rendering
         self.dirty.store(true, Ordering::Relaxed);
     }
 
     pub fn write_input(&mut self, data: &[u8]) {
-        let _ = self.writer.write_all(data);
-    }
-
-    /// Inject raw bytes (e.g. ANSI art) directly into the terminal state,
-    /// bypassing the PTY. Safe to call from the main thread.
-    #[allow(dead_code)]
-    pub fn inject_bytes(&self, data: &[u8]) {
-        let mut parser = Parser::new();
-        let mut st = self.state.lock().unwrap();
-        let mut handler = VteHandler(&mut *st);
-        for &b in data {
-            parser.advance(&mut handler, b);
+        if let Ok(mut w) = self.pty_writer.lock() {
+            let _ = w.write_all(data);
         }
-        self.dirty.store(true, Ordering::Relaxed);
     }
 }

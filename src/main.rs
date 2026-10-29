@@ -1437,11 +1437,11 @@ fn main() {
             // Skipped if runner_command is None (user stopped it manually).
             if let Some(is_deploy) = runner_command_timer.get() {
                 let exited = registry.borrow().sessions.get(&RUNNER_ID)
-                    .map(|s| s.exited.load(std::sync::atomic::Ordering::Relaxed))
+                    .map(|s| s.session.exited.load(std::sync::atomic::Ordering::Relaxed))
                     .unwrap_or(false);
                 if exited {
                     let success = registry.borrow().sessions.get(&RUNNER_ID)
-                        .map(|s| s.exit_success.load(std::sync::atomic::Ordering::Relaxed))
+                        .map(|s| s.session.exit_success.load(std::sync::atomic::Ordering::Relaxed))
                         .unwrap_or(false);
                     let msg = if is_deploy {
                         if success { "Deploy succeeded" } else { "Deploy failed" }

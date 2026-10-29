@@ -9,7 +9,7 @@ slint = "1"
 i-slint-backend-winit = "1"
 portable-pty = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-vte = "0.13"
+libghostty-vt = "0.2"
 fontdue = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
