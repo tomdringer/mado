@@ -3,7 +3,7 @@
 All notable changes to Mado are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.4.5] - 2026-10-29
+## [0.0.4] - 2026-10-29
 
 <!-- NOTE: AI panel (mado-claude) keyboard selection changes need verifying on
      Linux before release — key codepoints and Shift+Cmd+Arrow detection may
