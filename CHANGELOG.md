@@ -3,7 +3,7 @@
 All notable changes to Mado are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.4.5] - 2026-10-29
+## [0.0.4] - 2026-10-29
 
 ### Fixed
 - File manager plugin: now opens the active workspace's project directory on
