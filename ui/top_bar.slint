@@ -17,6 +17,11 @@ export component TopBar inherits Rectangle {
     in-out property <bool> ai-active: false;
     callback ai-toggled();
 
+    // Markdown preview toggle button
+    in property <bool>    show-md-button: false;
+    in-out property <bool> md-active: false;
+    callback md-toggled();
+
     // Browser panel toggle button
     in property <bool>    show-browser-button: false;
     in-out property <bool> browser-active: false;
@@ -29,7 +34,8 @@ export component TopBar inherits Rectangle {
     private property <int>    n: root.top-plugins.length;
     private property <length> plugins-area-w: root.width
         - (root.show-ai-button ? 52px : 0px)
-        - (root.show-browser-button ? 52px : 0px);
+        - (root.show-browser-button ? 52px : 0px)
+        - (root.show-md-button ? 52px : 0px);
 
     // One header column per plugin
     for item[i] in root.top-plugins: Rectangle {
@@ -97,6 +103,42 @@ export component TopBar inherits Rectangle {
                     width: parent.width; height: parent.height;
                 }
             }
+        }
+    }
+
+    // Markdown preview toggle button (to the left of the browser button)
+    if root.show-md-button: Rectangle {
+        x: root.width
+            - (root.show-ai-button ? 52px : 0px)
+            - (root.show-browser-button ? 52px : 0px)
+            - 52px;
+        y: 0;
+        width: 52px;
+        height: parent.height;
+        background: root.md-active
+            ? rgba(255, 255, 255, 0.10)
+            : transparent;
+
+        Rectangle {
+            x: 0; y: 0; width: 1px; height: parent.height;
+            background: root.theme-card-border;
+        }
+
+        Text {
+            text: "\u{f15c}";  // fa-file-text — document icon
+            color: root.md-active
+                ? rgba(255, 255, 255, 0.85)
+                : rgba(255, 255, 255, 0.40);
+            font-family: "Hack Nerd Font";
+            font-size: 15px;
+            horizontal-alignment: center; vertical-alignment: center;
+            width: parent.width; height: parent.height;
+        }
+
+        TouchArea {
+            width: parent.width; height: parent.height;
+            mouse-cursor: MouseCursor.pointer;
+            clicked => { root.md-toggled(); }
         }
     }
 

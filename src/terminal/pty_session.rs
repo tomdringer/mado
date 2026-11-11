@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -23,6 +23,9 @@ pub struct PtySession {
     pub exited:       Arc<AtomicBool>,
     /// Set to true if the process exited with status 0, false otherwise.
     pub exit_success: Arc<AtomicBool>,
+    /// Milliseconds since UNIX_EPOCH of the last `write_input` call.
+    /// Used to detect recent user interaction for render-throttle bypass.
+    pub last_input_ms: Arc<AtomicU64>,
     writer: Box<dyn Write + Send>,
     master: Box<dyn portable_pty::MasterPty + Send>,
 }
@@ -147,7 +150,8 @@ impl PtySession {
 
         let phys_w = cols as usize; // placeholder; registry sets real values after spawn
         let phys_h = rows as usize;
-        PtySession { state, dirty, bell, pid, phys_w, phys_h, exited, exit_success, writer, master: pair.master }
+        let last_input_ms = Arc::new(AtomicU64::new(0));
+        PtySession { state, dirty, bell, pid, phys_w, phys_h, exited, exit_success, last_input_ms, writer, master: pair.master }
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16, phys_w: usize, phys_h: usize) {
@@ -160,6 +164,11 @@ impl PtySession {
     }
 
     pub fn write_input(&mut self, data: &[u8]) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.last_input_ms.store(now_ms, Ordering::Relaxed);
         let _ = self.writer.write_all(data);
     }
 
