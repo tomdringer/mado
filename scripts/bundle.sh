@@ -32,7 +32,7 @@ fi
 mkdir -p dmg_staging
 cp -r Mado.app dmg_staging/
 ln -s /Applications dmg_staging/Applications
-hdiutil create -volname "Mado" -srcfolder dmg_staging -ov -format UDZO Mado.dmg
+hdiutil create -volname "Mado" -srcfolder dmg_staging -ov -format UDRO Mado.dmg
 rm -rf dmg_staging
 
 # Notarize and staple

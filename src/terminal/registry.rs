@@ -43,6 +43,69 @@ pub fn compute_pane_title(pid: Option<u32>, cwd_basename: Option<String>) -> Str
     cwd_basename.unwrap_or_default()
 }
 
+/// Return the absolute path of the first `.md` argument in the foreground
+/// process running under `pid`, or `None` if no such argument is found.
+/// Relative paths are resolved against `cwd`.
+///
+/// **Must be called from a background thread** — process spawning blocks.
+pub fn get_foreground_md_file(pid: Option<u32>, cwd: Option<String>) -> Option<String> {
+    let shell_pid = pid?;
+    let pgrep = std::process::Command::new("pgrep")
+        .args(["-P", &shell_pid.to_string()])
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8(pgrep.stdout).ok()?;
+    let child_pid = stdout.trim().lines().next()?.trim().to_string();
+    if child_pid.is_empty() { return None; }
+    let ps = std::process::Command::new("ps")
+        .args(["-o", "args=", "-p", &child_pid])
+        .output()
+        .ok()?;
+    let args_str = String::from_utf8(ps.stdout).ok()?;
+    // Find the first argv[1..] token that ends in .md
+    let md_arg = args_str.trim()
+        .split_whitespace()
+        .skip(1)
+        .find(|a| a.to_lowercase().ends_with(".md"))?
+        .to_string();
+    if std::path::Path::new(&md_arg).is_absolute() {
+        return Some(md_arg);
+    }
+
+    // Relative path — prefer the pane's OSC-7 CWD (shell's directory when nvim
+    // was opened) over lsof, which can return a different directory if nvim
+    // changed its own cwd (e.g. via a rooter plugin).
+    // lsof is kept as fallback: parse the -Fn block for *our* pid to avoid
+    // picking up the first '/' line from an unrelated process.
+    let proc_cwd = if cwd.is_none() {
+        std::process::Command::new("lsof")
+            .args(["-p", &child_pid, "-d", "cwd", "-Fn"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| {
+                // lsof -Fn groups output by process: "p<pid>\nf<fd>\nn<path>"
+                // Find the block that starts with our pid before reading the name.
+                let target = format!("p{child_pid}");
+                let mut in_target = false;
+                for line in s.lines() {
+                    if line == target { in_target = true; continue; }
+                    if in_target {
+                        if line.starts_with('p') { break; } // next process
+                        if line.starts_with('n') { return Some(line[1..].to_string()); }
+                    }
+                }
+                None
+            })
+    } else {
+        None
+    };
+
+    let base = cwd.or(proc_cwd).unwrap_or_default();
+    if base.is_empty() { return None; }
+    Some(format!("{}/{}", base.trim_end_matches('/'), md_arg))
+}
+
 /// Emit one row of cells as 24-bit ANSI escape sequences into `out`.
 /// Trailing space-with-default-colors cells are trimmed. Color change escapes
 /// are suppressed when they match the previous row's last color (tracked via
@@ -161,6 +224,11 @@ impl TerminalRegistry {
     pub fn get_cwd(&self, id: NodeId) -> Option<String> {
         let sess = self.sessions.get(&id)?;
         sess.state.lock().ok()?.cwd.clone()
+    }
+
+    /// Shell PID for the session at `id`.
+    pub fn get_pid(&self, id: NodeId) -> Option<u32> {
+        self.sessions.get(&id)?.pid
     }
 
     /// Collect cwds for every id in `ids`.
@@ -447,6 +515,12 @@ impl TerminalRegistry {
         }
     }
 
+    /// Consume and return any pending `open_file` path set by OSC 9001 for `id`.
+    pub fn take_open_file(&self, id: NodeId) -> Option<String> {
+        let sess = self.sessions.get(&id)?;
+        sess.state.lock().ok()?.pending_open_file.take()
+    }
+
     /// Return the current column count for a session (defaults to 80).
     #[allow(dead_code)]
     pub fn cols(&self, id: NodeId) -> usize {
@@ -561,15 +635,23 @@ impl TerminalRegistry {
 
     /// Returns (id, physical-pixel buffer) pairs for all dirty sessions.
     /// `selection` carries the active pane selection so it is baked into the render.
+    /// `skip_render` — if `Some(id)`, that session's dirty flag is still consumed
+    /// (preventing flag accumulation) but no pixel buffer is rendered for it.
+    /// This eliminates the race where a PTY thread sets dirty between an external
+    /// clear and this call.
     pub fn drain_dirty(
         &mut self,
         selection: Option<(NodeId, ((usize, usize), (usize, usize)))>,
+        skip_render: Option<NodeId>,
     ) -> Vec<(NodeId, SharedPixelBuffer<slint::Rgba8Pixel>)> {
         let font = &self.font;
         self.sessions.iter_mut()
             .filter_map(|(id, sess)| {
                 if sess.dirty.load(Ordering::Relaxed) {
                     sess.dirty.store(false, Ordering::Relaxed);
+                    if skip_render == Some(*id) {
+                        return None;
+                    }
                     let sel = selection.and_then(|(sid, range)| {
                         if sid == *id { Some(range) } else { None }
                     });

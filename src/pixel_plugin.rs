@@ -295,6 +295,11 @@ impl PixelPlugin {
         );
         let _ = writeln!(self.stdin, "{json}");
     }
+
+    /// Send an arbitrary JSON event line to the plugin's stdin.
+    pub fn send_event(&mut self, json: &str) {
+        let _ = writeln!(self.stdin, "{json}");
+    }
 }
 
 impl Drop for PixelPlugin {

@@ -101,6 +101,17 @@ export component MainWindow inherits Window {
     private property <float> top-right-press-width: 0;
     private property <bool>  top-right-is-resizing: false;
 
+    // ── Markdown preview panel ────────────────────────────────────────────────
+    in property <image>  md-plugin-image;
+    in-out property <bool> show-md-panel: false;
+    in-out property <bool> show-md-button: false;
+    in-out property <float> md-panel-width: 0;
+    callback md-plugin-scroll(float);
+    callback md-panel-width-changed(float);
+    private property <float> md-press-abs-x: 0;
+    private property <float> md-press-width: 0;
+    private property <bool>  md-is-resizing: false;
+
     // ── Browser panel (native WKWebView overlay) ──────────────────────────────
     in-out property <float> browser-panel-width: 0;
     in-out property <bool> show-browser-panel: false;
@@ -271,7 +282,7 @@ export component MainWindow inherits Window {
     }
 
     // Top bar shows when explicitly enabled OR when the AI/browser panel is configured.
-    private property <bool>   show-top-bar-effective: root.show-top-bar || root.top-right-panel-width > 0 || root.browser-panel-width > 0;
+    private property <bool>   show-top-bar-effective: root.show-top-bar || root.top-right-panel-width > 0 || root.browser-panel-width > 0 || root.show-md-button;
     // Top bar is always 36px (header only). Content shown via overlay below.
     private property <length> effective-top-bar-h: root.show-top-bar-effective ? 36px : 0px;
     // Bottom bar is always 36px (header only). Content shown via overlay above.
@@ -333,6 +344,9 @@ export component MainWindow inherits Window {
                 root.show-ai-panel = !root.show-ai-panel;
                 root.top-right-plugin-focus-changed(root.show-ai-panel);
             }
+            show-md-button: root.show-md-button;
+            md-active: root.show-md-panel;
+            md-toggled => { root.show-md-panel = !root.show-md-panel; }
             show-browser-button: root.browser-panel-width > 0;
             browser-active: root.show-browser-panel;
             browser-toggled => { root.show-browser-panel = !root.show-browser-panel; }
@@ -560,6 +574,41 @@ export component MainWindow inherits Window {
                     }
                     scroll-event(e) => {
                         root.top-right-plugin-scroll(e.delta-y / 1px);
+                        accept
+                    }
+                }
+            }
+
+            // ── Markdown preview panel ───────────────────────────────────────
+            if root.show-md-panel && root.md-panel-width > 0: Rectangle {
+                width: 1px;
+                background: root.theme-card-border;
+            }
+            if root.show-md-panel && root.md-panel-width > 0: Rectangle {
+                width: root.md-panel-width * 1px;
+                background: #f8f9fa;
+                clip: true;
+
+                if root.md-plugin-image.width > 0: Image {
+                    x: 0px; y: 0px;
+                    width: parent.width; height: parent.height;
+                    source: root.md-plugin-image;
+                    image-fit: fill;
+                }
+                if root.md-plugin-image.width == 0: Text {
+                    text: "No .md file open";
+                    color: rgba(0, 0, 0, 0.25);
+                    font-size: 11px;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    x: 0px; y: 0px;
+                    width: parent.width; height: parent.height;
+                }
+
+                TouchArea {
+                    x: 0px; y: 0px;
+                    width: parent.width; height: parent.height;
+                    scroll-event(e) => {
+                        root.md-plugin-scroll(e.delta-y / 1px);
                         accept
                     }
                 }

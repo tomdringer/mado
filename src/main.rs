@@ -85,6 +85,12 @@ fn top_right_plugin_node_id(i: usize) -> NodeId { u32::MAX / 16 - i as u32 }
 /// NodeId for BOTTOM-RIGHT panel plugin at index `i`.
 fn bottom_right_plugin_node_id(i: usize) -> NodeId { u32::MAX / 32 - i as u32 }
 
+/// Wrap a path in single quotes for safe shell injection, escaping any
+/// embedded single quotes.
+fn shlex_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 // Default panel heights (match sidebar.slint initial values).
 pub const DEFAULT_TASKU_PANEL_H:  f32 = 400.0;
 pub const DEFAULT_PLUGIN_PANEL_H: f32 = 300.0;
@@ -1190,6 +1196,7 @@ fn main() {
     ui.set_top_right_panel_width(top_right_panel_w);
     ui.set_bottom_right_panel_width(bottom_right_panel_w);
     ui.set_browser_panel_width(browser_panel_w);
+    ui.set_md_panel_width(config.browser_panel_width);
     if let Some(ref p) = top_right_plugin {
         ui.set_top_right_plugin_icon(p.icon.as_str().into());
         ui.set_top_right_plugin_title(p.id.to_uppercase().as_str().into());
@@ -1210,6 +1217,23 @@ fn main() {
     // Pending clipboard paste result for top-right pixel plugin
     let top_right_paste_result: Rc<RefCell<Option<Arc<std::sync::Mutex<Option<Vec<u8>>>>>>> =
         Rc::new(RefCell::new(None));
+    // PixelPlugin for the markdown preview panel.
+    let md_pixel: Rc<RefCell<Option<PixelPlugin>>> = Rc::new(RefCell::new(None));
+    // Width of the md preview panel (matches browser_panel_width default).
+    let md_panel_width: f32 = config.browser_panel_width;
+    // Background md-file detection result: background thread writes here, timer reads.
+    // Contains (focused_node_id, Option<absolute_path>).
+    let md_file_result: Arc<std::sync::Mutex<Option<(NodeId, Option<String>)>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    // Last md file path known on the main thread; used to send to the plugin.
+    let current_md_path: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    // Previous focused NodeId — used to clear the md button instantly on focus change.
+    let md_prev_focused: Rc<std::cell::Cell<Option<NodeId>>> =
+        Rc::new(std::cell::Cell::new(None));
+    // Previous md panel open state — used to send file to plugin on first open.
+    let md_prev_panel_open: Rc<std::cell::Cell<bool>> =
+        Rc::new(std::cell::Cell::new(false));
+
     // Native browser panel (WKWebView embedded in NSWindow).
     let native_browser: Rc<RefCell<Option<browser::NativeBrowser>>> =
         Rc::new(RefCell::new(None));
@@ -1349,11 +1373,19 @@ fn main() {
         let active_project_timer = Rc::clone(&active_project);
         let code_to_name_timer = Rc::clone(&code_to_name);
         let tree_timer = Rc::clone(&tree);
+        let div_model_timer = Rc::clone(&div_model);
+        let dividers_cache_timer = Rc::clone(&dividers_cache);
         let font_size_timer = Rc::clone(&font_size);
         let loaded_theme_timer = Rc::clone(&loaded_theme);
         let runner_command_timer    = Rc::clone(&runner_command);
         let runner_is_running_timer = Rc::clone(&runner_is_running);
         let native_browser_timer    = Rc::clone(&native_browser);
+        let md_pixel_timer          = Rc::clone(&md_pixel);
+        let md_file_result_timer    = Arc::clone(&md_file_result);
+        let current_md_path_timer   = Rc::clone(&current_md_path);
+        let md_prev_focused_timer   = Rc::clone(&md_prev_focused);
+        let md_prev_panel_open_timer = Rc::clone(&md_prev_panel_open);
+        let tasku_top_bar_tick = Rc::new(std::cell::Cell::new(0u32));
         let timer = Timer::default();
         timer.start(TimerMode::Repeated, std::time::Duration::from_millis(16), move || {
             // ── projects.toml hot-reload ─────────────────────────────────
@@ -1494,12 +1526,44 @@ fn main() {
                 }
             }
 
-            let dirty_bufs = registry.borrow_mut().drain_dirty(sel);
+            // Throttle the Tasku top-bar render to ~20 fps (every 3rd tick).
+            // At 2× Retina the terminal buffer is ~5–16 MB; rendering every tick
+            // at 60 fps burns 30–90% CPU. We skip render (but still consume dirty)
+            // atomically inside drain_dirty to eliminate the PTY-thread race.
+            //
+            // Exception: bypass throttle for 500 ms after any write_key call so
+            // interactive use (j/k navigation, 'a' add task, etc.) feels instant.
+            let skip_render = {
+                let tick = tasku_top_bar_tick.get().wrapping_add(1);
+                tasku_top_bar_tick.set(tick);
+                let should_throttle = tick % 3 != 0;
+                if should_throttle {
+                    // Check if the user typed something recently.
+                    let recently_active = registry.borrow().sessions
+                        .get(&SIDEBAR_TASKU_ID)
+                        .map(|s| {
+                            let last = s.last_input_ms.load(std::sync::atomic::Ordering::Relaxed);
+                            if last == 0 { return false; }
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
+                            now_ms.saturating_sub(last) < 500
+                        })
+                        .unwrap_or(false);
+                    if recently_active { None } else { Some(SIDEBAR_TASKU_ID) }
+                } else {
+                    None
+                }
+            };
+
+            let dirty_bufs = registry.borrow_mut().drain_dirty(sel, skip_render);
 
             let mut tasku_buf:       Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> = None;
             let mut runner_buf:      Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> = None;
             let mut top_right_buf:   Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> = None;
             let mut bottom_right_buf:Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> = None;
+            let mut md_buf:          Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>> = None;
             // plugin_index → pixel buffer for left external plugins
             let mut plugin_bufs: Vec<(usize, slint::SharedPixelBuffer<slint::Rgba8Pixel>)> = Vec::new();
             // plugin_index → pixel buffer for right external plugins
@@ -1668,8 +1732,133 @@ fn main() {
                     }
                 }
             }
+            // Drain dirty md preview pixel plugin
+            {
+                let mut mdp = md_pixel_timer.borrow_mut();
+                if let Some(pp) = mdp.as_mut() {
+                    if pp.dirty.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                        if let Ok(guard) = pp.image.lock() {
+                            if let Some(ref buf) = *guard {
+                                md_buf = Some(buf.clone());
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Markdown preview: detect focused pane changes and consume background poll results ──
+            {
+                let focused = *focused_id.borrow();
+                let prev = md_prev_focused_timer.get();
+
+                // When the focused pane changes, clear the button immediately.
+                // The background poll (~1 s) will restore it if the new pane has a .md file.
+                if focused != prev {
+                    md_prev_focused_timer.set(focused);
+                    *current_md_path_timer.borrow_mut() = None;
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_show_md_button(false);
+                        ui.set_show_md_panel(false);
+                    }
+                }
+
+                // Consume background md-file detection result.
+                if let Ok(mut guard) = md_file_result_timer.try_lock() {
+                    if let Some((poll_id, md_path)) = guard.take() {
+                        eprintln!("[md] poll result: pane={poll_id}, path={md_path:?}");
+                        // Only apply if focus hasn't changed since the poll was started.
+                        if focused == Some(poll_id) {
+                            let is_md = md_path.is_some();
+                            *current_md_path_timer.borrow_mut() = md_path;
+                            if let Some(ui) = ui_weak.upgrade() {
+                                ui.set_show_md_button(is_md);
+                                if !is_md {
+                                    ui.set_show_md_panel(false);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // When the panel transitions from closed to open, send the current path
+                // immediately (don't wait for the next background poll cycle).
+                if let Some(ui) = ui_weak.upgrade() {
+                    let panel_open = ui.get_show_md_panel();
+                    let was_open = md_prev_panel_open_timer.get();
+                    md_prev_panel_open_timer.set(panel_open);
+                    if panel_open && !was_open {
+                        let path_snapshot = current_md_path_timer.borrow().clone();
+                        eprintln!("[md] panel opened: current_path={path_snapshot:?}, plugin_alive={}",
+                            md_pixel_timer.borrow().is_some());
+                        if let Some(path) = path_snapshot.as_ref() {
+                            if let Some(pp) = md_pixel_timer.borrow_mut().as_mut() {
+                                let msg = format!("{{\"type\":\"file\",\"path\":{}}}",
+                                    serde_json::to_string(path).unwrap_or_default());
+                                eprintln!("[md] sending to plugin: {msg}");
+                                pp.send_event(&msg);
+                            }
+                        }
+                    }
+                }
+            }
+
             // Flush pre-typed inject commands (internal timeout check, runs every tick).
             registry.borrow_mut().flush_injects();
+
+            // Check sidebar terminal plugins for OSC 9001 open-file requests.
+            // When a plugin writes ESC]9001;<path>BEL, split the focused pane
+            // and open the file in the new pane with $EDITOR.
+            {
+                let all_plugin_ids: Vec<NodeId> = (0..num_left_ext)
+                    .map(plugin_node_id)
+                    .chain((0..num_right_ext).map(right_plugin_node_id))
+                    .collect();
+                let open_path = {
+                    let reg = registry.borrow();
+                    all_plugin_ids.iter().find_map(|&id| reg.take_open_file(id))
+                };
+                if let Some(path) = open_path {
+                    if let Some(focused) = *focused_id.borrow() {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            let result = tree_timer.borrow_mut()
+                                .split(focused, SplitDir::Horizontal);
+                            if let Some((relocated_id, new_id)) = result {
+                                let w = ui.get_window_w();
+                                let h = ui.get_window_h();
+                                let panes = tree_timer.borrow().flatten(w, h);
+                                let mut reg = registry.borrow_mut();
+                                let source_cwd = reg.get_cwd(focused);
+                                if let Some(sess) = reg.sessions.remove(&focused) {
+                                    reg.sessions.insert(relocated_id, sess);
+                                }
+                                if let Some(p) = panes.iter().find(|p| p.id == new_id) {
+                                    reg.spawn(new_id, p.width, p.height, source_cwd.as_deref());
+                                }
+                                if let Some(p) = panes.iter().find(|p| p.id == relocated_id) {
+                                    reg.resize(relocated_id, (p.width - PANE_H_INSET).max(10.0), (p.height - PANE_TOP_INSET).max(10.0));
+                                }
+                                let editor = std::env::var("VISUAL")
+                                    .or_else(|_| std::env::var("EDITOR"))
+                                    .unwrap_or_else(|_| "vi".into());
+                                reg.queue_inject(new_id, format!("{} {}\n", editor, shlex_quote(&path)));
+                                drop(reg);
+
+                                if let Some(img) = imgs.remove(&focused) {
+                                    imgs.insert(relocated_id, img);
+                                }
+
+                                *focused_id.borrow_mut() = Some(new_id);
+                                let snapshot = imgs.clone();
+                                drop(imgs);
+                                full_push(&ui, &tree_timer.borrow(), &dividers_cache_timer,
+                                          &pane_model, &div_model_timer,
+                                          &snapshot, *focused_id.borrow(), None);
+                                imgs = images.borrow_mut();
+                            }
+                        }
+                    }
+                }
+            }
 
             // Apply title results from the most recent background poll.
             if let Ok(mut guard) = title_poll_result_timer.try_lock() {
@@ -1696,12 +1885,25 @@ fn main() {
             if tc % 60 == 0 {
                 let inputs = registry.borrow().collect_title_inputs();
                 let result = Arc::clone(&title_poll_result_timer);
+                // Also kick off md-file detection for the focused pane.
+                let focused_for_md = *focused_id.borrow();
+                let (md_pid, md_cwd) = focused_for_md
+                    .map(|fid| {
+                        let reg = registry.borrow();
+                        (reg.get_pid(fid), reg.get_cwd(fid))
+                    })
+                    .unwrap_or((None, None));
+                let md_result = Arc::clone(&md_file_result_timer);
                 std::thread::spawn(move || {
-                    use crate::terminal::registry::compute_pane_title;
+                    use crate::terminal::registry::{compute_pane_title, get_foreground_md_file};
                     let map: HashMap<NodeId, String> = inputs.into_iter()
                         .map(|(id, pid, cwd)| (id, compute_pane_title(pid, cwd)))
                         .collect();
                     *result.lock().unwrap() = Some(map);
+                    if let Some(fid) = focused_for_md {
+                        let md_path = get_foreground_md_file(md_pid, md_cwd);
+                        *md_result.lock().unwrap() = Some((fid, md_path));
+                    }
                 });
             }
 
@@ -1713,6 +1915,7 @@ fn main() {
             if pane_dirty_ids.is_empty() && tasku_buf.is_none() && runner_buf.is_none()
                 && plugin_bufs.is_empty() && right_plugin_bufs.is_empty()
                 && top_right_buf.is_none() && bottom_right_buf.is_none()
+                && md_buf.is_none()
             {
                 return;
             }
@@ -1724,6 +1927,7 @@ fn main() {
             if tasku_buf.is_some() || runner_buf.is_some()
                 || !plugin_bufs.is_empty() || !right_plugin_bufs.is_empty()
                 || top_right_buf.is_some() || bottom_right_buf.is_some()
+                || md_buf.is_some()
             {
                 if let Some(ui) = ui_weak.upgrade() {
                     if let Some(buf) = tasku_buf {
@@ -1737,6 +1941,9 @@ fn main() {
                     }
                     if let Some(buf) = bottom_right_buf {
                         ui.set_bottom_right_plugin_image(Image::from_rgba8(buf));
+                    }
+                    if let Some(buf) = md_buf {
+                        ui.set_md_plugin_image(Image::from_rgba8(buf));
                     }
                     for (i, buf) in plugin_bufs {
                         let img = Image::from_rgba8(buf);
@@ -2232,6 +2439,7 @@ fn main() {
         let top_right_plugin_resize = top_right_plugin.clone();
         let bottom_right_plugin_resize = bottom_right_plugin.clone();
         let top_right_pixel_resize = Rc::clone(&top_right_pixel);
+        let md_pixel_resize = Rc::clone(&md_pixel);
         let browser_plugin_resize = browser_plugin.clone();
         let native_browser_resize = Rc::clone(&native_browser);
         let tasku_open_resize = Rc::clone(&tasku_open);
@@ -2491,6 +2699,21 @@ fn main() {
                                       &program, &args_ref, None,
                                       &[("MADO_PLUGIN_ID", &plugin_id)]);
                     }
+                    // Spawn markdown preview pixel plugin (hidden until toggled)
+                    if md_pixel_resize.borrow().is_none() {
+                        let phys_w = (md_panel_width * reg.scale) as u32;
+                        let phys_h = ((h - 36.0).max(50.0) * reg.scale) as u32;
+                        let md_bin = plugins_dir().join("mado-mdpreview");
+                        let md_bin_str = md_bin.to_string_lossy().into_owned();
+                        if let Some(pp) = PixelPlugin::spawn(
+                            &md_bin_str, &[], phys_w, phys_h, &[],
+                        ) {
+                            *md_pixel_resize.borrow_mut() = Some(pp);
+                        } else {
+                            eprintln!("mado: failed to spawn mado-mdpreview — install it to ~/.config/mado/plugins/");
+                        }
+                    }
+
                     // Create native browser WKWebView (hidden; shown on first toggle)
                     if browser_plugin_resize.is_some() {
                         if let Some(ui) = ui_weak.upgrade() {
@@ -2565,6 +2788,15 @@ fn main() {
                     if bottom_right_plugin_resize.is_some() {
                         reg.resize(bottom_right_plugin_node_id(0), bottom_right_panel_w, (h - 36.0).max(50.0));
                     }
+                    // Resize md preview plugin
+                    {
+                        let phys_w = (md_panel_width * reg.scale) as u32;
+                        let phys_h = ((h - 36.0).max(50.0) * reg.scale) as u32;
+                        if let Some(pp) = md_pixel_resize.borrow_mut().as_mut() {
+                            pp.send_resize(phys_w, phys_h);
+                        }
+                    }
+
                     // Update native browser WKWebView frame on window resize
                     if let Some(nb) = native_browser_resize.borrow().as_ref() {
                         if let Some(ui) = ui_weak.upgrade() {
@@ -4579,6 +4811,32 @@ fn main() {
                     nb.load_url(&url);
                 }
                 ui.set_show_browser_panel(true);
+            }
+        }
+    });
+
+    // ── Markdown preview panel callbacks ─────────────────────────────────────
+    ui.on_md_plugin_scroll({
+        let md_pixel = Rc::clone(&md_pixel);
+        move |delta| {
+            if let Some(pp) = md_pixel.borrow_mut().as_mut() {
+                pp.send_scroll(delta);
+            }
+        }
+    });
+
+    // Spawn the md preview plugin the first time the panel is opened.
+    ui.on_md_panel_width_changed({
+        let md_pixel = Rc::clone(&md_pixel);
+        let registry = Rc::clone(&registry);
+        let ui_weak  = ui.as_weak();
+        move |_new_w| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let w = (ui.get_md_panel_width() as f32).max(10.0);
+            let h = (ui.get_window_h() - 36.0).max(50.0);
+            let scale = registry.borrow().scale;
+            if let Some(pp) = md_pixel.borrow_mut().as_mut() {
+                pp.send_resize((w * scale) as u32, (h * scale) as u32);
             }
         }
     });

@@ -45,6 +45,12 @@ pub struct TerminalState {
     pub theme_bg: Option<[u8; 4]>,
     /// True when the alternate screen buffer (?1049h) is active.
     pub in_alt_screen: bool,
+    /// File path requested to open in the main pane via OSC 9001.
+    /// Set by the parser, consumed by the registry caller.
+    pub pending_open_file: Option<String>,
+    /// Window title reported by the running process via OSC 0 or OSC 2.
+    /// nvim sets this to e.g. "filename.md - NVIM".
+    pub window_title: Option<String>,
 }
 
 impl TerminalState {
@@ -68,6 +74,8 @@ impl TerminalState {
             scroll_offset: 0,
             theme_bg: None,
             in_alt_screen: false,
+            pending_open_file: None,
+            window_title: None,
         }
     }
 
@@ -830,9 +838,29 @@ impl<'a> Perform for VteHandler<'a> {
     }
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        // OSC 0 / OSC 2: set window title (nvim uses this to report the open filename)
+        if params.len() >= 2 && (params[0] == b"0" || params[0] == b"2") {
+            if let Ok(title) = std::str::from_utf8(params[1]) {
+                self.0.window_title = Some(title.to_string());
+            }
+            return;
+        }
+
         // OSC 7: shell reports cwd as "file://hostname/path"
         // Emitted by zsh (with vcs_info or prompt setup), fish, and bash with
         // the __vte_osc7 / update_terminal_cwd hook.
+        // OSC 9001: plugin requests a file be opened in the main pane.
+        // Format: ESC ] 9001 ; <path> BEL
+        if params.len() >= 2 && params[0] == b"9001" {
+            if let Ok(path) = std::str::from_utf8(params[1]) {
+                let path = path.trim();
+                if !path.is_empty() {
+                    self.0.pending_open_file = Some(path.to_string());
+                }
+            }
+            return;
+        }
+
         if params.len() >= 2 && params[0] == b"7" {
             if let Ok(uri) = std::str::from_utf8(params[1]) {
                 let path = if let Some(rest) = uri.strip_prefix("file://") {
